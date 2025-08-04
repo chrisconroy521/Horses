@@ -37,6 +37,7 @@ gpt_parser = None
 # Try to initialize GPT parser if API key is available
 try:
     api_key = os.getenv("OPENAI_API_KEY")
+    print(api_key)
     if api_key:
         gpt_parser = GPTRagozinParserAlternative(api_key=api_key)
         logger.info("GPT-enhanced parser initialized successfully")
@@ -90,8 +91,8 @@ async def upload_pdf(file: UploadFile = File(...)):
             start_time = pd.Timestamp.now()
             
             if gpt_parser:
-                logger.info("Using GPT-enhanced parser")
-                race_data = gpt_parser.parse_ragozin_sheet(str(pdf_path))
+                logger.info("Using GPT-enhanced parser with direct PDF analysis")
+                race_data = gpt_parser.parse_ragozin_sheet(str(pdf_path), use_direct_pdf=True)
                 parser_used = "gpt"
             else:
                 logger.info("Using traditional parser")
@@ -102,19 +103,27 @@ async def upload_pdf(file: UploadFile = File(...)):
             processing_duration = str(end_time - start_time).split('.')[0]  # Remove microseconds
             
             # Calculate comprehensive statistics for the new data structure
-            total_races = sum(len(horse.races) for horse in race_data.horses)
-            unique_tracks = set()
-            unique_surfaces = set()
-            date_range = []
-            
-            for horse in race_data.horses:
-                for race in horse.races:
-                    if race.track:
-                        unique_tracks.add(race.track)
-                    if race.surface:
-                        unique_surfaces.add(race.surface)
-                    if race.date:
-                        date_range.append(race.date)
+            if parser_used == "gpt":
+                # GPT parser: each horse has multiple races in horse.lines
+                total_races = sum(len(horse.lines) for horse in race_data.horses)
+                unique_tracks = set()
+                unique_surfaces = set()
+                date_range = []
+                
+                for horse in race_data.horses:
+                    for race in horse.lines:
+                        if race.track:
+                            unique_tracks.add(race.track)
+                        if race.surface:
+                            unique_surfaces.add(race.surface)
+                        if race.race_date:
+                            date_range.append(race.race_date)
+            else:
+                # Traditional parser: each horse entry represents one race
+                total_races = len(race_data.horses)
+                unique_tracks = {race_data.track_name} if race_data.track_name else set()
+                unique_surfaces = {race_data.surface} if race_data.surface else set()
+                date_range = [race_data.race_date] if race_data.race_date else []
             
             # Get current timestamp for analysis
             analysis_timestamp = pd.Timestamp.now()
@@ -332,11 +341,11 @@ async def get_stats():
                     race_data = json.load(f)
                 
                 for horse in race_data.get("horses", []):
-                    for race in horse.get("races", []):
-                        surface = race.get("surface", "unknown")
-                        track = race.get("track", "unknown")
-                        surface_counts[surface] = surface_counts.get(surface, 0) + 1
-                        track_counts[track] = track_counts.get(track, 0) + 1
+                    # Each horse entry represents one race entry
+                    surface = horse.get("track_surface", "unknown")
+                    track = race_data.get("track_name", "unknown")
+                    surface_counts[surface] = surface_counts.get(surface, 0) + 1
+                    track_counts[track] = track_counts.get(track, 0) + 1
             except Exception as e:
                 logger.warning(f"Error loading race data for stats: {e}")
     

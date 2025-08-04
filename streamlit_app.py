@@ -28,11 +28,13 @@ def main():
     st.sidebar.header("Navigation")
     page = st.sidebar.selectbox(
         "Choose a page",
-        ["Upload PDF", "Horses Overview", "Individual Horse Analysis", "Race Analysis", "Statistics", "API Status"]
+        ["Upload PDF", "Horse Past Performance", "Horses Overview", "Individual Horse Analysis", "Race Analysis", "Statistics", "API Status"]
     )
     
     if page == "Upload PDF":
         upload_page()
+    elif page == "Horse Past Performance":
+        horse_past_performance_page()
     elif page == "Horses Overview":
         horses_overview_page()
     elif page == "Individual Horse Analysis":
@@ -122,8 +124,24 @@ def upload_page():
                         # Store race ID in session state
                         st.session_state.last_race_id = result["race_id"]
                         
+                        # Fetch and store the parsed horse data
+                        try:
+                            horse_response = requests.get(f"{API_BASE_URL}/races/{result['race_id']}/horses")
+                            if horse_response.status_code == 200:
+                                horse_data = horse_response.json()
+                                if horse_data.get("horses") and len(horse_data["horses"]) > 0:
+                                    # Store the first horse's data (since we're parsing individual horse past performance)
+                                    st.session_state.parsed_horse_data = horse_data["horses"][0]
+                                    st.success("✅ Horse data loaded successfully!")
+                                else:
+                                    st.warning("⚠️ No horse data found in the parsed results")
+                            else:
+                                st.warning("⚠️ Could not fetch horse data")
+                        except Exception as e:
+                            st.warning(f"⚠️ Could not load horse data: {str(e)}")
+                        
                         # Auto-navigate to view page
-                        st.info("Navigate to 'Horses Overview' to see detailed analysis with AI insights")
+                        st.info("Navigate to 'Horse Past Performance' to see detailed analysis with AI insights")
                         
                     else:
                         st.error(f"❌ Error parsing PDF: {response.text}")
@@ -225,20 +243,32 @@ def display_enhanced_horses_details(race):
                         top_fig = horse.get('top_fig', 'Unknown')
                         horse_analysis = horse.get('horse_analysis', 'No analysis available')
                         performance_trend = horse.get('performance_trend', 'No trend analysis available')
+                        
+                        # Handle both enhanced and legacy formats
                         lines = horse.get('lines', [])
+                        races = horse.get('races', [])  # Enhanced format
+                        
+                        # Use enhanced races if available, otherwise fall back to lines
+                        race_entries = races if races else lines
                         
                         # Calculate statistics with robust None handling
                         try:
-                            # Extract numeric figures from fig strings (e.g., "20", "17-", "26+")
+                            # Extract numeric figures from enhanced or legacy format
                             ragozin_figures = []
-                            for line in lines:
-                                fig = line.get('fig', '')
-                                if fig:
-                                    # Extract numeric part (remove flags like +, -, ~, etc.)
-                                    import re
-                                    numeric_match = re.search(r'(\d+(?:\.\d+)?)', fig)
-                                    if numeric_match:
-                                        ragozin_figures.append(float(numeric_match.group(1)))
+                            for race_entry in race_entries:
+                                # Try enhanced format first
+                                parsed_fig = race_entry.get('parsed_figure', 0.0)
+                                if parsed_fig and parsed_fig > 0:
+                                    ragozin_figures.append(parsed_fig)
+                                else:
+                                    # Fallback to legacy format
+                                    fig = race_entry.get('fig', '')
+                                    if fig:
+                                        # Extract numeric part (remove flags like +, -, ~, etc.)
+                                        import re
+                                        numeric_match = re.search(r'(\d+(?:\.\d+)?)', fig)
+                                        if numeric_match:
+                                            ragozin_figures.append(float(numeric_match.group(1)))
                             
                             avg_ragozin = sum(ragozin_figures) / len(ragozin_figures) if ragozin_figures else 0
                             best_ragozin = min(ragozin_figures) if ragozin_figures else 0
@@ -271,9 +301,10 @@ def display_enhanced_horses_details(race):
                             })
                         
                         # Add individual race lines with enhanced data
-                        for line_entry in lines:
+                        for race_entry in race_entries:
                             try:
-                                all_races.append({
+                                # Enhanced race data
+                                race_data = {
                                     'horse_name': horse_name,
                                     'sex': sex,
                                     'age': age,
@@ -282,18 +313,35 @@ def display_enhanced_horses_details(race):
                                     'top_fig': top_fig,
                                     'horse_analysis': horse_analysis,
                                     'performance_trend': performance_trend,
-                                    'fig': line_entry.get('fig', ''),
-                                    'flags': line_entry.get('flags', []),
-                                    'track': line_entry.get('track', ''),
-                                    'month': line_entry.get('month', ''),
-                                    'surface': line_entry.get('surface', ''),
-                                    'race_type': line_entry.get('race_type', ''),
-                                    'race_date': line_entry.get('race_date', ''),
-                                    'notes': line_entry.get('notes', ''),
-                                    'race_analysis': line_entry.get('race_analysis', '')
-                                })
+                                    # Enhanced fields
+                                    'race_year': race_entry.get('race_year', 0),
+                                    'race_index': race_entry.get('race_index', 0),
+                                    'figure_raw': race_entry.get('figure_raw', ''),
+                                    'parsed_figure': race_entry.get('parsed_figure', 0.0),
+                                    'pre_symbols': race_entry.get('pre_symbols', []),
+                                    'post_symbols': race_entry.get('post_symbols', []),
+                                    'distance_bracket': race_entry.get('distance_bracket', ''),
+                                    'surface_type': race_entry.get('surface_type', ''),
+                                    'track_code': race_entry.get('track_code', ''),
+                                    'date_code': race_entry.get('date_code', ''),
+                                    'month_label': race_entry.get('month_label', ''),
+                                    'race_class_code': race_entry.get('race_class_code', ''),
+                                    'trouble_indicators': race_entry.get('trouble_indicators', []),
+                                    'ai_analysis': race_entry.get('ai_analysis', {}),
+                                    # Legacy fields for compatibility
+                                    'fig': race_entry.get('fig', ''),
+                                    'flags': race_entry.get('flags', []),
+                                    'track': race_entry.get('track', ''),
+                                    'month': race_entry.get('month', ''),
+                                    'surface': race_entry.get('surface', ''),
+                                    'race_type': race_entry.get('race_type', ''),
+                                    'race_date': race_entry.get('race_date', ''),
+                                    'notes': race_entry.get('notes', ''),
+                                    'race_analysis': race_entry.get('race_analysis', '')
+                                }
+                                all_races.append(race_data)
                             except Exception as e:
-                                st.error(f"Error processing line entry for {horse_name}: {str(e)}")
+                                st.error(f"Error processing race entry for {horse_name}: {str(e)}")
                                 continue
                                 
                     except Exception as e:
@@ -313,15 +361,42 @@ def display_enhanced_horses_details(race):
                                 horses_df[col] = 0 if col in ['age', 'total_races', 'avg_ragozin', 'best_ragozin'] else ''
                     
                     if len(races_df) > 0:
-                        required_race_columns = ['horse_name', 'sex', 'age', 'breeder_owner', 'total_races', 'top_fig', 'horse_analysis', 'performance_trend', 'fig', 'flags', 'track', 'month', 'surface', 'race_type', 'race_date', 'notes', 'race_analysis']
+                        required_race_columns = [
+                            'horse_name', 'sex', 'age', 'breeder_owner', 'total_races', 'top_fig', 
+                            'horse_analysis', 'performance_trend', 
+                            # Enhanced fields
+                            'race_year', 'race_index', 'figure_raw', 'parsed_figure', 'pre_symbols', 
+                            'post_symbols', 'distance_bracket', 'surface_type', 'track_code', 
+                            'date_code', 'month_label', 'race_class_code', 'trouble_indicators', 'ai_analysis',
+                            # Legacy fields for compatibility
+                            'fig', 'flags', 'track', 'month', 'surface', 'race_type', 'race_date', 
+                            'notes', 'race_analysis'
+                        ]
                         for col in required_race_columns:
                             if col not in races_df.columns:
-                                races_df[col] = 0 if col in ['age', 'total_races'] else ''
+                                if col in ['age', 'total_races', 'race_year', 'race_index', 'parsed_figure']:
+                                    races_df[col] = 0
+                                elif col in ['pre_symbols', 'post_symbols', 'trouble_indicators', 'flags']:
+                                    races_df[col] = []
+                                elif col == 'ai_analysis':
+                                    races_df[col] = {}
+                                else:
+                                    races_df[col] = ''
                         
                 except Exception as e:
                     st.error(f"Error creating DataFrames: {str(e)}")
                     horses_df = pd.DataFrame(columns=['name', 'sex', 'age', 'breeder_owner', 'total_races', 'top_fig', 'avg_ragozin', 'best_ragozin', 'horse_analysis', 'performance_trend'])
-                    races_df = pd.DataFrame(columns=['horse_name', 'sex', 'age', 'breeder_owner', 'total_races', 'top_fig', 'horse_analysis', 'performance_trend', 'fig', 'flags', 'track', 'month', 'surface', 'race_type', 'race_date', 'notes', 'race_analysis'])
+                    races_df = pd.DataFrame(columns=[
+                        'horse_name', 'sex', 'age', 'breeder_owner', 'total_races', 'top_fig', 
+                        'horse_analysis', 'performance_trend', 
+                        # Enhanced fields
+                        'race_year', 'race_index', 'figure_raw', 'parsed_figure', 'pre_symbols', 
+                        'post_symbols', 'distance_bracket', 'surface_type', 'track_code', 
+                        'date_code', 'month_label', 'race_class_code', 'trouble_indicators', 'ai_analysis',
+                        # Legacy fields for compatibility
+                        'fig', 'flags', 'track', 'month', 'surface', 'race_type', 'race_date', 
+                        'notes', 'race_analysis'
+                    ])
                 
                 # Display enhanced horses summary
                 st.subheader("🐎 Horses Summary with AI Analysis")
@@ -773,6 +848,111 @@ def api_status_page():
     except Exception as e:
         st.error(f"❌ Cannot connect to API: {str(e)}")
         st.info("Make sure the API server is running on http://localhost:8000")
+
+def horse_past_performance_page():
+    st.header("🐎 Horse Past Performance Viewer")
+    
+    # Check if we have parsed data
+    if 'parsed_horse_data' not in st.session_state:
+        st.info("Please upload and parse a Ragozin sheet first to view horse past performance data.")
+        return
+    
+    horse_data = st.session_state.parsed_horse_data
+    
+    # Display horse metadata
+    st.subheader("🏇 Horse Information")
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.metric("Horse Name", horse_data.get('horse_name', 'Unknown'))
+        st.metric("Sex", horse_data.get('sex', 'Unknown'))
+        st.metric("Age", horse_data.get('age', 0))
+    
+    with col2:
+        st.metric("Sire", horse_data.get('sire', 'Unknown'))
+        st.metric("Dam", horse_data.get('dam', 'Unknown'))
+        st.metric("State Bred", horse_data.get('state_bred', 'Unknown'))
+    
+    with col3:
+        st.metric("Total Races", horse_data.get('races', 0))
+        st.metric("Top Figure", horse_data.get('top_fig', 'Unknown'))
+        st.metric("Foaling Year", horse_data.get('foaling_year', 0))
+    
+    with col4:
+        st.metric("Track Code", horse_data.get('track_code', 'Unknown'))
+        st.metric("Sheet Page", horse_data.get('sheet_page_number', 'Unknown'))
+        st.metric("Race Number", horse_data.get('race_number', 0))
+    
+    # Display AI Analysis
+    st.subheader("🤖 AI Analysis")
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.write("**Overall Performance Analysis:**")
+        st.info(horse_data.get('horse_analysis', 'No analysis available'))
+    
+    with col2:
+        st.write("**Performance Trend Analysis:**")
+        st.info(horse_data.get('performance_trend', 'No trend analysis available'))
+    
+    # Display race history
+    st.subheader("📋 Race History")
+    lines = horse_data.get('lines', [])
+    
+    if lines:
+        # Create race history table
+        race_data = []
+        for i, line in enumerate(lines):
+            race_data.append({
+                'Race #': i + 1,
+                'Date': line.get('race_date', ''),
+                'Track': line.get('track', ''),
+                'Surface': line.get('surface', ''),
+                'Figure': line.get('fig', ''),
+                'Flags': ', '.join(line.get('flags', [])) if line.get('flags') else '',
+                'Race Type': line.get('race_type', ''),
+                'Month': line.get('month', ''),
+                'Notes': line.get('notes', ''),
+                'Analysis': line.get('race_analysis', '')[:100] + "..." if len(line.get('race_analysis', '')) > 100 else line.get('race_analysis', '')
+            })
+        
+        df = pd.DataFrame(race_data)
+        st.dataframe(df, use_container_width=True)
+        
+        # Detailed race analysis
+        st.subheader("🔍 Detailed Race Analysis")
+        for i, line in enumerate(lines):
+            with st.expander(f"Race {i + 1}: {line.get('race_date', '')} - {line.get('track', '')} - {line.get('race_type', '')}"):
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.write(f"**Figure:** {line.get('fig', '')}")
+                    if line.get('flags'):
+                        st.write(f"**Flags:** {', '.join(line.get('flags', []))}")
+                    st.write(f"**Surface:** {line.get('surface', '')}")
+                    st.write(f"**Month:** {line.get('month', '')}")
+                    if line.get('notes'):
+                        st.write(f"**Notes:** {line.get('notes', '')}")
+                
+                with col2:
+                    st.write("**AI Analysis:**")
+                    st.info(line.get('race_analysis', 'No analysis available'))
+                    
+                    # Enhanced fields if available
+                    if line.get('ai_analysis'):
+                        ai_analysis = line.get('ai_analysis', {})
+                        if isinstance(ai_analysis, dict):
+                            st.write("**Detailed AI Analysis:**")
+                            if ai_analysis.get('left_side'):
+                                st.write(f"**Left Side:** {ai_analysis.get('left_side')}")
+                            if ai_analysis.get('middle'):
+                                st.write(f"**Middle:** {ai_analysis.get('middle')}")
+                            if ai_analysis.get('right_side'):
+                                st.write(f"**Right Side:** {ai_analysis.get('right_side')}")
+                            if ai_analysis.get('full_interpretation'):
+                                st.write(f"**Full Interpretation:** {ai_analysis.get('full_interpretation')}")
+    else:
+        st.warning("No race history data available.")
 
 if __name__ == "__main__":
     main() 

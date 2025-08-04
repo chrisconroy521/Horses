@@ -298,16 +298,39 @@ class RagozinParser:
     
     def export_to_json(self, race_data: RaceData, output_path: str) -> None:
         """
-        Export parsed data to JSON format
+        Export parsed data to JSON format compatible with frontend
         """
-        # Convert dataclasses to dictionaries
-        def dataclass_to_dict(obj):
-            if hasattr(obj, '__dict__'):
-                return {k: v for k, v in obj.__dict__.items()}
-            return obj
-        
-        # Convert horses to dictionaries
-        horses_dict = [dataclass_to_dict(horse) for horse in race_data.horses]
+        # Convert horses to frontend-compatible format
+        horses_dict = []
+        for horse in race_data.horses:
+            # Create a single race line from the horse entry
+            race_line = {
+                'fig': str(horse.figure) if horse.figure is not None else '',
+                'flags': horse.trouble_indicators if horse.trouble_indicators else [],
+                'track': race_data.track_name,
+                'month': horse.race_date.split('/')[0] if horse.race_date and '/' in horse.race_date else '',
+                'surface': horse.track_surface,
+                'race_type': 'Unknown',  # Not available in traditional parser
+                'race_date': horse.race_date,
+                'notes': f"Finish: {horse.finish_position}, Odds: {horse.odds}, Trainer: {horse.trainer}, Jockey: {horse.jockey}" if any([horse.finish_position, horse.odds, horse.trainer, horse.jockey]) else '',
+                'race_analysis': f"Speed: {horse.speed_rating}, Pace: {horse.pace_rating}, Class: {horse.class_rating}" if any([horse.speed_rating, horse.pace_rating, horse.class_rating]) else ''
+            }
+            
+            # Create horse entry compatible with frontend
+            horse_dict = {
+                'horse_name': horse.horse_name,
+                'sex': 'Unknown',  # Not available in traditional parser
+                'age': 0,  # Not available in traditional parser
+                'breeder_owner': 'Unknown',  # Not available in traditional parser
+                'foal_date': 'Unknown',  # Not available in traditional parser
+                'reg_code': 'Unknown',  # Not available in traditional parser
+                'races': 1,  # Each horse entry represents one race
+                'top_fig': str(horse.figure) if horse.figure is not None else '',
+                'horse_analysis': f"Ragozin Figure: {horse.figure}, Surface: {horse.track_surface}, Distance: {horse.distance}",
+                'performance_trend': f"Weather: {horse.weather_conditions}, Weight: {horse.weight} lbs" if horse.weather_conditions or horse.weight else 'No trend data available',
+                'lines': [race_line]  # Single race line
+            }
+            horses_dict.append(horse_dict)
         
         # Create output dictionary
         output_data = {
