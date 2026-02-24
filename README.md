@@ -57,7 +57,7 @@ cp .env.example .env
 - `OPENAI_MODEL`: Model to use (default: gpt-4o)
 - `BACKEND_HOST`: Backend host (default: localhost)
 - `BACKEND_PORT`: Backend port (default: 8000)
-- `FRONTEND_PORT`: Frontend port (default: 8501)
+- `FRONTEND_PORT`: Frontend port (default: 8502)
 
 ### 3. Set OpenAI API Key
 ```bash

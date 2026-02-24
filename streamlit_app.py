@@ -1522,12 +1522,23 @@ def database_page():
 
     st.divider()
 
-    # --- Enrichment coverage breakdown ---
     sh = stats.get("sheets_horses", 0)
     bh = stats.get("brisnet_horses", 0)
     rp = stats.get("reconciled_pairs", 0)
+    conf = stats.get("confidence_breakdown", {})
 
     if sh > 0 or bh > 0:
+        # --- Confidence breakdown ---
+        st.subheader("Match Confidence Breakdown")
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.metric("HIGH", conf.get("high", 0))
+        with c2:
+            st.metric("MED", conf.get("medium", 0))
+        with c3:
+            st.metric("LOW", conf.get("low", 0))
+
+        # --- Enrichment coverage pie ---
         st.subheader("Enrichment Coverage")
         coverage_data = {
             "Source": ["Sheets Only", "BRISNET Only", "Both (Reconciled)"],
@@ -1542,23 +1553,44 @@ def database_page():
         fig.update_layout(height=300, margin=dict(t=20, b=20))
         st.plotly_chart(fig, use_container_width=True)
 
+        # --- Collision warnings ---
+        collisions = stats.get("collision_warnings", [])
+        if collisions:
+            st.warning(f"Collision warnings ({len(collisions)} names map to multiple horses): "
+                        + ", ".join(collisions))
+
+        # --- Unmatched names ---
+        um_sh = stats.get("unmatched_sheets", [])
+        um_bh = stats.get("unmatched_brisnet", [])
+        if um_sh or um_bh:
+            st.subheader("Unmatched Horses (top 20 each)")
+            left, right = st.columns(2)
+            with left:
+                st.caption("Sheets (no BRISNET match)")
+                if um_sh:
+                    for h in um_sh:
+                        st.text(f"{h['name']}  {h['track']} {h['date']}")
+                else:
+                    st.success("All sheets horses matched!")
+            with right:
+                st.caption("BRISNET (no Sheets match)")
+                if um_bh:
+                    for h in um_bh:
+                        st.text(f"{h['name']}  {h['track']} {h['date']}")
+                else:
+                    st.success("All BRISNET horses matched!")
+
     # --- Tracks ---
     tracks = stats.get("tracks", [])
     if tracks:
         st.subheader("Tracks in Database")
         st.write(", ".join(tracks))
 
-    # --- Upload history ---
+    # --- Upload count ---
     uploads_count = stats.get("uploads_count", 0)
     if uploads_count > 0:
         st.subheader(f"Uploads ({uploads_count})")
-        st.caption("Each PDF upload (Sheets or BRISNET) is stored here permanently.")
-        try:
-            # Fetch full upload list from the DB directly via a helper endpoint
-            # For now show the count; full list requires an additional endpoint
-            st.info(f"{uploads_count} PDF uploads in the database across {len(tracks)} tracks.")
-        except Exception:
-            pass
+        st.info(f"{uploads_count} PDF uploads in the database across {len(tracks)} tracks.")
 
     if sh == 0 and bh == 0:
         st.info("Database is empty. Upload PDFs via the Upload page or CLI:\n\n"

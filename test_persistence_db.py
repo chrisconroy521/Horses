@@ -227,7 +227,8 @@ class TestReconciliation:
         result = db.reconcile("u2")
         assert result["new_matches"] >= 1
 
-    def test_no_false_cross_date_match(self, db):
+    def test_cross_date_low_match(self, db):
+        """Same unique name on different dates matches at LOW confidence."""
         db.record_upload("u1", "sheets", "a.pdf", "h1", "GP", "02/26")
         db.record_upload("u2", "brisnet", "b.pdf", "h2", "GP", "02/19")
 
@@ -243,7 +244,9 @@ class TestReconciliation:
         }, {"track": "GP", "race_date": "02/19", "race_number": 1, "restrictions": ""})
 
         result = db.reconcile("")
-        assert result["new_matches"] == 0  # different dates, no match
+        assert result["new_matches"] == 1  # LOW tier: unique name match
+        row = db.conn.execute("SELECT confidence FROM reconciliation LIMIT 1").fetchone()
+        assert row["confidence"] == "low"
 
     def test_reconcile_idempotent(self, db):
         db.record_upload("u1", "sheets", "a.pdf", "h1", "GP", "02/26")
@@ -385,6 +388,77 @@ class TestNormalization:
 
     def test_normalize_date_empty(self, db):
         assert db._normalize_date("") == ""
+
+
+# ==================================================================
+# Extended reconciliation tiers + aliases
+# ==================================================================
+
+class TestReconTiers:
+    """Tests for the 4-tier reconciliation and alias support."""
+
+    def _setup_sheets_horse(self, db, name, race_num=1, post="3", track="GP", date="02/26/2026"):
+        db.record_upload("us1", "sheets", "s.pdf", None, track, date)
+        db.ingest_sheets_horse("us1", {
+            "horse_name": name, "race_number": race_num, "post": post,
+            "age": 3, "lines": [],
+        }, track, date)
+
+    def _setup_brisnet_horse(self, db, name, race_num=1, post=3, track="GP", date="02/26/2026"):
+        db.record_upload("ub1", "brisnet", "b.pdf", None, track, date)
+        db.ingest_brisnet_horse("ub1", {
+            "horse_name": name, "race_number": race_num, "post": post,
+            "runstyle": "E", "sire": "SIRE", "dam": "DAM",
+            "lines": [], "workouts": [],
+        }, {"track": track, "race_date": date, "race_number": race_num, "restrictions": ""})
+
+    def test_high_confidence_post_match(self, db):
+        """Pass 1: exact track+date+race+post should produce HIGH."""
+        self._setup_sheets_horse(db, "ALPHA", race_num=3, post="5")
+        self._setup_brisnet_horse(db, "Alpha", race_num=3, post=5)
+        result = db.reconcile()
+        assert result["new_matches"] >= 1
+        row = db.conn.execute(
+            "SELECT confidence FROM reconciliation LIMIT 1"
+        ).fetchone()
+        assert row["confidence"] == "high"
+
+    def test_alias_resolves_match(self, db):
+        """An alias should let a different Sheets name match a BRISNET name."""
+        self._setup_sheets_horse(db, "FLYIN TIGER", race_num=2, post="0", track="GP", date="02/26/2026")
+        self._setup_brisnet_horse(db, "Flying Tiger", race_num=2, post=0, track="GP", date="02/26/2026")
+        # Without alias, names differ: FLYIN TIGER vs FLYING TIGER
+        r1 = db.reconcile()
+        assert r1["existing"] == 0
+        # Add alias
+        db.add_alias("FLYING TIGER", "FLYIN TIGER")
+        r2 = db.reconcile()
+        assert r2["new_matches"] >= 1
+
+    def test_low_refuses_ambiguous_collision(self, db):
+        """LOW tier should NOT match when a name appears multiple times on one side."""
+        # Two sheets horses with same name but different races (different tracks/dates)
+        db.record_upload("us1", "sheets", "s.pdf", None, "GP", "02/26/2026")
+        db.record_upload("us2", "sheets", "s2.pdf", None, "CD", "03/01/2026")
+        db.ingest_sheets_horse("us1", {
+            "horse_name": "DUPLICATE NAME", "race_number": 1, "post": "1",
+            "age": 3, "lines": [],
+        }, "GP", "02/26/2026")
+        db.ingest_sheets_horse("us2", {
+            "horse_name": "DUPLICATE NAME", "race_number": 1, "post": "1",
+            "age": 3, "lines": [],
+        }, "CD", "03/01/2026")
+        # One brisnet horse with same name, different track entirely
+        db.record_upload("ub1", "brisnet", "b.pdf", None, "SA", "04/01/2026")
+        db.ingest_brisnet_horse("ub1", {
+            "horse_name": "Duplicate Name", "race_number": 1, "post": 1,
+            "runstyle": "E", "sire": "", "dam": "",
+            "lines": [], "workouts": [],
+        }, {"track": "SA", "race_date": "04/01/2026", "race_number": 1, "restrictions": ""})
+
+        result = db.reconcile()
+        # Should NOT match — two sheets horses have the same name, ambiguous
+        assert result["existing"] == 0
 
 
 if __name__ == "__main__":

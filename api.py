@@ -716,6 +716,25 @@ async def db_stats():
     return _db.get_db_stats()
 
 
+@app.post("/db/alias")
+async def add_alias(payload: dict):
+    """Add a horse name alias. Body: {canonical: str, alias: str}"""
+    canonical = payload.get("canonical", "")
+    alias = payload.get("alias", "")
+    if not canonical or not alias:
+        raise HTTPException(status_code=400, detail="Both 'canonical' and 'alias' are required")
+    _db.add_alias(canonical, alias)
+    # Re-run reconciliation to pick up new alias
+    result = _db.reconcile()
+    return {"status": "ok", "canonical": canonical, "alias": alias, "reconciliation": result}
+
+
+@app.get("/db/aliases")
+async def list_aliases():
+    """List all horse name aliases."""
+    return _db.list_aliases()
+
+
 @app.get("/sessions")
 async def list_sessions():
     """List all dual-upload sessions."""

@@ -204,6 +204,13 @@ class Persistence:
             );
             CREATE INDEX IF NOT EXISTS idx_recon_horse ON reconciliation(horse_id);
             CREATE INDEX IF NOT EXISTS idx_recon_brisnet ON reconciliation(brisnet_id);
+
+            CREATE TABLE IF NOT EXISTS horse_aliases (
+                canonical_name TEXT NOT NULL,
+                alias_name     TEXT NOT NULL,
+                PRIMARY KEY (canonical_name, alias_name)
+            );
+            CREATE INDEX IF NOT EXISTS idx_alias_alias ON horse_aliases(alias_name);
             """
         )
         self.conn.commit()
@@ -314,6 +321,34 @@ class Persistence:
         if "4&up" in restr or "4 & up" in restr:
             return 4
         return 0
+
+    def resolve_alias(self, normalized_name: str) -> str:
+        """If normalized_name is a known alias, return canonical; else return as-is."""
+        row = self.conn.execute(
+            "SELECT canonical_name FROM horse_aliases WHERE alias_name = ?",
+            (normalized_name,),
+        ).fetchone()
+        return row[0] if row else normalized_name
+
+    def add_alias(self, canonical: str, alias: str) -> bool:
+        """Add a horse alias mapping. Returns True if inserted, False if exists."""
+        canon_norm = self._normalize_name(canonical)
+        alias_norm = self._normalize_name(alias)
+        try:
+            self.conn.execute(
+                "INSERT OR IGNORE INTO horse_aliases(canonical_name, alias_name) VALUES(?, ?)",
+                (canon_norm, alias_norm),
+            )
+            self.conn.commit()
+            return self.conn.total_changes > 0
+        except sqlite3.IntegrityError:
+            return False
+
+    def list_aliases(self) -> List[Dict[str, str]]:
+        rows = self.conn.execute(
+            "SELECT canonical_name, alias_name FROM horse_aliases ORDER BY canonical_name"
+        ).fetchall()
+        return [{"canonical_name": r[0], "alias_name": r[1]} for r in rows]
 
     def _prepare_session_row(self, row: sqlite3.Row | None) -> Optional[Dict[str, Any]]:
         if row is None:
@@ -797,15 +832,37 @@ class Persistence:
     # ==================================================================
 
     def reconcile(self, upload_id: str = "") -> Dict[str, int]:
-        """Match sheets horses <-> brisnet horses.
+        """Match sheets horses <-> brisnet horses across 4 tiers.
 
-        Pass 1: (track, race_date, race_number, post) -> 'high'
-        Pass 2: (normalized_name, track, race_date) -> 'medium'
+        HIGH:
+          1) (track, race_date, race_number, post) exact
+          2) (track, race_date, race_number, normalized_name) when post missing
+        MED:
+          3) (normalized_name, track, race_date)
+        LOW:
+          4) normalized_name only — but only if unique on both sides
+        Aliases are resolved before name matching in tiers 2-4.
         """
         now = datetime.utcnow().isoformat()
         new_matches = 0
 
-        # Pass 1: High confidence — track + date + race_number + post
+        # --- Build alias lookup (alias -> canonical) ---
+        alias_rows = self.conn.execute(
+            "SELECT canonical_name, alias_name FROM horse_aliases"
+        ).fetchall()
+        alias_map: Dict[str, str] = {r[1]: r[0] for r in alias_rows}
+
+        # Apply aliases: update normalized_name in-memory for matching.
+        # We use a temp table approach: create a view-like mapping.
+        # Simpler: just do the alias resolution in SQL via COALESCE + LEFT JOIN.
+
+        # Helper: already-reconciled sheets horse_ids
+        def _reconciled_sheets_ids() -> set:
+            return {r[0] for r in self.conn.execute(
+                "SELECT DISTINCT horse_id FROM reconciliation"
+            ).fetchall()}
+
+        # --- Pass 1: HIGH — track + date + race + post (exact) ---
         rows = self.conn.execute(
             """
             SELECT sh.horse_id, bh.brisnet_id
@@ -819,32 +876,29 @@ class Persistence:
                 AND sh.post != '' AND sh.post != '0'
                 AND NOT EXISTS (
                     SELECT 1 FROM reconciliation r
-                    WHERE r.horse_id = sh.horse_id AND r.brisnet_id = bh.brisnet_id
+                    WHERE r.horse_id = sh.horse_id
                 )
             """
         ).fetchall()
 
         for row in rows:
             self.conn.execute(
-                """
-                INSERT OR IGNORE INTO reconciliation
-                    (horse_id, brisnet_id, match_method, confidence, created_at)
-                VALUES (?, ?, 'track_date_race_post', 'high', ?)
-                """,
+                """INSERT OR IGNORE INTO reconciliation
+                   (horse_id, brisnet_id, match_method, confidence, created_at)
+                   VALUES (?, ?, 'track_date_race_post', 'high', ?)""",
                 (row["horse_id"], row["brisnet_id"], now),
             )
             new_matches += 1
 
-        # Pass 2: Medium confidence — normalized_name + track + race_date
-        # Only for sheets horses not yet reconciled
+        # --- Pass 2: HIGH — track + date + race + name (post missing) ---
         rows2 = self.conn.execute(
             """
-            SELECT sh.horse_id, bh.brisnet_id
+            SELECT sh.horse_id, sh.normalized_name, bh.brisnet_id, bh.normalized_name AS bn
             FROM sheets_horses sh
             JOIN brisnet_horses bh
-                ON sh.normalized_name = bh.normalized_name
-                AND sh.track = bh.track
+                ON sh.track = bh.track
                 AND sh.race_date = bh.race_date
+                AND sh.race_number = bh.race_number
             WHERE sh.track != '' AND sh.race_date != ''
                 AND NOT EXISTS (
                     SELECT 1 FROM reconciliation r
@@ -854,15 +908,83 @@ class Persistence:
         ).fetchall()
 
         for row in rows2:
-            self.conn.execute(
-                """
-                INSERT OR IGNORE INTO reconciliation
-                    (horse_id, brisnet_id, match_method, confidence, created_at)
-                VALUES (?, ?, 'normalized_name_track_date', 'medium', ?)
-                """,
-                (row["horse_id"], row["brisnet_id"], now),
-            )
-            new_matches += 1
+            sh_name = alias_map.get(row["normalized_name"], row["normalized_name"])
+            bh_name = alias_map.get(row["bn"], row["bn"])
+            if sh_name == bh_name:
+                self.conn.execute(
+                    """INSERT OR IGNORE INTO reconciliation
+                       (horse_id, brisnet_id, match_method, confidence, created_at)
+                       VALUES (?, ?, 'track_date_race_name', 'high', ?)""",
+                    (row["horse_id"], row["brisnet_id"], now),
+                )
+                new_matches += 1
+
+        # --- Pass 3: MED — normalized_name + track + date ---
+        rows3 = self.conn.execute(
+            """
+            SELECT sh.horse_id, sh.normalized_name, bh.brisnet_id, bh.normalized_name AS bn
+            FROM sheets_horses sh
+            JOIN brisnet_horses bh
+                ON sh.track = bh.track
+                AND sh.race_date = bh.race_date
+            WHERE sh.track != '' AND sh.race_date != ''
+                AND NOT EXISTS (
+                    SELECT 1 FROM reconciliation r
+                    WHERE r.horse_id = sh.horse_id
+                )
+            """
+        ).fetchall()
+
+        for row in rows3:
+            sh_name = alias_map.get(row["normalized_name"], row["normalized_name"])
+            bh_name = alias_map.get(row["bn"], row["bn"])
+            if sh_name == bh_name:
+                self.conn.execute(
+                    """INSERT OR IGNORE INTO reconciliation
+                       (horse_id, brisnet_id, match_method, confidence, created_at)
+                       VALUES (?, ?, 'name_track_date', 'medium', ?)""",
+                    (row["horse_id"], row["brisnet_id"], now),
+                )
+                new_matches += 1
+
+        # --- Pass 4: LOW — normalized_name only, unique on both sides ---
+        reconciled_sh = _reconciled_sheets_ids()
+        reconciled_bh = {r[0] for r in self.conn.execute(
+            "SELECT DISTINCT brisnet_id FROM reconciliation"
+        ).fetchall()}
+
+        # Sheets horses not yet reconciled, grouped by resolved name
+        unmatched_sh = self.conn.execute(
+            "SELECT horse_id, normalized_name FROM sheets_horses"
+        ).fetchall()
+        sh_by_name: Dict[str, List[int]] = {}
+        for r in unmatched_sh:
+            if r["horse_id"] in reconciled_sh:
+                continue
+            resolved = alias_map.get(r["normalized_name"], r["normalized_name"])
+            sh_by_name.setdefault(resolved, []).append(r["horse_id"])
+
+        # BRISNET horses not yet reconciled, grouped by resolved name
+        unmatched_bh = self.conn.execute(
+            "SELECT brisnet_id, normalized_name FROM brisnet_horses"
+        ).fetchall()
+        bh_by_name: Dict[str, List[int]] = {}
+        for r in unmatched_bh:
+            if r["brisnet_id"] in reconciled_bh:
+                continue
+            resolved = alias_map.get(r["normalized_name"], r["normalized_name"])
+            bh_by_name.setdefault(resolved, []).append(r["brisnet_id"])
+
+        # Only match when BOTH sides have exactly 1 horse for that name
+        for name, sh_ids in sh_by_name.items():
+            if len(sh_ids) == 1 and name in bh_by_name and len(bh_by_name[name]) == 1:
+                self.conn.execute(
+                    """INSERT OR IGNORE INTO reconciliation
+                       (horse_id, brisnet_id, match_method, confidence, created_at)
+                       VALUES (?, ?, 'name_only_unique', 'low', ?)""",
+                    (sh_ids[0], bh_by_name[name][0], now),
+                )
+                new_matches += 1
 
         self.conn.commit()
 
@@ -1040,6 +1162,58 @@ class Persistence:
         if sh > 0:
             coverage_pct = (rp / sh) * 100
 
+        # Confidence breakdown
+        conf_rows = self.conn.execute(
+            "SELECT confidence, COUNT(*) as cnt FROM reconciliation GROUP BY confidence"
+        ).fetchall()
+        confidence_breakdown = {r["confidence"]: r["cnt"] for r in conf_rows}
+
+        # Unmatched sheets names (top 20)
+        unmatched_sheets = self.conn.execute(
+            """
+            SELECT sh.normalized_name, sh.track, sh.race_date
+            FROM sheets_horses sh
+            WHERE NOT EXISTS (
+                SELECT 1 FROM reconciliation r WHERE r.horse_id = sh.horse_id
+            )
+            ORDER BY sh.normalized_name
+            LIMIT 20
+            """
+        ).fetchall()
+        unmatched_sheets_list = [
+            {"name": r["normalized_name"], "track": r["track"], "date": r["race_date"]}
+            for r in unmatched_sheets
+        ]
+
+        # Unmatched brisnet names (top 20)
+        unmatched_brisnet = self.conn.execute(
+            """
+            SELECT bh.normalized_name, bh.track, bh.race_date
+            FROM brisnet_horses bh
+            WHERE NOT EXISTS (
+                SELECT 1 FROM reconciliation r WHERE r.brisnet_id = bh.brisnet_id
+            )
+            ORDER BY bh.normalized_name
+            LIMIT 20
+            """
+        ).fetchall()
+        unmatched_brisnet_list = [
+            {"name": r["normalized_name"], "track": r["track"], "date": r["race_date"]}
+            for r in unmatched_brisnet
+        ]
+
+        # Collision warnings: same normalized_name mapping to multiple reconciliation rows
+        collisions = self.conn.execute(
+            """
+            SELECT sh.normalized_name, COUNT(DISTINCT r.brisnet_id) as cnt
+            FROM reconciliation r
+            JOIN sheets_horses sh ON r.horse_id = sh.horse_id
+            GROUP BY sh.normalized_name
+            HAVING cnt > 1
+            """
+        ).fetchall()
+        collision_warnings = [r["normalized_name"] for r in collisions]
+
         return {
             "sheets_horses": sh,
             "sheets_lines": sl,
@@ -1049,4 +1223,8 @@ class Persistence:
             "uploads_count": up,
             "tracks": tracks,
             "coverage_pct": round(coverage_pct, 1),
+            "confidence_breakdown": confidence_breakdown,
+            "unmatched_sheets": unmatched_sheets_list,
+            "unmatched_brisnet": unmatched_brisnet_list,
+            "collision_warnings": collision_warnings,
         }

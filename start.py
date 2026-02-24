@@ -89,7 +89,7 @@ class ServerLauncher:
         try:
             # Start the frontend server
             self.frontend_process = subprocess.Popen(
-                [sys.executable, "-m", "streamlit", "run", "streamlit_app.py", "--server.port", "8501"],
+                [sys.executable, "-m", "streamlit", "run", "streamlit_app.py", "--server.port", "8502"],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
@@ -103,7 +103,7 @@ class ServerLauncher:
             # Check if server started successfully
             if self.frontend_process.poll() is None:
                 print("✅ Frontend server started successfully")
-                print("   Web interface available at: http://localhost:8501")
+                print("   Web interface available at: http://localhost:8502")
                 return True
             else:
                 stdout, stderr = self.frontend_process.communicate()
@@ -185,7 +185,7 @@ class ServerLauncher:
         print("\n" + "=" * 50)
         print("🎯 Both servers are running!")
         print("\n📱 Access your application:")
-        print("   Frontend: http://localhost:8501")
+        print("   Frontend: http://localhost:8502")
         print("   Backend API: http://localhost:8000")
         print("   API Docs: http://localhost:8000/docs")
         print("\n🛑 Press Ctrl+C to stop both servers")

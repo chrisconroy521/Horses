@@ -47,7 +47,7 @@ timeout /t 3 /nobreak >nul
 
 REM Start frontend server in background
 echo Starting Streamlit frontend server...
-start "Frontend Server" cmd /k "streamlit run streamlit_app.py --server.port 8501"
+start "Frontend Server" cmd /k "streamlit run streamlit_app.py --server.port 8502"
 
 REM Wait a moment for frontend to start
 timeout /t 5 /nobreak >nul
@@ -57,7 +57,7 @@ echo ============================================
 echo 🎯 Both servers are starting!
 echo.
 echo 📱 Access your application:
-echo    Frontend: http://localhost:8501
+echo    Frontend: http://localhost:8502
 echo    Backend API: http://localhost:8000
 echo    API Docs: http://localhost:8000/docs
 echo.
@@ -67,7 +67,7 @@ echo.
 
 REM Open the frontend in default browser
 echo 🌐 Opening web interface in browser...
-start http://localhost:8501
+start http://localhost:8502
 
 echo.
 echo ✅ Servers launched successfully!
