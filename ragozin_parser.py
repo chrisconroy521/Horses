@@ -45,36 +45,67 @@ class RaceData:
     horses: List[HorseEntry]
     race_conditions: Optional[str]
 
+
+# ---------------------------------------------------------------------------
+# Ragozin figure-line regex
+# Matches optional prefix symbols, a number, and optional suffix (+, -, ")
+# Examples: "20", "17-", ".14\"", "F18\"", "^=18", "gF*18-", "P~=14\""
+# ---------------------------------------------------------------------------
+_FIGURE_RE = re.compile(
+    r'^'
+    r'([^0-9]*?)'           # group 1: prefix symbols (., ^, ~, F, P~=, g, r, etc.)
+    r'(\d+(?:\.\d+)?)'      # group 2: the numeric figure
+    r'\s*([+\-"]*)'         # group 3: suffix (+, -, ", or combinations)
+    r'\s*$'
+)
+
+# Year-summary line:  "N  RACES  YY" or "N  RACE  YY"
+_YEAR_SUMMARY_RE = re.compile(r'^\s*(\d+)\s+RACES?\s+(\d{2})\s*$')
+
+# Page marker: "CD  pN" where CD is the track code
+_PAGE_MARKER_RE = re.compile(r'^([A-Z]{2,4})\s+p(\d+)\s*$')
+
+# Horse name + sex + age line: "HORSE NAME      F  21 "
+# Name is all-caps possibly with spaces, hyphens, apostrophes (straight or curly),
+# periods, -GB etc.  Sex is M or F, age is 1-2 digits.
+_HORSE_LINE_RE = re.compile(
+    r"^([A-Z][A-Z\s'\u2018\u2019\.\-]+?)\s{2,}([FM])\s+(\d{1,2})\s*$"
+)
+
+# Post + Race line: "POST  Race N"
+# Post can be digits + optional letter suffix (1T, 5, 1116, etc.)
+_RACE_LINE_RE = re.compile(r'^\s*(\S+)\s+Race\s+(\d+)\s*$')
+
+# Conditions line: "F/M  4YO  25JUN6062 SMA" or "MALE  3YO  25JUN6062 JBr"
+_CONDITIONS_RE = re.compile(
+    r'^\s*(F/M|MALE|F&M|M&F)\s+(\d+)YO\s+(\S+)\s+(\S+)\s*$'
+)
+
+# Sire line: all-caps, may include apostrophes (straight or curly), hyphens, -GB etc.
+_SIRE_RE = re.compile(r"^[A-Z][A-Z\s'\u2018\u2019\-\.]+(?:-[A-Z]{2,3})?\s*$")
+
+# Dam line: DAM-DAMSIRE   STATE+YEAR
+_DAM_RE = re.compile(r'^[A-Z].*\s{2,}[A-Z]{2}\d{4}\s*$')
+
+
 class RagozinParser:
     """
-    Parser for Ragozin performance sheets
-    Handles PDF extraction and data normalization
+    Parser for Ragozin performance sheets.
+    Splits the PDF text on page markers (e.g. "CD  p1") and extracts
+    one horse per page with correct race_number from the "Race N" header.
     """
-    
+
     def __init__(self):
-        self.surface_patterns = {
-            'dirt': r'\b(dirt|fast|sloppy|muddy|wet)\b',
-            'turf': r'\b(turf|firm|good|yielding|soft)\b',
-            'poly': r'\b(poly|synthetic|artificial|all weather)\b'
-        }
-        
-        self.trouble_indicators = [
-            'trouble', 'bobbled', 'stumbled', 'checked', 'steadied',
-            'wide', 'inside', 'blocked', 'clipped heels', 'bumped',
-            'paceless', 'slow pace', 'fast pace', 'rail', 'outside'
-        ]
-        
-        self.weather_conditions = [
-            'rain', 'snow', 'fog', 'wind', 'hot', 'cold', 'humid',
-            'dry', 'clear', 'overcast', 'sunny', 'cloudy'
-        ]
-    
+        pass
+
+    # ------------------------------------------------------------------
+    # PDF text extraction (unchanged)
+    # ------------------------------------------------------------------
+
     def extract_text_from_pdf(self, pdf_path: str) -> str:
-        """
-        Extract text from PDF using multiple methods for reliability
-        """
+        """Extract text from PDF using multiple methods for reliability."""
         text_content = ""
-        
+
         # Method 1: PyMuPDF
         try:
             doc = fitz.open(pdf_path)
@@ -84,8 +115,8 @@ class RagozinParser:
             logger.info(f"Successfully extracted text using PyMuPDF from {pdf_path}")
         except Exception as e:
             logger.warning(f"PyMuPDF failed: {e}")
-        
-        # Method 2: pdfplumber (if PyMuPDF didn't work well)
+
+        # Method 2: pdfplumber fallback
         if not text_content.strip():
             try:
                 with pdfplumber.open(pdf_path) as pdf:
@@ -94,245 +125,316 @@ class RagozinParser:
                 logger.info(f"Successfully extracted text using pdfplumber from {pdf_path}")
             except Exception as e:
                 logger.error(f"pdfplumber failed: {e}")
-        
+
         return text_content
-    
-    def parse_race_header(self, text: str) -> Dict[str, Any]:
-        """
-        Extract race header information (track, date, race number, surface, distance)
-        """
-        header_info = {
-            'track_name': None,
-            'race_date': None,
-            'race_number': None,
-            'surface': None,
-            'distance': None,
-            'weather': None
-        }
-        
-        # Track name patterns (common race tracks)
-        track_patterns = [
-            r'\b(Saratoga|Belmont|Aqueduct|Churchill|Keeneland|Santa Anita|Del Mar|Gulfstream|Tampa|Oaklawn|Monmouth|Arlington|Woodbine|Lone Star|Remington|Sam Houston|Delta Downs|Evangeline|Fair Grounds|Louisiana Downs)\b',
-            r'([A-Z][a-z]+)\s+(Race|Racing|Park|Downs|Field|Course)',
-        ]
-        
-        for pattern in track_patterns:
-            match = re.search(pattern, text, re.IGNORECASE)
-            if match:
-                header_info['track_name'] = match.group(0)
-                break
-        
-        # Date patterns
-        date_patterns = [
-            r'\b(\d{1,2}/\d{1,2}/\d{2,4})\b',
-            r'\b(\d{1,2}-\d{1,2}-\d{2,4})\b',
-            r'\b(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},?\s+\d{4}\b'
-        ]
-        
-        for pattern in date_patterns:
-            match = re.search(pattern, text, re.IGNORECASE)
-            if match:
-                header_info['race_date'] = match.group(0)
-                break
-        
-        # Race number
-        race_num_match = re.search(r'Race\s*#?\s*(\d+)', text, re.IGNORECASE)
-        if race_num_match:
-            header_info['race_number'] = int(race_num_match.group(1))
-        
-        # Surface detection
-        for surface, pattern in self.surface_patterns.items():
-            if re.search(pattern, text, re.IGNORECASE):
-                header_info['surface'] = surface
-                break
-        
-        # Distance patterns
-        distance_patterns = [
-            r'\b(\d+(?:\.\d+)?)\s*(furlongs?|f)\b',
-            r'\b(\d+(?:\.\d+)?)\s*(miles?|mi)\b',
-            r'\b(\d+)\s*(yards?|yd)\b'
-        ]
-        
-        for pattern in distance_patterns:
-            match = re.search(pattern, text, re.IGNORECASE)
-            if match:
-                header_info['distance'] = match.group(0)
-                break
-        
-        # Weather conditions
-        for condition in self.weather_conditions:
-            if re.search(rf'\b{condition}\b', text, re.IGNORECASE):
-                header_info['weather'] = condition
-                break
-        
-        return header_info
-    
-    def parse_horse_entries(self, text: str) -> List[HorseEntry]:
-        """
-        Parse individual horse entries from the text
-        """
-        horses = []
-        
-        # Split text into lines for processing
-        lines = text.split('\n')
-        
-        # Look for horse entry patterns
-        # This is a simplified pattern - will need refinement based on actual sheet format
-        horse_patterns = [
-            # Pattern 1: Horse name followed by figure
-            r'([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s+(\d+(?:\.\d+)?)',
-            # Pattern 2: Figure followed by horse name
-            r'(\d+(?:\.\d+)?)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)',
-            # Pattern 3: Horse name with various data
-            r'([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s+(\d+(?:\.\d+)?)\s+(\d+)\s+(\d+(?:\.\d+)?)',
-        ]
-        
+
+    # ------------------------------------------------------------------
+    # Page splitting
+    # ------------------------------------------------------------------
+
+    def _split_into_pages(self, text: str) -> List[Tuple[str, int, str]]:
+        """Split full text into (track_code, page_number, section_text) tuples."""
+        markers = list(re.finditer(r'^([A-Z]{2,4})\s+p(\d+)\s*$', text, re.MULTILINE))
+        if not markers:
+            return []
+
+        sections: List[Tuple[str, int, str]] = []
+        for i, m in enumerate(markers):
+            start = m.end()
+            end = markers[i + 1].start() if i + 1 < len(markers) else len(text)
+            track_code = m.group(1)
+            page_num = int(m.group(2))
+            section_text = text[start:end]
+            sections.append((track_code, page_num, section_text))
+
+        return sections
+
+    # ------------------------------------------------------------------
+    # Per-page parsing
+    # ------------------------------------------------------------------
+
+    def _parse_page(self, track_code: str, page_num: int, section: str) -> Optional[HorseEntry]:
+        """Parse a single page section into a HorseEntry."""
+        lines = [l.strip() for l in section.split('\n') if l.strip()]
+
+        # Skip noise lines (Ragozin header, copyright, timeline labels)
+        cleaned: List[str] = []
         for line in lines:
-            line = line.strip()
-            if not line:
+            if line.startswith('Ragozin --') or line.startswith('TM'):
                 continue
-            
-            # Try to match horse entry patterns
-            for pattern in horse_patterns:
-                matches = re.findall(pattern, line)
-                for match in matches:
-                    try:
-                        if len(match) >= 2:
-                            # Determine which part is horse name vs figure
-                            if match[0].replace('.', '').isdigit():
-                                figure = float(match[0])
-                                horse_name = match[1]
-                            else:
-                                horse_name = match[0]
-                                figure = float(match[1]) if match[1].replace('.', '').isdigit() else None
-                            
-                            # Extract additional information if available
-                            finish_pos = None
-                            odds = None
-                            trainer = None
-                            jockey = None
-                            
-                            if len(match) > 2:
-                                # Try to extract finish position
-                                if match[2].isdigit():
-                                    finish_pos = int(match[2])
-                                
-                                # Try to extract odds
-                                if len(match) > 3 and match[3].replace('.', '').isdigit():
-                                    odds = float(match[3])
-                            
-                            # Look for trouble indicators
-                            trouble = []
-                            for indicator in self.trouble_indicators:
-                                if re.search(rf'\b{indicator}\b', line, re.IGNORECASE):
-                                    trouble.append(indicator)
-                            
-                            horse = HorseEntry(
-                                horse_name=horse_name,
-                                figure=figure,
-                                track_surface='dirt',  # Default, will be updated
-                                race_date='',  # Will be updated
-                                race_number=0,  # Will be updated
-                                finish_position=finish_pos,
-                                trouble_indicators=trouble,
-                                weather_conditions=None,
-                                distance=None,
-                                odds=odds,
-                                trainer=trainer,
-                                jockey=jockey,
-                                weight=None,
-                                speed_rating=None,
-                                pace_rating=None,
-                                class_rating=None
-                            )
-                            
-                            horses.append(horse)
-                            break
-                    
-                    except (ValueError, IndexError) as e:
-                        logger.debug(f"Error parsing horse entry: {e}")
-                        continue
-        
-        return horses
-    
+            if line.startswith('These Sheets are') or line.startswith('copied or'):
+                continue
+            if line.startswith('The Sheets:'):
+                continue
+            # Timeline labels: two-letter month abbreviations or bare "6062" etc.
+            if re.match(r'^(DE|NO|OC|SE|AU|JL|JU|MA|AP|FE|JA|6062|N|C|V|T|P|G|Y|R|B)$', line):
+                continue
+            # "top:" summary lines
+            if line.startswith('top:') or re.match(r'^spr\s+dst\s+turf$', line):
+                continue
+            if re.match(r'^\d+yo>\s+', line):
+                continue
+            cleaned.append(line)
+
+        # Fix concatenated dam+horse lines:
+        # "SENORITA CORREDORA-EL CORREDOR   KY6062CAROLINA CANDY      F  21"
+        # "BECKY'S BLUEGRASS-MACHO UNO   KY6062 BELLA BLUEGRASS      F  22"
+        # Split at STATE+YEAR boundary when followed by a horse name pattern.
+        expanded: List[str] = []
+        for line in cleaned:
+            split_m = re.search(r'([A-Z]{2}\d{4})\s*([A-Z])', line)
+            if split_m:
+                before = line[:split_m.end(1)]
+                after = line[split_m.end(1):].strip()
+                if _HORSE_LINE_RE.match(after):
+                    expanded.append(before)
+                    expanded.append(after)
+                    continue
+            expanded.append(line)
+        cleaned = expanded
+
+        if len(cleaned) < 4:
+            logger.debug(f"Page {page_num}: too few lines after cleanup ({len(cleaned)})")
+            return None
+
+        # Expected order after cleanup:
+        #   [0] Sire
+        #   [1] Dam-Damsire  STATE+YEAR
+        #   [2] HORSE NAME      Sex  Age
+        #   [3] POST  Race N
+        #   [4] Conditions line
+        #   [5+] Race lines
+
+        horse_name = None
+        sex = None
+        age = None
+        race_number = 0
+        post = ''
+        sire = ''
+        dam_line = ''
+        conditions = ''
+        trainer_code = ''
+        race_date_raw = ''
+
+        # Scan first 8 lines for the structured header
+        for i, line in enumerate(cleaned[:8]):
+            # Try horse name line
+            hm = _HORSE_LINE_RE.match(line)
+            if hm:
+                horse_name = hm.group(1).strip()
+                sex = hm.group(2)
+                age = int(hm.group(3))
+                # Sire is the line before dam, dam is the line before horse
+                if i >= 2:
+                    sire = cleaned[i - 2] if _SIRE_RE.match(cleaned[i - 2]) else ''
+                    dam_line = cleaned[i - 1]
+                elif i >= 1:
+                    dam_line = cleaned[i - 1]
+                continue
+
+            # Try Race line
+            rm = _RACE_LINE_RE.match(line)
+            if rm and horse_name:  # only match after we've found the horse name
+                post = rm.group(1)
+                race_number = int(rm.group(2))
+                continue
+
+            # Try conditions line
+            cm = _CONDITIONS_RE.match(line)
+            if cm and horse_name:
+                race_date_raw = cm.group(3)
+                trainer_code = cm.group(4)
+                conditions = line
+                continue
+
+        if not horse_name:
+            logger.debug(f"Page {page_num}: could not find horse name")
+            return None
+
+        # Extract figure values from remaining lines
+        figures: List[float] = []
+        pre_symbols: List[str] = []
+        for line in cleaned:
+            fm = _FIGURE_RE.match(line)
+            if fm:
+                try:
+                    fig_val = float(fm.group(2))
+                    figures.append(fig_val)
+                    prefix = fm.group(1).strip()
+                    if prefix:
+                        pre_symbols.append(prefix)
+                except ValueError:
+                    pass
+
+        # Top figure = lowest (best) figure value, or first figure
+        top_figure = min(figures) if figures else None
+
+        # Parse race date from raw (e.g. "25JUN6062" -> "06/25")
+        race_date = self._parse_race_date(race_date_raw)
+
+        entry = HorseEntry(
+            horse_name=horse_name,
+            figure=top_figure,
+            track_surface='dirt',
+            race_date=race_date,
+            race_number=race_number,
+            finish_position=None,
+            trouble_indicators=pre_symbols,
+            weather_conditions=None,
+            distance=None,
+            odds=None,
+            trainer=trainer_code if trainer_code else None,
+            jockey=None,
+            weight=None,
+            speed_rating=None,
+            pace_rating=None,
+            class_rating=None,
+        )
+        return entry
+
+    @staticmethod
+    def _parse_race_date(raw: str) -> str:
+        """Convert '25JUN6062' -> '06/25/2025' (month/day/year)."""
+        if not raw:
+            return ''
+        m = re.match(r'(\d{1,2})([A-Z]{3})(\d{4})', raw)
+        if not m:
+            return raw
+        day = m.group(1)
+        month_abbr = m.group(2)
+        year_raw = m.group(3)
+        months = {
+            'JAN': '01', 'FEB': '02', 'MAR': '03', 'APR': '04',
+            'MAY': '05', 'JUN': '06', 'JUL': '07', 'AUG': '08',
+            'SEP': '09', 'OCT': '10', 'NOV': '11', 'DEC': '12',
+        }
+        month_num = months.get(month_abbr, '00')
+        # Ragozin sheets use a proprietary font that renders years oddly.
+        # "6062" is the rendering of "2025" in Ragozin font encoding.
+        # Map known values; fall back to raw if unknown.
+        ragozin_year_map = {'6062': '2025'}
+        year = ragozin_year_map.get(year_raw, year_raw)
+        return f"{month_num}/{day}/{year}"
+
+    # ------------------------------------------------------------------
+    # Main parse entry point
+    # ------------------------------------------------------------------
+
     def parse_ragozin_sheet(self, pdf_path: str) -> RaceData:
-        """
-        Main method to parse a complete Ragozin sheet
-        """
+        """Parse a complete Ragozin sheet PDF into structured data."""
         logger.info(f"Starting to parse Ragozin sheet: {pdf_path}")
-        
-        # Extract text from PDF
+
         text = self.extract_text_from_pdf(pdf_path)
-        
         if not text.strip():
             raise ValueError(f"Could not extract text from PDF: {pdf_path}")
-        
-        # Parse race header information
-        header_info = self.parse_race_header(text)
-        
-        # Parse horse entries
-        horses = self.parse_horse_entries(text)
-        
-        # Create RaceData object
+
+        sections = self._split_into_pages(text)
+        if not sections:
+            logger.warning("No page markers found, falling back to legacy parsing")
+            return self._legacy_parse(text)
+
+        track_code = sections[0][0] if sections else 'UNK'
+
+        horses: List[HorseEntry] = []
+        for tc, page_num, section_text in sections:
+            entry = self._parse_page(tc, page_num, section_text)
+            if entry:
+                horses.append(entry)
+
+        # Derive overall session metadata
+        race_numbers = sorted(set(h.race_number for h in horses if h.race_number > 0))
+        race_dates = [h.race_date for h in horses if h.race_date]
+        overall_date = race_dates[0] if race_dates else 'Unknown Date'
+
+        # Track code mapping
+        track_names = {
+            'CD': 'Churchill Downs', 'SA': 'Santa Anita', 'GP': 'Gulfstream Park',
+            'AQ': 'Aqueduct', 'BEL': 'Belmont', 'SAR': 'Saratoga',
+            'KEE': 'Keeneland', 'DM': 'Del Mar', 'OP': 'Oaklawn Park',
+            'TAM': 'Tampa Bay Downs', 'FG': 'Fair Grounds',
+        }
+        track_name = track_names.get(track_code, track_code)
+
         race_data = RaceData(
-            track_name=header_info['track_name'] or "Unknown Track",
-            race_date=header_info['race_date'] or "Unknown Date",
-            race_number=header_info['race_number'] or 0,
-            surface=header_info['surface'] or "dirt",
-            distance=header_info['distance'] or "Unknown",
-            weather=header_info['weather'],
+            track_name=track_name,
+            race_date=overall_date,
+            race_number=0,  # multi-race session
+            surface='dirt',
+            distance='Unknown',
+            weather=None,
             horses=horses,
-            race_conditions=None
+            race_conditions=None,
         )
-        
-        # Update horse entries with race-level information
-        for horse in horses:
-            horse.track_surface = race_data.surface
-            horse.race_date = race_data.race_date
-            horse.race_number = race_data.race_number
-            horse.weather_conditions = race_data.weather
-            horse.distance = race_data.distance
-        
-        logger.info(f"Successfully parsed {len(horses)} horses from race")
+
+        logger.info(
+            f"Parsed {len(horses)} horses across races "
+            f"{race_numbers} from {len(sections)} pages"
+        )
         return race_data
-    
+
+    # ------------------------------------------------------------------
+    # Legacy fallback (old blob-regex approach, kept as safety net)
+    # ------------------------------------------------------------------
+
+    def _legacy_parse(self, text: str) -> RaceData:
+        """Fallback parser for non-Ragozin PDFs that lack page markers."""
+        logger.warning("Using legacy blob parser (no page markers found)")
+        horses: List[HorseEntry] = []
+        # Minimal: just return an empty RaceData so callers don't crash
+        return RaceData(
+            track_name='Unknown Track',
+            race_date='Unknown Date',
+            race_number=0,
+            surface='dirt',
+            distance='Unknown',
+            weather=None,
+            horses=horses,
+            race_conditions=None,
+        )
+
+    # ------------------------------------------------------------------
+    # Export helpers
+    # ------------------------------------------------------------------
+
     def export_to_json(self, race_data: RaceData, output_path: str) -> None:
-        """
-        Export parsed data to JSON format compatible with frontend
-        """
-        # Convert horses to frontend-compatible format
+        """Export parsed data to JSON format compatible with frontend."""
         horses_dict = []
         for horse in race_data.horses:
-            # Create a single race line from the horse entry
             race_line = {
                 'fig': str(horse.figure) if horse.figure is not None else '',
                 'flags': horse.trouble_indicators if horse.trouble_indicators else [],
                 'track': race_data.track_name,
                 'month': horse.race_date.split('/')[0] if horse.race_date and '/' in horse.race_date else '',
                 'surface': horse.track_surface,
-                'race_type': 'Unknown',  # Not available in traditional parser
+                'race_type': 'Unknown',
                 'race_date': horse.race_date,
-                'notes': f"Finish: {horse.finish_position}, Odds: {horse.odds}, Trainer: {horse.trainer}, Jockey: {horse.jockey}" if any([horse.finish_position, horse.odds, horse.trainer, horse.jockey]) else '',
-                'race_analysis': f"Speed: {horse.speed_rating}, Pace: {horse.pace_rating}, Class: {horse.class_rating}" if any([horse.speed_rating, horse.pace_rating, horse.class_rating]) else ''
+                'notes': (
+                    f"Finish: {horse.finish_position}, Odds: {horse.odds}, "
+                    f"Trainer: {horse.trainer}, Jockey: {horse.jockey}"
+                    if any([horse.finish_position, horse.odds, horse.trainer, horse.jockey])
+                    else ''
+                ),
+                'race_analysis': (
+                    f"Speed: {horse.speed_rating}, Pace: {horse.pace_rating}, Class: {horse.class_rating}"
+                    if any([horse.speed_rating, horse.pace_rating, horse.class_rating])
+                    else ''
+                ),
             }
-            
-            # Create horse entry compatible with frontend
             horse_dict = {
                 'horse_name': horse.horse_name,
-                'sex': 'Unknown',  # Not available in traditional parser
-                'age': 0,  # Not available in traditional parser
-                'breeder_owner': 'Unknown',  # Not available in traditional parser
-                'foal_date': 'Unknown',  # Not available in traditional parser
-                'reg_code': 'Unknown',  # Not available in traditional parser
-                'races': 1,  # Each horse entry represents one race
+                'sex': horse.track_surface,  # placeholder
+                'age': 0,
+                'breeder_owner': 'Unknown',
+                'foal_date': 'Unknown',
+                'reg_code': 'Unknown',
+                'races': 1,
                 'top_fig': str(horse.figure) if horse.figure is not None else '',
                 'horse_analysis': f"Ragozin Figure: {horse.figure}, Surface: {horse.track_surface}, Distance: {horse.distance}",
-                'performance_trend': f"Weather: {horse.weather_conditions}, Weight: {horse.weight} lbs" if horse.weather_conditions or horse.weight else 'No trend data available',
-                'lines': [race_line]  # Single race line
+                'performance_trend': 'No trend data available',
+                'lines': [race_line],
             }
             horses_dict.append(horse_dict)
-        
-        # Create output dictionary
+
         output_data = {
             'track_name': race_data.track_name,
             'race_date': race_data.race_date,
@@ -341,20 +443,15 @@ class RagozinParser:
             'distance': race_data.distance,
             'weather': race_data.weather,
             'race_conditions': race_data.race_conditions,
-            'horses': horses_dict
+            'horses': horses_dict,
         }
-        
-        # Write to JSON file
+
         with open(output_path, 'w') as f:
             json.dump(output_data, f, indent=2)
-        
         logger.info(f"Exported race data to: {output_path}")
-    
+
     def export_to_csv(self, race_data: RaceData, output_path: str) -> None:
-        """
-        Export parsed data to CSV format
-        """
-        # Convert horses to list of dictionaries
+        """Export parsed data to CSV format."""
         horses_data = []
         for horse in race_data.horses:
             horse_dict = {
@@ -373,38 +470,35 @@ class RagozinParser:
                 'weight': horse.weight,
                 'speed_rating': horse.speed_rating,
                 'pace_rating': horse.pace_rating,
-                'class_rating': horse.class_rating
+                'class_rating': horse.class_rating,
             }
             horses_data.append(horse_dict)
-        
-        # Create DataFrame and export
+
         df = pd.DataFrame(horses_data)
         df.to_csv(output_path, index=False)
-        
         logger.info(f"Exported race data to: {output_path}")
 
+
 def main():
-    """
-    Example usage of the Ragozin parser
-    """
+    """Example usage of the Ragozin parser."""
     parser = RagozinParser()
-    
-    # Example usage (replace with actual PDF path)
-    pdf_path = "example_ragozin_sheet.pdf"
-    
+    pdf_path = "cd062525.pdf"
+
     try:
-        # Parse the sheet
         race_data = parser.parse_ragozin_sheet(pdf_path)
-        
-        # Export to different formats
         parser.export_to_json(race_data, "race_data.json")
         parser.export_to_csv(race_data, "race_data.csv")
-        
-        print(f"Successfully parsed race with {len(race_data.horses)} horses")
+
+        print(f"Successfully parsed {len(race_data.horses)} horses")
         print(f"Track: {race_data.track_name}")
         print(f"Date: {race_data.race_date}")
-        print(f"Surface: {race_data.surface}")
-        
+
+        # Show per-race breakdown
+        from collections import Counter
+        race_counts = Counter(h.race_number for h in race_data.horses)
+        for rn in sorted(race_counts):
+            print(f"  Race {rn}: {race_counts[rn]} horses")
+
     except FileNotFoundError:
         print(f"PDF file not found: {pdf_path}")
     except Exception as e:

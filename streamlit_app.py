@@ -409,6 +409,25 @@ def upload_page():
                                         f"horses: {race_info['horses_count']} "
                                         f"(source: {parse_source_label})"
                                     )
+
+                                    # Grouping quality check
+                                    from collections import Counter
+                                    race_nums = [h.get('race_number', 0) or 0 for h in horses_list]
+                                    race_counts = Counter(race_nums)
+                                    num_races = len([r for r in race_counts if r > 0])
+                                    avg_per_race = len(horses_list) / num_races if num_races > 0 else 0
+                                    mostly_single = sum(1 for c in race_counts.values() if c == 1) > len(race_counts) / 2
+                                    if num_races == 0:
+                                        st.warning(
+                                            "Race grouping failed: no race numbers found. "
+                                            "The parser could not derive race numbers from this PDF."
+                                        )
+                                    elif avg_per_race < 2 or mostly_single:
+                                        st.warning(
+                                            f"Race grouping may be incomplete: {num_races} races, "
+                                            f"avg {avg_per_race:.1f} horses/race. "
+                                            "Check if the PDF format is supported."
+                                        )
                                 else:
                                     st.warning("No horse data found in the parsed results")
                             else:

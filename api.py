@@ -83,6 +83,7 @@ def _trad_to_dict(race_data: RaceData) -> Dict[str, Any]:
         }
         horse_dict = {
             'horse_name': horse.horse_name,
+            'race_number': horse.race_number,
             'sex': 'Unknown',
             'age': 0,
             'breeder_owner': 'Unknown',

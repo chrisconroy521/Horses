@@ -23,7 +23,7 @@ TRADITIONAL_FIELDS = frozenset({
     'surface', 'surface_type', 'track_surface',
     'track', 'track_code',
     'race_date', 'month', 'month_label', 'date_code',
-    'race_year', 'race_index',
+    'race_number', 'race_year', 'race_index',
     'distance', 'distance_bracket',
     'race_class_code', 'top_fig',
     'finish_position', 'odds', 'weight',
