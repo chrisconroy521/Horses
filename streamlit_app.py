@@ -10,11 +10,11 @@ import io
 import base64
 from datetime import datetime
 
-from handicap_engine import HandicappingEngine, HorseInput, FigureEntry, BiasInput
+from handicap_engine import HandicappingEngine, HorseInput, FigureEntry, BiasInput, AuditResult
 
 # Configure page
 st.set_page_config(
-    page_title="Ragozin Sheets Parser - Enhanced",
+    page_title="Racing Sheets Parser",
     page_icon="🐎",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -24,15 +24,20 @@ st.set_page_config(
 API_BASE_URL = "http://localhost:8000"
 
 def main():
-    st.title("🐎 Ragozin Sheets Parser - Enhanced Analysis")
-    st.markdown("Upload and analyze horse racing performance sheets with AI-powered insights and symbol analysis")
+    st.title("Racing Sheets Parser")
+    st.markdown("Sheets-first handicapping: upload Ragozin Sheets for figure cycles, then add Racing Form/BRISNET for program numbers, pace/runstyle, and track bias.")
     
     # Sidebar
     st.sidebar.header("Navigation")
-    page = st.sidebar.selectbox(
-        "Choose a page",
-        ["Upload PDF", "Engine", "Horse Past Performance", "Horses Overview", "Individual Horse Analysis", "Race Analysis", "Statistics", "API Status"]
-    )
+    pages = ["Upload PDF", "Engine", "Horse Past Performance", "Horses Overview",
+             "Individual Horse Analysis", "Race Analysis", "Database",
+             "Statistics", "Manage Sheets", "API Status"]
+
+    # Apply programmatic navigation (e.g. "Open in Engine" button)
+    if '_nav_target' in st.session_state:
+        st.session_state['_page_selector'] = st.session_state.pop('_nav_target')
+
+    page = st.sidebar.selectbox("Choose a page", pages, key='_page_selector')
 
     if page == "Upload PDF":
         upload_page()
@@ -46,8 +51,12 @@ def main():
         individual_horse_analysis_page()
     elif page == "Race Analysis":
         race_analysis_page()
+    elif page == "Database":
+        database_page()
     elif page == "Statistics":
         statistics_page()
+    elif page == "Manage Sheets":
+        manage_sheets_page()
     elif page == "API Status":
         api_status_page()
 
@@ -65,29 +74,65 @@ def _extract_figure(line: dict) -> float:
 
 
 def _horse_dict_to_input(horse: dict, post: str) -> HorseInput:
-    """Convert a parsed horse dict to a HorseInput for the engine."""
+    """Convert a parsed horse dict to a HorseInput for the engine.
+
+    Populates ``notes`` from enrichment (lasix detection from QuickPlay)
+    and ``drf_overrides`` with runstyle_rating, prime_power, class_rating.
+    """
     figures = []
     for line in horse.get('lines', []):
         val = _extract_figure(line)
         surface = line.get('surface', line.get('surface_type', ''))
         flags = line.get('flags', []) + line.get('post_symbols', [])
         figures.append(FigureEntry(value=val, surface=surface, flags=flags))
+    # Use runstyle from BRISNET data if available, else default "P"
+    style = horse.get('runstyle', 'P') or 'P'
+    # Map BRISNET styles: E/P -> EP
+    style = style.replace('/', '')
+    fig_source = horse.get('figure_source', 'ragozin')
+
+    # Build notes from enrichment / QuickPlay
+    notes: dict = {}
+    qp_all = ' '.join(horse.get('quickplay_positive', []) + horse.get('quickplay_negative', []))
+    qp_lower = qp_all.lower()
+    if 'lasix' in qp_lower or 'first time lasix' in qp_lower:
+        if 'first time' in qp_lower or '1st time' in qp_lower:
+            notes['lasix'] = 'first'
+        else:
+            notes['lasix'] = 'second'
+
+    # Build drf_overrides from secondary enrichment
+    drf_overrides: dict = {}
+    if horse.get('runstyle_rating'):
+        drf_overrides['runstyle_rating'] = str(horse['runstyle_rating'])
+    if horse.get('prime_power') is not None:
+        drf_overrides['prime_power'] = str(horse['prime_power'])
+    if horse.get('class_rating') is not None:
+        drf_overrides['class_rating'] = str(horse['class_rating'])
+
     return HorseInput(
         name=horse.get('horse_name', 'Unknown'),
         post=post,
-        style="P",
+        style=style,
         figures=figures,
+        figure_source=fig_source,
+        notes=notes,
+        drf_overrides=drf_overrides,
+        age=horse.get('age', 0),
     )
 
 
 def _run_race_projections(engine, race_horses, bias, scratches, race_num=0):
-    """Build HorseInput list from race_horses and run engine. Returns projection list."""
+    """Build HorseInput list from race_horses and run engine.
+
+    Returns ``(projections, audit)`` tuple.
+    """
     horse_inputs = []
     for i, h in enumerate(race_horses):
         post = str(i + 1)
         hi = _horse_dict_to_input(h, post)
         horse_inputs.append(hi)
-    return engine.analyze_race(horse_inputs, bias, scratches=scratches)
+    return engine.analyze_race_with_audit(horse_inputs, bias, scratches=scratches)
 
 
 def _best_bet_score(p):
@@ -98,6 +143,7 @@ def _best_bet_score(p):
 
 def engine_page():
     st.header("Handicapping Engine")
+    st.info("Picks are determined by Ragozin cycle patterns first. Use Secondary only to break ties (bias/pace/program #).")
 
     engine = HandicappingEngine()
 
@@ -109,8 +155,8 @@ def engine_page():
                 races = resp.json().get("races", [])
                 if races:
                     latest = races[-1]
-                    st.session_state['engine_race_id'] = latest['id']
-                    st.session_state['engine_race_meta'] = latest
+                    rid = latest.get('session_id') or latest.get('id')
+                    st.session_state['active_session_id'] = rid
                 else:
                     st.warning("No parsed sessions found. Upload a PDF first.")
             else:
@@ -139,29 +185,52 @@ def engine_page():
         return
 
     default_idx = 0
-    if 'engine_race_id' in st.session_state:
+    if 'active_session_id' in st.session_state:
+        target_id = st.session_state['active_session_id']
         for i, r in enumerate(races):
-            if r['id'] == st.session_state['engine_race_id']:
+            rid = r.get('session_id') or r.get('id')
+            if rid == target_id:
                 default_idx = i
                 break
+
+    def _session_label(x):
+        name = x.get('primary_pdf_filename') or x.get('original_filename', 'unknown')
+        track = x.get('track') or x.get('track_name', '')
+        date = x.get('date') or x.get('analysis_date', x.get('race_date', ''))
+        tag = "Primary+Secondary" if x.get('has_secondary') else "Primary Only"
+        return f"{name} | {track} | {date} | {tag}"
 
     selected = st.selectbox(
         "Session:",
         options=races,
-        format_func=lambda x: f"{x['track_name']} - {x['horses_count']} horses ({x.get('analysis_date', x['race_date'])})",
+        format_func=_session_label,
         index=default_idx,
     )
 
     if not selected:
         return
 
-    # Fetch horse data
+    # Determine the ID and whether to use session endpoint
+    sel_id = selected.get('session_id') or selected.get('id')
+    is_session = 'session_id' in selected
+
+    # Fetch horse data — use merged endpoint for sessions with secondary
     try:
-        h_resp = requests.get(f"{API_BASE_URL}/races/{selected['id']}/horses", timeout=30)
-        if h_resp.status_code != 200:
-            st.error("Could not load horse data for this session.")
-            return
-        all_horses = h_resp.json().get("horses", [])
+        if is_session and selected.get('has_secondary'):
+            h_resp = requests.get(
+                f"{API_BASE_URL}/sessions/{sel_id}/races",
+                params={"source": "merged"}, timeout=30
+            )
+            if h_resp.status_code == 200:
+                all_horses = h_resp.json().get("race_data", {}).get("horses", [])
+            else:
+                all_horses = []
+        else:
+            h_resp = requests.get(f"{API_BASE_URL}/races/{sel_id}/horses", timeout=30)
+            if h_resp.status_code != 200:
+                st.error("Could not load horse data for this session.")
+                return
+            all_horses = h_resp.json().get("horses", [])
     except requests.exceptions.ConnectionError:
         st.error("Cannot connect to API.")
         return
@@ -214,23 +283,6 @@ def engine_page():
         race_summary_parts.append(f"{label}: {count}")
     st.caption(" | ".join(race_summary_parts))
 
-    # --- Scratch selector ---
-    all_names = [h.get('horse_name', 'Unknown') for h in all_horses]
-    scratches = st.multiselect("Scratches:", options=all_names, default=[])
-
-    active_horses = [h for h in all_horses if h.get('horse_name', '') not in scratches]
-
-    active_groups: dict = {}
-    for h in active_horses:
-        rn = h.get('race_number', 0) or 0
-        active_groups.setdefault(rn, []).append(h)
-
-    populated_races = {rn: horses for rn, horses in active_groups.items() if len(horses) > 0}
-
-    if not populated_races:
-        st.warning("All races are empty after scratches. Adjust your scratch list.")
-        return
-
     # --- Bias controls ---
     st.subheader("Bias Settings")
     bcol1, bcol2, bcol3, bcol4, bcol5 = st.columns(5)
@@ -259,10 +311,10 @@ def engine_page():
     st.divider()
     st.subheader("Race Analysis")
 
-    race_options = sorted(populated_races.keys())
+    race_options = sorted(race_groups.keys())
     race_labels = {
-        rn: f"Race {rn} ({len(populated_races[rn])} horses)" if rn
-        else f"All ({len(populated_races[rn])} horses)"
+        rn: f"Race {rn} ({len(race_groups[rn])} horses)" if rn
+        else f"All ({len(race_groups[rn])} horses)"
         for rn in race_options
     }
 
@@ -272,10 +324,20 @@ def engine_page():
         format_func=lambda rn: race_labels[rn],
     )
 
-    race_horses = populated_races[selected_race]
+    # --- Per-race scratches (keyed to session + race for persistence) ---
+    race_all_horses = race_groups[selected_race]
+    race_names = [h.get('horse_name', 'Unknown') for h in race_all_horses]
+    scratch_key = f"scratch_{sel_id}_{selected_race}"
+    scratches = st.multiselect("Scratches:", options=race_names, key=scratch_key)
+
+    race_horses = [h for h in race_all_horses if h.get('horse_name', '') not in scratches]
+
+    if not race_horses:
+        st.warning("All horses scratched in this race. Adjust your scratch list.")
+        return
 
     if st.button("Run Projections", type="primary"):
-        projections = _run_race_projections(engine, race_horses, bias, scratches, selected_race)
+        projections, audit = _run_race_projections(engine, race_horses, bias, scratches, selected_race)
 
         if not projections:
             st.warning("No projections produced. All horses may lack usable figures.")
@@ -283,49 +345,229 @@ def engine_page():
             # Store in session state for persistence
             st.session_state['last_projections'] = projections
             st.session_state['last_proj_race'] = selected_race
+            st.session_state['last_audit'] = audit
 
     # Display projections if available
     projections = st.session_state.get('last_projections')
     proj_race = st.session_state.get('last_proj_race')
+    audit = st.session_state.get('last_audit')
+    # Guard: clear stale projections missing new fields
+    if projections and not hasattr(projections[0], 'tossed'):
+        st.session_state.pop('last_projections', None)
+        st.session_state.pop('last_proj_race', None)
+        st.session_state.pop('last_audit', None)
+        projections = None
+        audit = None
     if projections and proj_race == selected_race:
-        # --- Top 3 Picks ---
         sorted_by_bias = sorted(projections, key=lambda p: p.bias_score, reverse=True)
-        top3 = sorted_by_bias[:3]
+
+        # --- Filter: New Top Setups only (Ragozin-only) ---
+        is_ragozin_primary = not any(
+            h.get('figure_source') == 'brisnet' for h in race_horses
+        )
+        show_only_new_top = False
+        if is_ragozin_primary:
+            show_only_new_top = st.checkbox(
+                "Show only \u2b50 New Top Setups",
+                key=f"filter_newtop_{sel_id}_{selected_race}",
+            )
+
+        display_projections = sorted_by_bias
+        if show_only_new_top:
+            display_projections = [p for p in sorted_by_bias if p.new_top_setup]
+            if not display_projections:
+                st.info("No New Top Setup horses found in this race.")
+
+        # --- Top 3 Picks ---
+        top3 = display_projections[:3]
 
         st.subheader(f"Top 3 Picks - Race {selected_race}")
         for rank, p in enumerate(top3, 1):
-            spread = p.projected_high - p.projected_low
             col1, col2, col3 = st.columns([1, 2, 3])
             with col1:
-                st.metric(f"#{rank}", p.name)
+                badge = ""
+                if p.new_top_setup:
+                    badge = " \u2b50\u2b50" if p.new_top_confidence >= 75 else " \u2b50"
+                if p.bounce_risk:
+                    badge += " \u26a0\ufe0f"
+                st.metric(f"#{rank}", f"{p.name}{badge}")
             with col2:
                 st.markdown(
                     f"**Post** {p.post} | **Style** {p.style} | "
-                    f"**Fig** {p.projected_low:.1f}--{p.projected_high:.1f} | "
+                    f"**Cycle** {p.projection_type} | "
+                    f"**Fig** {p.projected_low:.1f}\u2013{p.projected_high:.1f} | "
                     f"**Conf** {p.confidence:.0%}"
                 )
+                if p.new_top_setup:
+                    st.caption(
+                        f"New Top Setup (4yo): {p.new_top_setup_type} "
+                        f"({p.new_top_confidence}%) \u2014 {p.new_top_explanation}"
+                    )
             with col3:
                 tags_str = ", ".join(p.tags) if p.tags else "none"
                 st.markdown(f"Tags: {tags_str}")
                 st.caption(p.summary)
 
         # --- Full Ranked Table ---
+        # Check if this is BRISNET data (has figure_source or quickplay fields)
+        is_brisnet_data = any(
+            h.get('figure_source') == 'brisnet' or h.get('quickplay_positive')
+            for h in race_horses
+        )
         with st.expander("Full ranked table", expanded=False):
             rows = []
-            for p in sorted_by_bias:
-                rows.append({
+            for p in display_projections:
+                row = {
                     'Horse': p.name,
                     'Post': p.post,
                     'Style': p.style,
+                    'Cycle': p.projection_type,
+                    'Setup': '',
                     'Proj Low': f"{p.projected_low:.1f}",
                     'Proj High': f"{p.projected_high:.1f}",
                     'Confidence': f"{p.confidence:.0%}",
                     'Tags': ', '.join(p.tags) if p.tags else '-',
                     'Bias Score': f"{p.bias_score:.1f}",
                     'Summary': p.summary,
-                })
+                }
+                if p.new_top_setup:
+                    stars = "\u2b50\u2b50" if p.new_top_confidence >= 75 else "\u2b50"
+                    row['Setup'] = f"{stars} {p.new_top_setup_type} ({p.new_top_confidence}%)"
+                elif p.bounce_risk:
+                    row['Setup'] = "\u26a0\ufe0f BOUNCE RISK"
+                if is_brisnet_data:
+                    matching = [h for h in race_horses if h.get('horse_name') == p.name]
+                    if matching:
+                        row['Prime Power'] = matching[0].get('prime_power', '')
+                rows.append(row)
             df = pd.DataFrame(rows)
-            st.dataframe(df, use_container_width=True, hide_index=True)
+
+            def _highlight_setup(row):
+                setup = row.get('Setup', '')
+                if '\u2b50' in setup:
+                    return ['background-color: #FFF8DC; border-left: 4px solid #DAA520'] * len(row)
+                elif '\u26a0' in setup:
+                    return ['background-color: #FFF0F0'] * len(row)
+                return [''] * len(row)
+
+            styled = df.style.apply(_highlight_setup, axis=1)
+            st.dataframe(styled, use_container_width=True, hide_index=True)
+
+        # --- QuickPlay Comments (BRISNET only) ---
+        if is_brisnet_data:
+            with st.expander("QuickPlay Comments", expanded=False):
+                for h in race_horses:
+                    name = h.get('horse_name', 'Unknown')
+                    qp_pos = h.get('quickplay_positive', [])
+                    qp_neg = h.get('quickplay_negative', [])
+                    pp = h.get('prime_power', '')
+                    if qp_pos or qp_neg:
+                        st.markdown(f"**{name}** (Prime Power: {pp})")
+                        for comment in qp_pos:
+                            st.markdown(f"  :green[+ {comment}]")
+                        for comment in qp_neg:
+                            st.markdown(f"  :red[- {comment}]")
+                        st.markdown("---")
+
+        # --- Enrichment Details (when secondary data is present) ---
+        has_enrichment = any(h.get('enrichment_source') == 'both' for h in race_horses)
+        if has_enrichment:
+            with st.expander("Enrichment Details", expanded=False):
+                for h in race_horses:
+                    if h.get('enrichment_source') != 'both':
+                        continue
+                    name = h.get('horse_name', 'Unknown')
+                    st.markdown(f"**{name}**")
+                    cols = st.columns(3)
+                    with cols[0]:
+                        trainer = h.get('trainer', '')
+                        trainer_stats = h.get('trainer_stats', '')
+                        st.markdown(f"Trainer: {trainer} ({trainer_stats})" if trainer else "Trainer: N/A")
+                        jockey = h.get('jockey', '')
+                        jockey_stats = h.get('jockey_stats', '')
+                        st.markdown(f"Jockey: {jockey} ({jockey_stats})" if jockey else "Jockey: N/A")
+                    with cols[1]:
+                        life_rec = h.get('life_record', '')
+                        life_earn = h.get('life_earnings', '')
+                        st.markdown(f"Life: {h.get('life_starts', 0)} starts, {life_rec}")
+                        st.markdown(f"Earnings: ${life_earn}" if life_earn else "Earnings: N/A")
+                    with cols[2]:
+                        workouts = h.get('workouts', [])
+                        if workouts:
+                            wo_strs = []
+                            for w in workouts[:3]:
+                                wo_strs.append(
+                                    f"{w.get('date','')} {w.get('track','')} "
+                                    f"{w.get('distance','')} {w.get('time','')}"
+                                )
+                            st.markdown("Workouts: " + " | ".join(wo_strs))
+                        else:
+                            st.markdown("Workouts: N/A")
+                    st.markdown("---")
+
+        # --- New Top Setups & Bounce Risk detail (Ragozin only) ---
+        new_top_horses = [p for p in sorted_by_bias if p.new_top_setup]
+        bounce_risk_horses = [p for p in sorted_by_bias if p.bounce_risk and not p.new_top_setup]
+        if new_top_horses or bounce_risk_horses:
+            with st.expander("New Top Setups & Bounce Risk", expanded=True):
+                if new_top_horses:
+                    st.markdown("**New Top Setup Candidates:**")
+                    for p in new_top_horses:
+                        stars = "\u2b50\u2b50" if p.new_top_confidence >= 75 else "\u2b50"
+                        st.markdown(
+                            f"- **{p.name}** {stars} | "
+                            f"Type: {p.new_top_setup_type} | "
+                            f"Confidence: {p.new_top_confidence}% | "
+                            f"{p.new_top_explanation}"
+                        )
+                if bounce_risk_horses:
+                    st.markdown("**Bounce Risk (ran big new top last out):**")
+                    for p in bounce_risk_horses:
+                        st.markdown(
+                            f"- **{p.name}** \u26a0\ufe0f | "
+                            f"Cycle: {p.projection_type} | "
+                            f"Fig: {p.projected_low:.1f}\u2013{p.projected_high:.1f}"
+                        )
+
+        # --- TOSS List ---
+        tossed_horses = [p for p in sorted_by_bias if p.tossed]
+        if tossed_horses:
+            with st.expander("TOSS List (eliminate)", expanded=True):
+                for p in tossed_horses:
+                    reasons_str = "; ".join(p.toss_reasons)
+                    st.markdown(f"- **{p.name}** — {reasons_str}")
+
+        # --- AUDIT ---
+        if audit:
+            with st.expander("AUDIT", expanded=True):
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.markdown(f"**Cycle-best:** {audit.cycle_best}")
+                with col2:
+                    st.markdown(f"**Raw-best:** {audit.raw_best}")
+                if audit.cycle_vs_raw_match:
+                    st.success("Cycle-best and raw-best are the same horse.")
+                else:
+                    st.info(f"Cycle-best ({audit.cycle_best}) differs from raw-best ({audit.raw_best}).")
+
+                if audit.bounce_candidates:
+                    st.markdown("**Bounce candidates:**")
+                    for name in audit.bounce_candidates:
+                        st.markdown(f"- {name}")
+
+                if audit.first_time_surface:
+                    st.markdown("**First-time-surface horses:**")
+                    for entry in audit.first_time_surface:
+                        st.markdown(
+                            f"- **{entry['name']}** — penalty: {entry['penalty']}, "
+                            f"conf adj: {entry['conf_adj']}"
+                        )
+
+                if audit.toss_list:
+                    st.markdown("**Tossed:**")
+                    for entry in audit.toss_list:
+                        reasons_str = "; ".join(entry['reasons'])
+                        st.markdown(f"- **{entry['name']}** — {reasons_str}")
 
         # --- Charts ---
         with st.expander("Charts", expanded=False):
@@ -350,7 +592,7 @@ def engine_page():
                 ))
             fig2.update_layout(
                 title="Projected Figure Range",
-                yaxis_title="Ragozin Figure",
+                yaxis_title="Speed Figure",
                 showlegend=False,
             )
             st.plotly_chart(fig2, use_container_width=True)
@@ -372,11 +614,17 @@ def engine_page():
     elif st.button("Generate Best Bets"):
         all_bets = []
         progress = st.progress(0)
-        race_keys = sorted(populated_races.keys())
+        race_keys = sorted(race_groups.keys())
 
         for idx, rn in enumerate(race_keys):
-            rh = populated_races[rn]
-            projs = _run_race_projections(engine, rh, bias, scratches, rn)
+            # Apply per-race scratches from session state
+            rn_scratch_key = f"scratch_{sel_id}_{rn}"
+            rn_scratches = st.session_state.get(rn_scratch_key, [])
+            rh = [h for h in race_groups[rn] if h.get('horse_name', '') not in rn_scratches]
+            if not rh:
+                progress.progress((idx + 1) / len(race_keys))
+                continue
+            projs, _audit = _run_race_projections(engine, rh, bias, rn_scratches, rn)
             for p in projs:
                 all_bets.append((rn, p))
             progress.progress((idx + 1) / len(race_keys))
@@ -392,29 +640,49 @@ def engine_page():
 
     # Display best bets if available
     best_bets = st.session_state.get('best_bets')
+    if best_bets and not hasattr(best_bets[0][1], 'new_top_setup'):
+        st.session_state.pop('best_bets', None)
+        best_bets = None
     if best_bets:
         top_n = min(10, len(best_bets))
         st.caption(f"Showing top {top_n} of {len(best_bets)} entries")
 
         rows = []
         for rn, p in best_bets[:top_n]:
-            spread = p.projected_high - p.projected_low
             score = _best_bet_score(p)
-            rows.append({
+            row = {
                 'Race': rn,
                 'Horse': p.name,
                 'Post': p.post,
                 'Style': p.style,
-                'Proj': f"{p.projected_low:.1f}-{p.projected_high:.1f}",
+                'Cycle': p.projection_type,
+                'Setup': '',
+                'Proj': f"{p.projected_low:.1f}\u2013{p.projected_high:.1f}",
                 'Confidence': f"{p.confidence:.0%}",
                 'Bias Score': f"{p.bias_score:.1f}",
                 'Best Bet Score': f"{score:.1f}",
                 'Tags': ', '.join(p.tags) if p.tags else '-',
                 'Summary': p.summary,
-            })
+            }
+            if p.new_top_setup:
+                stars = "\u2b50\u2b50" if p.new_top_confidence >= 75 else "\u2b50"
+                row['Setup'] = f"{stars} {p.new_top_setup_type} ({p.new_top_confidence}%)"
+            elif p.bounce_risk:
+                row['Setup'] = "\u26a0\ufe0f BOUNCE RISK"
+            rows.append(row)
 
         df = pd.DataFrame(rows)
-        st.dataframe(df, use_container_width=True, hide_index=True)
+
+        def _highlight_setup_bb(row):
+            setup = row.get('Setup', '')
+            if '\u2b50' in setup:
+                return ['background-color: #FFF8DC; border-left: 4px solid #DAA520'] * len(row)
+            elif '\u26a0' in setup:
+                return ['background-color: #FFF0F0'] * len(row)
+            return [''] * len(row)
+
+        styled = df.style.apply(_highlight_setup_bb, axis=1)
+        st.dataframe(styled, use_container_width=True, hide_index=True)
 
         # Highlight top 3
         st.subheader("Top 3 Best Bets")
@@ -422,13 +690,24 @@ def engine_page():
             score = _best_bet_score(p)
             col1, col2, col3 = st.columns([1, 2, 3])
             with col1:
-                st.metric(f"#{rank}", f"R{rn} {p.name}")
+                badge = ""
+                if p.new_top_setup:
+                    badge = " \u2b50\u2b50" if p.new_top_confidence >= 75 else " \u2b50"
+                if p.bounce_risk:
+                    badge += " \u26a0\ufe0f"
+                st.metric(f"#{rank}", f"R{rn} {p.name}{badge}")
             with col2:
                 st.markdown(
-                    f"**Fig** {p.projected_low:.1f}--{p.projected_high:.1f} | "
+                    f"**Cycle** {p.projection_type} | "
+                    f"**Fig** {p.projected_low:.1f}\u2013{p.projected_high:.1f} | "
                     f"**Conf** {p.confidence:.0%} | "
                     f"**Score** {score:.1f}"
                 )
+                if p.new_top_setup:
+                    st.caption(
+                        f"New Top Setup (4yo): {p.new_top_setup_type} "
+                        f"({p.new_top_confidence}%) \u2014 {p.new_top_explanation}"
+                    )
             with col3:
                 tags_str = ", ".join(p.tags) if p.tags else "none"
                 st.markdown(f"Tags: {tags_str}")
@@ -436,155 +715,161 @@ def engine_page():
 
 
 def upload_page():
-    st.header("📄 Upload Ragozin Sheet")
+    st.header("Upload Racing Sheet")
 
-    # Parser toggle — persisted across reruns
-    if 'use_gpt_parser' not in st.session_state:
-        st.session_state['use_gpt_parser'] = False
-    st.checkbox(
-        "Use GPT parser",
-        key='use_gpt_parser',
-        help="When enabled, uses GPT-4 Vision for parsing. Falls back to traditional parser on failure."
-    )
+    tab_new, tab_secondary = st.tabs(["New Session", "Add Secondary to Existing"])
 
-    uploaded_file = st.file_uploader(
-        "Choose a PDF file",
-        type=['pdf'],
-        help="Upload a Ragozin performance sheet PDF"
-    )
+    # ===== Tab 1: New Session (Primary + optional Secondary) =====
+    with tab_new:
+        if 'use_gpt_parser' not in st.session_state:
+            st.session_state['use_gpt_parser'] = False
+        st.checkbox(
+            "Use GPT parser",
+            key='use_gpt_parser',
+            help="When enabled, uses GPT-4 Vision for parsing. Falls back to traditional parser on failure."
+        )
 
-    if uploaded_file is not None:
-        st.success(f"File uploaded: {uploaded_file.name}")
+        primary_file = st.file_uploader(
+            "Step 1: Upload PRIMARY — Ragozin Sheets (required for cycle-based picks)",
+            type=['pdf'],
+            key='primary_uploader',
+            help="Primary drives picks using Sheets cycles. Do not rank by best single number."
+        )
 
-        # Display file info
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("File Size", f"{uploaded_file.size / 1024:.1f} KB")
-        with col2:
-            st.metric("File Type", uploaded_file.type)
-        with col3:
-            st.metric("File Name", uploaded_file.name)
+        if primary_file is not None:
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("File Size", f"{primary_file.size / 1024:.1f} KB")
+            with col2:
+                st.metric("File Type", primary_file.type)
+            with col3:
+                st.metric("File Name", primary_file.name)
 
-        # Upload button
-        if st.button("🚀 Parse PDF", type="primary"):
-            use_gpt = st.session_state['use_gpt_parser']
-            spinner_msg = "Parsing PDF with GPT..." if use_gpt else "Parsing PDF with traditional parser..."
-            with st.spinner(spinner_msg):
-                try:
-                    files = {"file": (uploaded_file.name, uploaded_file.getvalue(), "application/pdf")}
-                    params = {"use_gpt": use_gpt}
-
-                    response = requests.post(
-                        f"{API_BASE_URL}/upload-pdf",
-                        files=files,
-                        params=params,
-                        timeout=300
-                    )
-
-                    if response.status_code == 200:
-                        result = response.json()
-
-                        # --- Parser status display ---
-                        parser_info = result.get("parser_info", {})
-                        parse_source = parser_info.get("parser_used", "unknown")
-                        gpt_attempted = parser_info.get("gpt_attempted", False)
-                        fallback = parser_info.get("fallback_to_traditional", False)
-
-                        if fallback:
-                            st.warning("GPT returned 0/error -> using traditional")
-                            parse_source_label = "fallback"
-                        elif gpt_attempted and parse_source == "gpt":
-                            st.success("Parsed with GPT parser")
-                            parse_source_label = "gpt"
+            if st.button("Parse Primary", type="primary", key="btn_parse_primary"):
+                use_gpt = st.session_state['use_gpt_parser']
+                with st.spinner("Parsing primary PDF..."):
+                    try:
+                        files = {"file": (primary_file.name, primary_file.getvalue(), "application/pdf")}
+                        params = {"use_gpt": use_gpt}
+                        response = requests.post(
+                            f"{API_BASE_URL}/upload_primary",
+                            files=files, params=params, timeout=300
+                        )
+                        if response.status_code == 200:
+                            result = response.json()
+                            st.success(f"Primary parsed: {result['horses_count']} horses, {result['races_count']} races")
+                            st.session_state['new_session_id'] = result['session_id']
+                            st.session_state['last_race_id'] = result['session_id']
+                            col1, col2, col3 = st.columns(3)
+                            with col1:
+                                st.metric("Session ID", result['session_id'][:8] + "...")
+                            with col2:
+                                st.metric("Track", result.get('track', 'N/A'))
+                            with col3:
+                                st.metric("Parser", result.get('parser_used', 'unknown'))
                         else:
-                            st.success("Parsed with traditional parser")
-                            parse_source_label = "traditional"
+                            st.error(f"Error: {response.text}")
+                    except requests.exceptions.ConnectionError:
+                        st.error("Cannot connect to API. Is the backend running on http://localhost:8000?")
+                    except Exception as e:
+                        st.error(f"Error: {str(e)}")
 
-                        # Show gpt_error_text collapsed if present
-                        gpt_error = parser_info.get("gpt_error_text")
-                        if gpt_error:
-                            with st.expander("GPT error details"):
-                                st.code(gpt_error)
+        # Step 2: secondary upload (conditional on step 1)
+        new_sid = st.session_state.get('new_session_id')
+        if new_sid:
+            st.divider()
+            secondary_file = st.file_uploader(
+                "Step 2: Add SECONDARY — BRISNET/DRF Racing Form (optional enrichment)",
+                type=['pdf'],
+                key='secondary_uploader_new',
+                help="Secondary adds program #, runstyle, workouts, trainer/jockey stats, and track-bias tables. It must not override Sheets cycles."
+            )
+            if secondary_file is not None and st.button("Attach Secondary", key="btn_attach_secondary_new"):
+                with st.spinner("Parsing secondary PDF..."):
+                    try:
+                        files = {"file": (secondary_file.name, secondary_file.getvalue(), "application/pdf")}
+                        response = requests.post(
+                            f"{API_BASE_URL}/upload_secondary",
+                            files=files, params={"session_id": new_sid}, timeout=300
+                        )
+                        if response.status_code == 200:
+                            result = response.json()
+                            st.success(f"Secondary attached: {result['horses_count']} horses")
+                            if result.get('merge_coverage'):
+                                st.info(f"Merge coverage: {result['merge_coverage']}")
+                        else:
+                            st.error(f"Error: {response.text}")
+                    except Exception as e:
+                        st.error(f"Error: {str(e)}")
 
-                        # --- Parsing results ---
-                        st.subheader("📊 Parsing Results")
+            st.divider()
+            col_nav1, col_nav2, _ = st.columns([1, 1, 2])
+            with col_nav1:
+                if st.button("Open in Engine", type="primary", key="btn_engine_new"):
+                    st.session_state['active_session_id'] = new_sid
+                    st.session_state['_nav_target'] = "Engine"
+                    st.rerun()
+            with col_nav2:
+                if st.button("Upload another", key="btn_another_new"):
+                    st.session_state.pop('new_session_id', None)
+                    st.session_state['_nav_target'] = "Upload PDF"
+                    st.rerun()
 
-                        race_info = result["race_info"]
-                        col1, col2, col3, col4 = st.columns(4)
+    # ===== Tab 2: Add Secondary to Existing Session =====
+    with tab_secondary:
+        try:
+            resp = requests.get(f"{API_BASE_URL}/sessions", timeout=15)
+            if resp.status_code != 200:
+                st.error("Could not fetch sessions.")
+                return
+            sess_list = resp.json().get("sessions", [])
+        except requests.exceptions.ConnectionError:
+            st.error("Cannot connect to API.")
+            return
+        except Exception as e:
+            st.error(f"Error: {e}")
+            return
 
-                        with col1:
-                            st.metric("Total Horses", race_info["horses_count"])
-                        with col2:
-                            st.metric("Total Races", race_info.get("total_races", "N/A"))
-                        with col3:
-                            st.metric("Tracks", race_info.get("tracks_count", "N/A"))
-                        with col4:
-                            st.metric("Parse Source", parse_source_label)
+        eligible = [s for s in sess_list if s.get('has_primary') and not s.get('has_secondary')]
+        if not eligible:
+            st.info("No sessions without a secondary upload. Create a new session first.")
+        else:
+            selected_sess = st.selectbox(
+                "Select session:",
+                options=eligible,
+                format_func=lambda s: (
+                    f"{s.get('primary_pdf_filename', '?')} | "
+                    f"{s.get('track', 'N/A')} | {s.get('date', 'N/A')} | "
+                    f"{s.get('primary_horses_count', 0)} horses"
+                ),
+                key="secondary_session_selector",
+            )
 
-                        col1, col2, col3 = st.columns(3)
-                        with col1:
-                            st.metric("Analysis Date", result.get("analysis_date", "N/A"))
-                        with col2:
-                            st.metric("Analysis Time", result.get("analysis_time", "N/A"))
-                        with col3:
-                            st.metric("Processing Duration", result.get("processing_duration", "N/A"))
-
-                        # Store race ID in session state
-                        st.session_state.last_race_id = result["race_id"]
-
-                        # Fetch and store the parsed horse data
+            if selected_sess:
+                sec_file = st.file_uploader(
+                    "Upload SECONDARY — BRISNET/DRF Racing Form (enrichment only)",
+                    type=['pdf'],
+                    key='secondary_uploader_existing',
+                    help="Adds program #, runstyle, workouts, trainer/jockey stats. Does not override Sheets cycles."
+                )
+                if sec_file is not None and st.button("Attach Secondary", key="btn_attach_secondary_exist"):
+                    sid = selected_sess['session_id']
+                    with st.spinner("Parsing secondary PDF..."):
                         try:
-                            horse_response = requests.get(
-                                f"{API_BASE_URL}/races/{result['race_id']}/horses",
-                                timeout=30
+                            files = {"file": (sec_file.name, sec_file.getvalue(), "application/pdf")}
+                            response = requests.post(
+                                f"{API_BASE_URL}/upload_secondary",
+                                files=files, params={"session_id": sid}, timeout=300
                             )
-                            if horse_response.status_code == 200:
-                                horse_data = horse_response.json()
-                                horses_list = horse_data.get("horses", [])
-                                if horses_list:
-                                    st.session_state.parsed_horse_data = horses_list[0]
-                                    st.caption(
-                                        f"Loaded races: {race_info.get('total_races', 'N/A')}, "
-                                        f"horses: {race_info['horses_count']} "
-                                        f"(source: {parse_source_label})"
-                                    )
-
-                                    # Grouping quality check
-                                    from collections import Counter
-                                    race_nums = [h.get('race_number', 0) or 0 for h in horses_list]
-                                    race_counts = Counter(race_nums)
-                                    num_races = len([r for r in race_counts if r > 0])
-                                    avg_per_race = len(horses_list) / num_races if num_races > 0 else 0
-                                    mostly_single = sum(1 for c in race_counts.values() if c == 1) > len(race_counts) / 2
-                                    if num_races == 0:
-                                        st.warning(
-                                            "Race grouping failed: no race numbers found. "
-                                            "The parser could not derive race numbers from this PDF."
-                                        )
-                                    elif avg_per_race < 2 or mostly_single:
-                                        st.warning(
-                                            f"Race grouping may be incomplete: {num_races} races, "
-                                            f"avg {avg_per_race:.1f} horses/race. "
-                                            "Check if the PDF format is supported."
-                                        )
-                                else:
-                                    st.warning("No horse data found in the parsed results")
+                            if response.status_code == 200:
+                                result = response.json()
+                                st.success(f"Secondary attached: {result['horses_count']} horses")
+                                if result.get('merge_coverage'):
+                                    st.info(f"Merge coverage: {result['merge_coverage']}")
                             else:
-                                st.warning("Could not fetch horse data")
+                                st.error(f"Error: {response.text}")
                         except Exception as e:
-                            st.warning(f"Could not load horse data: {str(e)}")
-
-                        st.info("Navigate to 'Horse Past Performance' to see detailed analysis")
-
-                    else:
-                        st.error(f"Error parsing PDF: {response.text}")
-
-                except requests.exceptions.ConnectionError:
-                    st.error("Cannot connect to API. Is the backend running on http://localhost:8000?")
-                except requests.exceptions.Timeout:
-                    st.error("Request timed out. The PDF may be too large or the API is overloaded.")
-                except Exception as e:
-                    st.error(f"Error: {str(e)}")
+                            st.error(f"Error: {str(e)}")
 
 def horses_overview_page():
     st.header("🐎 Horses Overview with AI Analysis")
@@ -622,14 +907,24 @@ def horses_overview_page():
             st.subheader("🔍 Select Session for Detailed Analysis")
             
             if 'last_race_id' in st.session_state:
-                default_index = next((i for i, race in enumerate(races) if race['id'] == st.session_state.last_race_id), 0)
+                target = st.session_state.last_race_id
+                default_index = next(
+                    (i for i, race in enumerate(races)
+                     if (race.get('session_id') or race.get('id')) == target),
+                    0
+                )
             else:
                 default_index = 0
-            
+
             selected_race = st.selectbox(
                 "Choose a session:",
                 options=races,
-                format_func=lambda x: f"{x['track_name']} - {x['horses_count']} horses ({x.get('analysis_date', x['race_date'])})",
+                format_func=lambda x: (
+                    f"{x.get('primary_pdf_filename') or x.get('original_filename', 'unknown')} | "
+                    f"{x.get('track') or x.get('track_name', '')} | "
+                    f"{x.get('date') or x.get('analysis_date', x.get('race_date', ''))} | "
+                    f"{x.get('parser_used', 'unknown')}"
+                ),
                 index=default_index
             )
             
@@ -1198,6 +1493,80 @@ def race_analysis_page():
         else:
             st.info("No symbols found after Ragozin figures")
 
+def database_page():
+    st.header("Cumulative Database")
+    st.caption("Every uploaded PDF adds to this persistent store. Studies draw from the full history.")
+
+    try:
+        resp = requests.get(f"{API_BASE_URL}/db/stats")
+        if resp.status_code != 200:
+            st.error("Could not fetch database stats.")
+            return
+        stats = resp.json()
+    except requests.exceptions.ConnectionError:
+        st.error("Cannot connect to API. Is it running?")
+        return
+
+    # --- Summary metrics ---
+    col1, col2, col3, col4, col5 = st.columns(5)
+    with col1:
+        st.metric("Sheets Horses", stats.get("sheets_horses", 0))
+    with col2:
+        st.metric("Sheets Lines", stats.get("sheets_lines", 0))
+    with col3:
+        st.metric("BRISNET Horses", stats.get("brisnet_horses", 0))
+    with col4:
+        st.metric("Reconciled Pairs", stats.get("reconciled_pairs", 0))
+    with col5:
+        st.metric("Coverage", f"{stats.get('coverage_pct', 0):.1f}%")
+
+    st.divider()
+
+    # --- Enrichment coverage breakdown ---
+    sh = stats.get("sheets_horses", 0)
+    bh = stats.get("brisnet_horses", 0)
+    rp = stats.get("reconciled_pairs", 0)
+
+    if sh > 0 or bh > 0:
+        st.subheader("Enrichment Coverage")
+        coverage_data = {
+            "Source": ["Sheets Only", "BRISNET Only", "Both (Reconciled)"],
+            "Count": [max(sh - rp, 0), max(bh - rp, 0), rp],
+        }
+        import plotly.express as px
+        fig = px.pie(
+            pd.DataFrame(coverage_data),
+            values="Count", names="Source",
+            color_discrete_sequence=["#4A90D9", "#50C878", "#DAA520"],
+        )
+        fig.update_layout(height=300, margin=dict(t=20, b=20))
+        st.plotly_chart(fig, use_container_width=True)
+
+    # --- Tracks ---
+    tracks = stats.get("tracks", [])
+    if tracks:
+        st.subheader("Tracks in Database")
+        st.write(", ".join(tracks))
+
+    # --- Upload history ---
+    uploads_count = stats.get("uploads_count", 0)
+    if uploads_count > 0:
+        st.subheader(f"Uploads ({uploads_count})")
+        st.caption("Each PDF upload (Sheets or BRISNET) is stored here permanently.")
+        try:
+            # Fetch full upload list from the DB directly via a helper endpoint
+            # For now show the count; full list requires an additional endpoint
+            st.info(f"{uploads_count} PDF uploads in the database across {len(tracks)} tracks.")
+        except Exception:
+            pass
+
+    if sh == 0 and bh == 0:
+        st.info("Database is empty. Upload PDFs via the Upload page or CLI:\n\n"
+                "`python ingest.py --sheets <pdf>`\n\n"
+                "`python ingest.py --brisnet <pdf>`\n\n"
+                "`python ingest.py --backfill-json` (import existing output/*.json)")
+
+
 def statistics_page():
     st.header("📊 Statistics")
     
@@ -1294,6 +1663,101 @@ def api_status_page():
     except Exception as e:
         st.error(f"❌ Cannot connect to API: {str(e)}")
         st.info("Make sure the API server is running on http://localhost:8000")
+
+def _clear_stale_session_state(deleted_ids: list):
+    """Remove session_state keys that reference any of the deleted race IDs."""
+    engine_id = st.session_state.get('active_session_id')
+    if engine_id and engine_id in deleted_ids:
+        for key in ['active_session_id', 'last_projections',
+                     'last_proj_race', 'best_bets']:
+            st.session_state.pop(key, None)
+    last_id = st.session_state.get('last_race_id')
+    if last_id and last_id in deleted_ids:
+        for key in ['last_race_id', 'parsed_horse_data', 'horses_df', 'races_df']:
+            st.session_state.pop(key, None)
+    new_sid = st.session_state.get('new_session_id')
+    if new_sid and new_sid in deleted_ids:
+        st.session_state.pop('new_session_id', None)
+
+
+def manage_sheets_page():
+    st.header("Manage Sheets")
+
+    try:
+        resp = requests.get(f"{API_BASE_URL}/races", timeout=15)
+        if resp.status_code != 200:
+            st.error("Could not fetch sessions from API.")
+            return
+        races = resp.json().get("races", [])
+    except requests.exceptions.ConnectionError:
+        st.error("Cannot connect to API. Is the backend running on http://localhost:8000?")
+        return
+    except Exception as e:
+        st.error(f"Error: {e}")
+        return
+
+    if not races:
+        st.info("No parsed sessions found. Upload a PDF to get started.")
+        return
+
+    st.markdown(f"**{len(races)}** parsed session(s) available.")
+
+    selected_ids = []
+    for race in races:
+        rid = race.get('session_id') or race.get('id')
+        name = race.get('primary_pdf_filename') or race.get('original_filename', 'unknown')
+        track = race.get('track') or race.get('track_name', 'N/A')
+        date = race.get('date') or race.get('analysis_date', race.get('race_date', 'N/A'))
+        # Show primary/secondary badges
+        if race.get('has_secondary'):
+            badge = "Primary+Secondary"
+        elif race.get('has_primary'):
+            badge = "Primary Only"
+        else:
+            badge = race.get('parser_used', 'unknown')
+        label = f"{name} | {track} | {date} | {badge}"
+        if st.checkbox(label, key=f"manage_chk_{rid}"):
+            selected_ids.append(rid)
+
+    st.divider()
+
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Delete Selected", disabled=len(selected_ids) == 0):
+            st.session_state['pending_delete_ids'] = selected_ids
+    with col2:
+        if st.button("Delete All", disabled=len(races) == 0):
+            st.session_state['pending_delete_ids'] = [r.get('session_id') or r.get('id') for r in races]
+
+    ids_to_delete = st.session_state.get('pending_delete_ids', [])
+    if ids_to_delete:
+        st.warning(f"You are about to delete {len(ids_to_delete)} session(s). This cannot be undone.")
+        confirm = st.text_input("Type DELETE to confirm:", key="manage_confirm_input")
+        if confirm == "DELETE":
+            progress = st.progress(0)
+            errors = []
+            for i, rid in enumerate(ids_to_delete):
+                try:
+                    del_resp = requests.delete(f"{API_BASE_URL}/races/{rid}", timeout=15)
+                    if del_resp.status_code != 200:
+                        errors.append(f"{rid}: {del_resp.text}")
+                except Exception as e:
+                    errors.append(f"{rid}: {str(e)}")
+                progress.progress((i + 1) / len(ids_to_delete))
+            progress.empty()
+            if errors:
+                st.error(f"Errors during deletion: {'; '.join(errors)}")
+            else:
+                st.success(f"Deleted {len(ids_to_delete)} session(s).")
+            _clear_stale_session_state(ids_to_delete)
+            st.session_state.pop('pending_delete_ids', None)
+            st.rerun()
+        elif confirm:
+            st.error("Confirmation text does not match. Type exactly: DELETE")
+        if st.button("Cancel"):
+            st.session_state.pop('pending_delete_ids', None)
+            st.rerun()
+
 
 def horse_past_performance_page():
     st.header("🐎 Horse Past Performance Viewer")
