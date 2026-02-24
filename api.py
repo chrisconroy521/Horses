@@ -37,7 +37,6 @@ gpt_parser = None
 # Try to initialize GPT parser if API key is available
 try:
     api_key = os.getenv("OPENAI_API_KEY")
-    print(api_key)
     if api_key:
         gpt_parser = GPTRagozinParserAlternative(api_key=api_key)
         logger.info("GPT-enhanced parser initialized successfully")
@@ -66,142 +65,163 @@ async def health_check():
     return {"status": "healthy", "service": "ragozin-parser"}
 
 @app.post("/upload-pdf")
-async def upload_pdf(file: UploadFile = File(...)):
+async def upload_pdf(file: UploadFile = File(...), use_gpt: bool = False):
     """
     Upload and parse a Ragozin PDF sheet
     """
     try:
-        # Validate file type
         if not file.filename.lower().endswith('.pdf'):
             raise HTTPException(status_code=400, detail="Only PDF files are allowed")
-        
-        # Generate unique filename
+
         file_id = str(uuid.uuid4())
         pdf_path = UPLOAD_DIR / f"{file_id}.pdf"
-        
-        # Save uploaded file
+
         with open(pdf_path, "wb") as buffer:
             content = await file.read()
             buffer.write(content)
-        
+
         logger.info(f"Uploaded PDF: {file.filename} -> {pdf_path}")
-        
-        # Parse the PDF using GPT parser if available, otherwise fallback to traditional parser
-        try:
-            start_time = pd.Timestamp.now()
-            
-            if gpt_parser:
+
+        start_time = pd.Timestamp.now()
+        parser_used = "traditional"
+        race_data = None
+        gpt_attempted = False
+        fallback_used = False
+        gpt_error_text = None
+
+        if use_gpt and gpt_parser:
+            gpt_attempted = True
+            try:
                 logger.info("Using GPT-enhanced parser with direct PDF analysis")
-                race_data = gpt_parser.parse_ragozin_sheet(str(pdf_path), use_direct_pdf=True)
+                candidate = gpt_parser.parse_ragozin_sheet(str(pdf_path), use_direct_pdf=True)
+                horses = getattr(candidate, 'horses', [])
+                if len(horses) == 0:
+                    raise ValueError("GPT parser returned zero horses")
+                race_data = candidate
                 parser_used = "gpt"
-            else:
-                logger.info("Using traditional parser")
-                race_data = parser.parse_ragozin_sheet(str(pdf_path))
-                parser_used = "traditional"
-            
-            end_time = pd.Timestamp.now()
-            processing_duration = str(end_time - start_time).split('.')[0]  # Remove microseconds
-            
-            # Calculate comprehensive statistics for the new data structure
-            if parser_used == "gpt":
-                # GPT parser: each horse has multiple races in horse.lines
-                total_races = sum(len(horse.lines) for horse in race_data.horses)
-                unique_tracks = set()
-                unique_surfaces = set()
-                date_range = []
-                
-                for horse in race_data.horses:
-                    for race in horse.lines:
-                        if race.track:
-                            unique_tracks.add(race.track)
-                        if race.surface:
-                            unique_surfaces.add(race.surface)
-                        if race.race_date:
-                            date_range.append(race.race_date)
-            else:
-                # Traditional parser: each horse entry represents one race
-                total_races = len(race_data.horses)
-                unique_tracks = {race_data.track_name} if race_data.track_name else set()
-                unique_surfaces = {race_data.surface} if race_data.surface else set()
-                date_range = [race_data.race_date] if race_data.race_date else []
-            
-            # Get current timestamp for analysis
-            analysis_timestamp = pd.Timestamp.now()
-            analysis_date = analysis_timestamp.strftime("%Y-%m-%d")
-            analysis_time = analysis_timestamp.strftime("%H:%M:%S")
-            
-            # Store parsed data
-            race_id = str(uuid.uuid4())
-            parsed_races[race_id] = {
-                "id": race_id,
-                "original_filename": file.filename,
-                "pdf_path": str(pdf_path),
-                "track_name": race_data.track_name,
-                "race_date": race_data.race_date,
-                "race_number": race_data.race_number,
-                "surface": race_data.surface,
-                "distance": race_data.distance,
-                "weather": race_data.weather,
-                "horses_count": len(race_data.horses),
+            except Exception as gpt_error:
+                gpt_error_text = str(gpt_error)
+                logger.warning(f"GPT parser failed or returned no data, falling back to traditional parser: {gpt_error}")
+                race_data = None
+        elif use_gpt and not gpt_parser:
+            logger.warning("GPT parser requested but unavailable; using traditional parser")
+
+        if race_data is None:
+            logger.info("Using traditional parser")
+            race_data = parser.parse_ragozin_sheet(str(pdf_path))
+            parser_used = "traditional"
+            if gpt_attempted:
+                fallback_used = True
+
+        end_time = pd.Timestamp.now()
+        processing_duration = str(end_time - start_time).split('.')[0]
+
+        horses_list = getattr(race_data, 'horses', [])
+        horses_count = len(horses_list)
+
+        if parser_used == "gpt":
+            total_races = sum(len(getattr(horse, 'lines', [])) for horse in horses_list)
+            unique_tracks = set()
+            unique_surfaces = set()
+            date_range = []
+            for horse in horses_list:
+                for race in getattr(horse, 'lines', []):
+                    if getattr(race, 'track', None):
+                        unique_tracks.add(race.track)
+                    if getattr(race, 'surface', None):
+                        unique_surfaces.add(race.surface)
+                    if getattr(race, 'race_date', None):
+                        date_range.append(race.race_date)
+        else:
+            total_races = len(horses_list)
+            unique_tracks = {race_data.track_name} if getattr(race_data, 'track_name', None) else set()
+            unique_surfaces = {race_data.surface} if getattr(race_data, 'surface', None) else set()
+            date_range = [race_data.race_date] if getattr(race_data, 'race_date', None) else []
+
+        analysis_timestamp = pd.Timestamp.now()
+        parse_source = 'gpt' if parser_used == 'gpt' else 'traditional'
+        if gpt_attempted and fallback_used:
+            parse_source = 'fallback'
+        parser_meta = {
+            'parser_used': parser_used,
+            'gpt_attempted': gpt_attempted,
+            'fallback_to_traditional': fallback_used,
+            'gpt_error_text': gpt_error_text,
+            'parse_source': parse_source
+        }
+        analysis_date = analysis_timestamp.strftime("%Y-%m-%d")
+        analysis_time = analysis_timestamp.strftime("%H:%M:%S")
+
+        race_id = str(uuid.uuid4())
+        parsed_races[race_id] = {
+            "id": race_id,
+            "original_filename": file.filename,
+            "pdf_path": str(pdf_path),
+            "track_name": getattr(race_data, 'track_name', ''),
+            "race_date": getattr(race_data, 'race_date', ''),
+            "race_number": getattr(race_data, 'race_number', ''),
+            "surface": getattr(race_data, 'surface', ''),
+            "distance": getattr(race_data, 'distance', ''),
+            "weather": getattr(race_data, 'weather', ''),
+            "horses_count": horses_count,
+            "total_races": total_races,
+            "tracks_count": len(unique_tracks),
+            "surfaces_count": len(unique_surfaces),
+            "date_range": f"{min(date_range)} to {max(date_range)}" if date_range else "N/A",
+            "parsed_at": str(analysis_timestamp),
+            "analysis_date": analysis_date,
+            "analysis_time": analysis_time,
+            "processing_duration": processing_duration,
+            "parser_used": parser_used,
+            "gpt_attempted": gpt_attempted,
+            "fallback_to_traditional": fallback_used
+        }
+
+        json_path = OUTPUT_DIR / f"{race_id}.json"
+        csv_path = OUTPUT_DIR / f"{race_id}.csv"
+        if parser_used == "gpt" and gpt_parser:
+            gpt_parser.export_to_json(race_data, str(json_path))
+            gpt_parser.export_to_csv(race_data, str(csv_path))
+        else:
+            parser.export_to_json(race_data, str(json_path))
+            parser.export_to_csv(race_data, str(csv_path))
+
+        return {
+            "success": True,
+            "race_id": race_id,
+            "message": f"Successfully parsed {horses_count} horses",
+            "analysis_date": analysis_date,
+            "analysis_time": analysis_time,
+            "processing_duration": processing_duration,
+            "race_info": {
+                "track": getattr(race_data, 'track_name', ''),
+                "date": getattr(race_data, 'race_date', ''),
+                "race_number": getattr(race_data, 'race_number', ''),
+                "surface": getattr(race_data, 'surface', ''),
+                "distance": getattr(race_data, 'distance', ''),
+                "horses_count": horses_count,
                 "total_races": total_races,
                 "tracks_count": len(unique_tracks),
                 "surfaces_count": len(unique_surfaces),
                 "date_range": f"{min(date_range)} to {max(date_range)}" if date_range else "N/A",
-                "parsed_at": str(analysis_timestamp),
-                "analysis_date": analysis_date,
-                "analysis_time": analysis_time,
-                "processing_duration": processing_duration,
                 "parser_used": parser_used
+            },
+            "parser_info": {
+                "parser_used": parser_used,
+                "gpt_available": gpt_parser is not None,
+                "gpt_attempted": gpt_attempted,
+                "fallback_to_traditional": fallback_used,
+                "gpt_error_text": gpt_error_text,
+            },
+            "files": {
+                "json": str(json_path),
+                "csv": str(csv_path)
             }
-            
-            # Export to JSON and CSV
-            json_path = OUTPUT_DIR / f"{race_id}.json"
-            csv_path = OUTPUT_DIR / f"{race_id}.csv"
-            
-            if gpt_parser:
-                gpt_parser.export_to_json(race_data, str(json_path))
-                gpt_parser.export_to_csv(race_data, str(csv_path))
-            else:
-                parser.export_to_json(race_data, str(json_path))
-                parser.export_to_csv(race_data, str(csv_path))
-            
-            return {
-                "success": True,
-                "race_id": race_id,
-                "message": f"Successfully parsed {len(race_data.horses)} horses",
-                "analysis_date": analysis_date,
-                "analysis_time": analysis_time,
-                "processing_duration": processing_duration,
-                "race_info": {
-                    "track": race_data.track_name,
-                    "date": race_data.race_date,
-                    "race_number": race_data.race_number,
-                    "surface": race_data.surface,
-                    "distance": race_data.distance,
-                    "horses_count": len(race_data.horses),
-                    "total_races": total_races,
-                    "tracks_count": len(unique_tracks),
-                    "surfaces_count": len(unique_surfaces),
-                    "date_range": f"{min(date_range)} to {max(date_range)}" if date_range else "N/A"
-                },
-                "parser_info": {
-                    "parser_used": parser_used,
-                    "gpt_available": gpt_parser is not None
-                },
-                "files": {
-                    "json": str(json_path),
-                    "csv": str(csv_path)
-                }
-            }
-            
-        except Exception as e:
-            logger.error(f"Error parsing PDF: {e}")
-            raise HTTPException(status_code=500, detail=f"Error parsing PDF: {str(e)}")
-    
+        }
+
     except Exception as e:
         logger.error(f"Error processing upload: {e}")
         raise HTTPException(status_code=500, detail=f"Error processing upload: {str(e)}")
-
 @app.get("/races")
 async def list_races():
     """

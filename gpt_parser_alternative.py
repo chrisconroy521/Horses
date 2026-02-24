@@ -207,8 +207,7 @@ class GPTRagozinParserAlternative:
             
             if text_content.strip():
                 self.ragozin_context = text_content.strip()
-                print(f"   ragozin_context: {self.ragozin_context}")
-                print(f"✅ Loaded Ragozin symbol sheet context ({len(self.ragozin_context)} characters)")
+                print(f"[OK] Loaded Ragozin symbol sheet context ({len(self.ragozin_context)} characters)")
                 return
             
         except Exception as e:
@@ -223,13 +222,13 @@ class GPTRagozinParserAlternative:
                 
                 if text_content.strip():
                     self.ragozin_context = text_content.strip()
-                    print(f"✅ Loaded Ragozin symbol sheet context with pdfplumber ({len(self.ragozin_context)} characters)")
+                    print(f"[OK] Loaded Ragozin symbol sheet context with pdfplumber ({len(self.ragozin_context)} characters)")
                     return
                     
         except Exception as e:
             print(f"pdfplumber failed for symbol sheet: {e}")
         
-        print("❌ Failed to load Ragozin symbol sheet context")
+        print("[ERROR] Failed to load Ragozin symbol sheet context")
     
     def create_analysis_prompt(self) -> str:
         """Create the prompt for analyzing Ragozin sheets with enhanced context"""
@@ -288,7 +287,7 @@ Extra-wide black italic	Over 1¼ miles
 —
 5. RAGOZIN SYMBOL DICTIONARY
 Pre-Figure symbols (surface / pace / condition):
-✧ PolyTrack
+* PolyTrack
 = turf
 ^= good turf
 .= yielding turf
@@ -437,7 +436,7 @@ Example:
                 print(f"   Image path: {image_path}")
             
             doc.close()
-            print(f"✅ Converted {len(image_paths)} pages to high-quality images")
+            print(f"[OK] Converted {len(image_paths)} pages to high-quality images")
             return image_paths
             
         except Exception as e:
@@ -499,7 +498,7 @@ Example:
             }
             
             # Debug: Print the URL being used
-            print(f"   🔗 Making API request to: {self.base_url}")
+            print(f"   [LINK] Making API request to: {self.base_url}")
             
             # Make API request
             response = requests.post(self.base_url, headers=self.headers, json=payload)
@@ -509,7 +508,7 @@ Example:
             content = response.json()["choices"][0]["message"]["content"]
             
             # Debug: Print the raw response
-            print(f"🚀 Raw AI response: {content}")
+            print(f"[ROCKET] Raw AI response: {content}")
             
             # Extract JSON
             if "```json" in content:
@@ -567,7 +566,7 @@ Example:
             }
             
             # Debug: Print the URL being used
-            print(f"   🔗 Making API request to: {self.base_url}")
+            print(f"   [LINK] Making API request to: {self.base_url}")
             
             # Make API request
             response = requests.post(self.base_url, headers=self.headers, json=payload)
@@ -577,7 +576,7 @@ Example:
             content = response.json()["choices"][0]["message"]["content"]
             
             # Debug: Print the raw response
-            print(f"🚀 Raw AI response: {content}")
+            print(f"[ROCKET] Raw AI response: {content}")
             
             # Extract JSON
             if "```json" in content:
@@ -633,7 +632,7 @@ Example:
             }
             
             # Debug: Print the URL being used
-            print(f"   🔗 Making API request to: {self.base_url}")
+            print(f"   [LINK] Making API request to: {self.base_url}")
             
             # Make API request
             response = requests.post(self.base_url, headers=self.headers, json=payload)
@@ -643,7 +642,7 @@ Example:
             content = response.json()["choices"][0]["message"]["content"]
             
             # Debug: Print the raw response
-            print(f"🚀 Raw AI response: {content}")
+            print(f"[ROCKET] Raw AI response: {content}")
             
             # Extract JSON
             if "```json" in content:
@@ -673,7 +672,7 @@ Example:
         if not os.path.exists(pdf_path):
             raise FileNotFoundError(f"PDF file not found: {pdf_path}")
         
-        print(f"🔍 Parsing PDF: {pdf_path}")
+        print(f"[SEARCH] Parsing PDF: {pdf_path}")
         
         try:
             # Check if we should analyze the full PDF at once
@@ -682,7 +681,7 @@ Example:
                 result = self.analyze_full_pdf_direct(pdf_path)
                 
                 if "error" in result:
-                    print(f"   ⚠️  Full PDF analysis failed: {result['error']}")
+                    print(f"   [WARNING]  Full PDF analysis failed: {result['error']}")
                     return HorsePastPerformance(
                         horse=HorseEntry(horse_name="Analysis Failed"),
                         parsed_at="",
@@ -767,10 +766,10 @@ Example:
                     )
                     
                     total_races = len(horse.lines)
-                    print(f"✅ Full PDF parsing completed: {horse_name} with {total_races} races")
+                    print(f"[OK] Full PDF parsing completed: {horse_name} with {total_races} races")
                     return horse_performance
                 else:
-                    print(f"❌ No horse data found in full PDF analysis")
+                    print(f"[ERROR] No horse data found in full PDF analysis")
                     return HorsePastPerformance(
                         horse=HorseEntry(horse_name="No Data Found"),
                         parsed_at="",
@@ -805,11 +804,11 @@ Example:
                         if page_num < len(image_paths):
                             result = self.analyze_page(image_paths[page_num])
                         else:
-                            print(f"   ⚠️  Page {page_num + 1} not found in converted images")
+                            print(f"   [WARNING]  Page {page_num + 1} not found in converted images")
                             continue
                     
                     if "error" in result:
-                        print(f"   ⚠️  Page {page_num + 1} analysis failed: {result['error']}")
+                        print(f"   [WARNING]  Page {page_num + 1} analysis failed: {result['error']}")
                         continue
                     
                     # Extract horse data from this page
@@ -900,17 +899,17 @@ Example:
                     )
                     
                     total_races = len(main_horse.lines)
-                    print(f"✅ Parsing completed: {main_horse.horse_name} with {total_races} races from {len(image_paths)} pages")
+                    print(f"[OK] Parsing completed: {main_horse.horse_name} with {total_races} races from {len(image_paths)} pages")
                     return horse_performance
                 else:
-                    print(f"❌ No horse data found in any page")
+                    print(f"[ERROR] No horse data found in any page")
                     return HorsePastPerformance(
                         horse=HorseEntry(horse_name="No Data Found"),
                         parsed_at="",
                         source_file=pdf_path
                     )
             else:
-                print(f"❌ No pages found in PDF")
+                print(f"[ERROR] No pages found in PDF")
                 return HorsePastPerformance(
                     horse=HorseEntry(horse_name="No Pages Found"),
                     parsed_at="",
@@ -934,18 +933,18 @@ Example:
             )
             
             total_races = sum(len(horse.lines) for horse in all_horses)
-            print(f"✅ Parsing completed: {len(all_horses)} horses found with {total_races} total races")
+            print(f"[OK] Parsing completed: {len(all_horses)} horses found with {total_races} total races")
             return race_data
             
         except Exception as e:
-            print(f"❌ Parsing failed: {e}")
+            print(f"[ERROR] Parsing failed: {e}")
             raise
     
     def export_to_json(self, horse_performance: HorsePastPerformance, output_path: str) -> None:
         """Export horse past performance data to JSON file"""
         with open(output_path, 'w') as f:
             json.dump(asdict(horse_performance), f, indent=2, default=str)
-        print(f"💾 Exported to JSON: {output_path}")
+        print(f"[DISK] Exported to JSON: {output_path}")
     
     def export_to_csv(self, horse_performance: HorsePastPerformance, output_path: str) -> None:
         """Export horse past performance data to CSV file"""
@@ -980,7 +979,7 @@ Example:
         
         df = pd.DataFrame(races_data)
         df.to_csv(output_path, index=False)
-        print(f"💾 Exported to CSV: {output_path} ({len(races_data)} race entries)")
+        print(f"[DISK] Exported to CSV: {output_path} ({len(races_data)} race entries)")
 
 def main():
     """Main function for testing"""
@@ -989,7 +988,7 @@ def main():
     # Check API key
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
-        print("❌ OPENAI_API_KEY environment variable not set")
+        print("[ERROR] OPENAI_API_KEY environment variable not set")
         print("Please run the API key setup script first:")
         print("   python fix_api_key.py")
         print("   or")
@@ -998,52 +997,52 @@ def main():
     
     # Validate API key format
     if not api_key.startswith("sk-"):
-        print("❌ Invalid API key format. OpenAI API keys start with 'sk-'")
+        print("[ERROR] Invalid API key format. OpenAI API keys start with 'sk-'")
         print("Please run the API key setup script:")
         print("   python fix_api_key.py")
         return
     
-    print(f"✅ Using API key: {api_key[:10]}...")
+    print(f"[OK] Using API key: {api_key[:10]}...")
     
     # Initialize parser
     try:
         parser = GPTRagozinParserAlternative(api_key=api_key)
     except Exception as e:
-        print(f"❌ Failed to initialize parser: {e}")
+        print(f"[ERROR] Failed to initialize parser: {e}")
         return
     
     # Test with sample PDF
     pdf_path = "cd062525.pdf"
     if not os.path.exists(pdf_path):
-        print(f"❌ Test PDF not found: {pdf_path}")
+        print(f"[ERROR] Test PDF not found: {pdf_path}")
         return
     
     try:
         # Test with direct PDF analysis (recommended for better OCR)
-        print("\n🔍 Testing with direct PDF analysis...")
+        print("\n[SEARCH] Testing with direct PDF analysis...")
         horse_performance = parser.parse_ragozin_sheet(pdf_path, use_direct_pdf=True)
         
         # Export results
         parser.export_to_json(horse_performance, "output_alternative_direct.json")
         parser.export_to_csv(horse_performance, "output_alternative_direct.csv")
         
-        print("\n✅ Direct PDF analysis completed successfully!")
+        print("\n[OK] Direct PDF analysis completed successfully!")
         
         # Test with image analysis for comparison
-        print("\n🔍 Testing with image analysis for comparison...")
+        print("\n[SEARCH] Testing with image analysis for comparison...")
         horse_performance_img = parser.parse_ragozin_sheet(pdf_path, use_direct_pdf=False)
         
         # Export results
         parser.export_to_json(horse_performance_img, "output_alternative_image.json")
         parser.export_to_csv(horse_performance_img, "output_alternative_image.csv")
         
-        print("\n✅ Image analysis completed successfully!")
-        print("\n📊 Comparison:")
+        print("\n[OK] Image analysis completed successfully!")
+        print("\n[CHART] Comparison:")
         print(f"   Direct PDF: {len(horse_performance.horse.lines)} races")
         print(f"   Image: {len(horse_performance_img.horse.lines)} races")
         
     except Exception as e:
-        print(f"❌ Test failed: {e}")
+        print(f"[ERROR] Test failed: {e}")
         import traceback
         traceback.print_exc()
 

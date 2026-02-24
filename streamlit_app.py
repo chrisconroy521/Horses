@@ -48,16 +48,25 @@ def main():
 
 def upload_page():
     st.header("📄 Upload Ragozin Sheet")
-    
+
+    # Parser toggle — persisted across reruns
+    if 'use_gpt_parser' not in st.session_state:
+        st.session_state['use_gpt_parser'] = False
+    st.checkbox(
+        "Use GPT parser",
+        key='use_gpt_parser',
+        help="When enabled, uses GPT-4 Vision for parsing. Falls back to traditional parser on failure."
+    )
+
     uploaded_file = st.file_uploader(
         "Choose a PDF file",
         type=['pdf'],
         help="Upload a Ragozin performance sheet PDF"
     )
-    
+
     if uploaded_file is not None:
         st.success(f"File uploaded: {uploaded_file.name}")
-        
+
         # Display file info
         col1, col2, col3 = st.columns(3)
         with col1:
@@ -66,27 +75,54 @@ def upload_page():
             st.metric("File Type", uploaded_file.type)
         with col3:
             st.metric("File Name", uploaded_file.name)
-        
+
         # Upload button
-        if st.button("🚀 Parse PDF with Enhanced Analysis", type="primary"):
-            with st.spinner("Parsing PDF with AI analysis... This may take a few minutes for large files."):
+        if st.button("🚀 Parse PDF", type="primary"):
+            use_gpt = st.session_state['use_gpt_parser']
+            spinner_msg = "Parsing PDF with GPT..." if use_gpt else "Parsing PDF with traditional parser..."
+            with st.spinner(spinner_msg):
                 try:
-                    # Prepare file for upload
                     files = {"file": (uploaded_file.name, uploaded_file.getvalue(), "application/pdf")}
-                    
-                    # Send to API
-                    response = requests.post(f"{API_BASE_URL}/upload-pdf", files=files)
-                    
+                    params = {"use_gpt": use_gpt}
+
+                    response = requests.post(
+                        f"{API_BASE_URL}/upload-pdf",
+                        files=files,
+                        params=params,
+                        timeout=300
+                    )
+
                     if response.status_code == 200:
                         result = response.json()
-                        st.success("✅ PDF parsed successfully with enhanced analysis!")
-                        
-                        # Display results
+
+                        # --- Parser status display ---
+                        parser_info = result.get("parser_info", {})
+                        parse_source = parser_info.get("parser_used", "unknown")
+                        gpt_attempted = parser_info.get("gpt_attempted", False)
+                        fallback = parser_info.get("fallback_to_traditional", False)
+
+                        if fallback:
+                            st.warning("GPT returned 0/error -> using traditional")
+                            parse_source_label = "fallback"
+                        elif gpt_attempted and parse_source == "gpt":
+                            st.success("Parsed with GPT parser")
+                            parse_source_label = "gpt"
+                        else:
+                            st.success("Parsed with traditional parser")
+                            parse_source_label = "traditional"
+
+                        # Show gpt_error_text collapsed if present
+                        gpt_error = parser_info.get("gpt_error_text")
+                        if gpt_error:
+                            with st.expander("GPT error details"):
+                                st.code(gpt_error)
+
+                        # --- Parsing results ---
                         st.subheader("📊 Parsing Results")
-                        
+
                         race_info = result["race_info"]
                         col1, col2, col3, col4 = st.columns(4)
-                        
+
                         with col1:
                             st.metric("Total Horses", race_info["horses_count"])
                         with col2:
@@ -94,67 +130,59 @@ def upload_page():
                         with col3:
                             st.metric("Tracks", race_info.get("tracks_count", "N/A"))
                         with col4:
-                            st.metric("Date Range", race_info.get("date_range", "N/A"))
-                        
-                        # Analysis date and time
-                        st.subheader("📅 Analysis Information")
+                            st.metric("Parse Source", parse_source_label)
+
                         col1, col2, col3 = st.columns(3)
-                        
                         with col1:
                             st.metric("Analysis Date", result.get("analysis_date", "N/A"))
                         with col2:
                             st.metric("Analysis Time", result.get("analysis_time", "N/A"))
                         with col3:
                             st.metric("Processing Duration", result.get("processing_duration", "N/A"))
-                        
-                        # Show parser information
-                        if "parser_info" in result:
-                            st.subheader("🤖 Parser Information")
-                            parser_info = result["parser_info"]
-                            col1, col2 = st.columns(2)
-                            with col1:
-                                st.metric("Parser Used", parser_info["parser_used"].title())
-                            with col2:
-                                st.metric("GPT Available", "✅" if parser_info["gpt_available"] else "❌")
-                        
-                        # Show summary
-                        st.subheader("📋 Summary")
-                        st.info(f"Successfully parsed {race_info['horses_count']} horses with enhanced AI analysis including symbol interpretation and performance insights.")
-                        
+
                         # Store race ID in session state
                         st.session_state.last_race_id = result["race_id"]
-                        
+
                         # Fetch and store the parsed horse data
                         try:
-                            horse_response = requests.get(f"{API_BASE_URL}/races/{result['race_id']}/horses")
+                            horse_response = requests.get(
+                                f"{API_BASE_URL}/races/{result['race_id']}/horses",
+                                timeout=30
+                            )
                             if horse_response.status_code == 200:
                                 horse_data = horse_response.json()
-                                if horse_data.get("horses") and len(horse_data["horses"]) > 0:
-                                    # Store the first horse's data (since we're parsing individual horse past performance)
-                                    st.session_state.parsed_horse_data = horse_data["horses"][0]
-                                    st.success("✅ Horse data loaded successfully!")
+                                horses_list = horse_data.get("horses", [])
+                                if horses_list:
+                                    st.session_state.parsed_horse_data = horses_list[0]
+                                    st.caption(
+                                        f"Loaded races: {race_info.get('total_races', 'N/A')}, "
+                                        f"horses: {race_info['horses_count']} "
+                                        f"(source: {parse_source_label})"
+                                    )
                                 else:
-                                    st.warning("⚠️ No horse data found in the parsed results")
+                                    st.warning("No horse data found in the parsed results")
                             else:
-                                st.warning("⚠️ Could not fetch horse data")
+                                st.warning("Could not fetch horse data")
                         except Exception as e:
-                            st.warning(f"⚠️ Could not load horse data: {str(e)}")
-                        
-                        # Auto-navigate to view page
-                        st.info("Navigate to 'Horse Past Performance' to see detailed analysis with AI insights")
-                        
+                            st.warning(f"Could not load horse data: {str(e)}")
+
+                        st.info("Navigate to 'Horse Past Performance' to see detailed analysis")
+
                     else:
-                        st.error(f"❌ Error parsing PDF: {response.text}")
-                        
+                        st.error(f"Error parsing PDF: {response.text}")
+
+                except requests.exceptions.ConnectionError:
+                    st.error("Cannot connect to API. Is the backend running on http://localhost:8000?")
+                except requests.exceptions.Timeout:
+                    st.error("Request timed out. The PDF may be too large or the API is overloaded.")
                 except Exception as e:
-                    st.error(f"❌ Error: {str(e)}")
+                    st.error(f"Error: {str(e)}")
 
 def horses_overview_page():
     st.header("🐎 Horses Overview with AI Analysis")
-    
+
     try:
-        # Fetch races from API
-        response = requests.get(f"{API_BASE_URL}/races")
+        response = requests.get(f"{API_BASE_URL}/races", timeout=15)
         
         if response.status_code == 200:
             data = response.json()
@@ -173,6 +201,8 @@ def horses_overview_page():
             # Display sessions in a table
             st.subheader("📋 All Parsing Sessions")
             display_columns = ['track_name', 'race_date', 'horses_count', 'analysis_date', 'analysis_time']
+            if 'parser_used' in df.columns:
+                display_columns.append('parser_used')
             if 'processing_duration' in df.columns:
                 display_columns.append('processing_duration')
             st.dataframe(
@@ -200,11 +230,19 @@ def horses_overview_page():
                 
         else:
             st.error(f"Error fetching races: {response.text}")
-            
+
+    except requests.exceptions.ConnectionError:
+        st.error("Cannot connect to API. Is the backend running on http://localhost:8000?")
     except Exception as e:
         st.error(f"Error: {str(e)}")
 
 def display_enhanced_horses_details(race):
+    source = race.get('parser_used', 'unknown')
+    st.caption(
+        f"Loaded races: {race.get('total_races', 'N/A')}, "
+        f"horses: {race['horses_count']} "
+        f"(source: {source})"
+    )
     st.subheader(f"🏆 {race['track_name']} - {race['horses_count']} Horses with AI Analysis")
     
     # Session info cards
