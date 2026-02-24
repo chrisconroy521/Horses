@@ -1,0 +1,116 @@
+META:
+track=Gulfstream Park
+date=February 19, 2026
+race=4
+surface=AW
+distance=1m70yds
+class=Clm
+purse=28,000
+restrictions=4&up
+pars={'E1': 83, 'E2': 81, 'LATE': 80, 'SPEED': 81}
+
+--- HORSE 1 Eton ---
+Style: E (5)
+Prime Power: 119.1 (2nd)
+Jockey: PANICI LUCA | Trainer: Tomlinson Nicholas J
+Odds: 7/5 | Weight: 123
+Life: 8 starts 1-1-3 $31,140 speed=86
+POSITIVE: Drops in class today | Finished 3rd vs tougher (on Turf) in last race | May improve at the shorter distance | Best AW speed is faster than the Avg Winning Speed | Hot Trainer in last 14 days (5 2-1-0)
+Running lines (8):
+  10Jan26 GP TURF spd=80 
+  21Dec25 GP TURF spd=81 
+  29Nov25 GP DIRT spd=86 
+  09Nov25 GPª DIRT spd=79 
+  03Oct25 GP DIRT spd=84 
+  11Jan25 GP TURF spd=82 
+Workouts: 08Feb Pmm ˜ 4f :48« | 23Nov'25 Pmm ˜ (d) 4f :47 | 19Sep'25 Huf 4f :53¨ | 11Aug'25 GP 4f :50¨
+
+--- HORSE 2 Hillbilly Bob ---
+Style: E (8)
+Prime Power: 111.6 (6th)
+Jockey: GAFFALIONE TYLER | Trainer: Sano Antonio
+Odds: 6/1 | Weight: 123
+Life: 7 starts 1-1-0 $20,930 speed=76
+POSITIVE: Ran 2nd vs similar in last race | May improve at the shorter distance
+Running lines (7):
+  31Jan26 GP DIRT spd=76 
+  03Jan26 GP DIRT spd=73 
+  27Dec25 GP DIRT spd=64 
+  07Dec25 GPª DIRT spd=65 
+  16Nov25 GP DIRT spd=72 
+  03Aug25 GP DIRT spd=54 
+Workouts: 14Feb GP 5f 1:02ª | 24Jan GP 5f 1:01« | 17Jan GP 5f 1:02¨ | 29Nov'25 GP 4f :48¨
+
+--- HORSE 3 Liam's Song ---
+Style: P (2)
+Prime Power: 121.6 (1st)
+Jockey: PEREZ EDGAR | Trainer: Vaccarezza Nicholas
+Odds: 3/1 | Weight: 123
+Life: 2 starts 1-0-0 $15,186 speed=89
+POSITIVE: Highest last race speed rating | Won last race (GP 01/15 8.32f All Weather ft Md17500) | Best AW speed is fastest among today's starters
+NEGATIVE: Moves up in class from last start | Poor 'Routes' trainer record: 8% wins 12 sts | 01Oct'25 Elp  3f  ft   :37  B 1/5     28Feb'25 OP  4f  ft   :48¨  B 8/54     07Feb'25 OP  4f  ft   :49¨  B 34/63     18Jan'25 OP  4f  ft   :49«  B 125/319
+Running lines (2):
+  15Jan26 GP DIRT spd=89 
+  25Jan25 OP DIRT spd=58 
+Workouts: 04Feb Pmm ˜ (d) 4f :50© | 07Jan Pmm ˜ (d) 4f :50ª | 12Dec'25 Pmm 4f :48ª | 06Dec'25 Pmm 4f :51ª
+
+--- HORSE 4 Message of Hope ---
+Style: E/P (5)
+Prime Power: 117.1 (3rd)
+Jockey: TORRES YOLBER | Trainer: Croft Barry N
+Odds: 8/1 | Weight: 118
+Life: 9 starts 1-2-1 $43,096 speed=82
+NEGATIVE: Failed as favorite in last 2 starts | Poor 'Routes' trainer record: 4% wins 89 sts | 01Nov'25 Pmm  3f  ft   :35¨  B 1/28     25Oct'25 Pmm  3f  ft   :37©  B 11/32
+Running lines (9):
+  31Jan26 GP DIRT spd=74 
+  05Dec25 GP TURF spd=71 
+  23Nov25 GP DIRT spd=82 
+  26Sep25 CD TURF spd=65 
+  23Aug25 Cnl TURF spd=78 
+  20Jly25 GP DIRT spd=76 
+Workouts: 16Jan Pmm 3f :37ª | 02Jan Pmm 4f :50© | 26Dec'25 Pmm ˜ 4f :47ª | 15Nov'25 Pmm 3f :38ª
+
+--- HORSE 5 Mr. Colossal ---
+Style: P (2)
+Prime Power: 113.5 (4th)
+Jockey: ZAYAS EDGARD J | Trainer: Rice Kevin
+Odds: 6/1 | Weight: 123
+Life: 0 starts  $ speed=None
+POSITIVE: Eligible to improve in 2nd start since layoff | Finished 3rd vs similar in last race
+NEGATIVE: 15Aug'25 Pid  3f  ft   :36  B 1/4     30Jun'25 Pid  4f  ft   :49  B 4/6 | 03Jun'25 Pid  3f  ft   :36©  B 1/4
+Running lines (10):
+  31Jan26 GP DIRT spd=76 
+  24Jly25 Sar TURF spd=75 
+  09Jly25 Pid DIRT spd=72 
+  17Jun25 Pid DIRT spd=72 
+  10Jun25 Pid DIRT spd=78 
+  20May25 Pid DIRT spd=74 
+Workouts: 22Jan Tam 4f :49ª | 14Jan Tam 4f :48« | 07Jan Tam 4f :51© | 19Dec'25 Tam 4f :49¨
+
+--- HORSE 6 Esperanzito ---
+Style: P (3)
+Prime Power: 111.6 (5th)
+Jockey: RUIZ JORGE | Trainer: Perez Carlos L
+Odds: 5/1 | Weight: 123
+Life: 4 starts 1-0-1 $19,120 speed=81
+POSITIVE: Eligible to improve in 2nd start since layoff | Finished 3rd vs similar in last race
+NEGATIVE: Poor Speed Figure in only recent start
+Running lines (4):
+  10Jan26 GP DIRT spd=68 
+  26Apr25 GP DIRT spd=68 
+  04Apr25 GP TURF spd=77 
+  20Feb25 GP DIRT spd=81 
+Workouts: 13Feb GP 4f :51© | 30Jan GP 4f :50¨ | 03Jan GP 4f :48 | 20Dec'25 GP 4f :49«
+
+--- HORSE 7 Just Lookin At You ---
+Style: S (2)
+Prime Power: 103.8 (7th)
+Jockey: DAVIS KATIE | Trainer: Real Manny
+Odds: 20/1 | Weight: 123
+Life: 2 starts 1-0-0 $19,700 speed=72
+POSITIVE: Won last race (GP 11/15 7f Dirt ft Md25000) | May improve with Lasix added
+NEGATIVE: Moves up in class from last start | Has not raced for more than a year | Poor Speed Figures | Poor '90+ days away' trainer record: 0% wins 11 sts
+Running lines (2):
+  15Nov24 GP DIRT spd=72 
+  06Oct24 GP DIRT spd=46 
+Workouts: 11Feb GP 3f :39« | 04Feb GP 4f :50 | 03Jan GP 4f :51ª | 28Dec'25 GP 3f :40

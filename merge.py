@@ -198,3 +198,106 @@ def merge_parsed_sessions(
     merged['parse_source'] = 'both'
 
     return merged
+
+
+# ---------------------------------------------------------------------------
+# Primary + Secondary merge (dual-upload)
+# ---------------------------------------------------------------------------
+
+ENRICHMENT_FIELDS = frozenset({
+    'runstyle', 'runstyle_rating',
+    'trainer', 'trainer_stats',
+    'jockey', 'jockey_stats',
+    'workouts',
+    'quickplay_positive', 'quickplay_negative',
+    'owner', 'breed_info', 'sire', 'dam', 'breeder',
+    'weight', 'odds',
+    'life_starts', 'life_record', 'life_earnings', 'life_speed',
+    'surface_records',
+    'class_rating', 'prime_power', 'prime_power_rank',
+})
+
+
+def merge_primary_secondary(
+    primary_json: Dict[str, Any],
+    secondary_json: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Merge primary figure data with secondary enrichment data.
+
+    Primary keeps ALL its fields.  Secondary adds only the fields listed
+    in ``ENRICHMENT_FIELDS`` for matched horses.
+
+    Matching strategy (two-pass):
+      1. Match by ``(race_number, post)`` — most reliable for same-card data.
+      2. Fallback: match by ``normalize_name(horse_name)``.
+
+    Returns a copy of ``primary_json`` with enrichment merged in plus a
+    top-level ``merge_stats`` dict.
+    """
+    primary_horses = list(primary_json.get('horses', []))
+    secondary_horses = list(secondary_json.get('horses', []))
+
+    # --- Build secondary indexes ---
+    sec_by_rn_post: Dict[str, Dict] = {}
+    sec_by_name: Dict[str, Dict] = {}
+    for sh in secondary_horses:
+        rn = sh.get('race_number')
+        post = sh.get('post')
+        if rn is not None and post is not None:
+            sec_by_rn_post[f"{rn}|{post}"] = sh
+        name_key = normalize_name(sh.get('horse_name', ''))
+        if name_key:
+            sec_by_name[name_key] = sh
+
+    matched = 0
+    unmatched_names: List[str] = []
+    merged_horses: List[Dict] = []
+
+    for ph in primary_horses:
+        merged_h = dict(ph)
+
+        # Pass 1: match by (race_number, post)
+        rn = ph.get('race_number')
+        post = ph.get('post')
+        key1 = f"{rn}|{post}" if rn is not None and post is not None else None
+        sec_h = sec_by_rn_post.get(key1) if key1 else None
+
+        # Pass 2: fallback to name
+        if sec_h is None:
+            name_key = normalize_name(ph.get('horse_name', ''))
+            sec_h = sec_by_name.get(name_key)
+
+        if sec_h is not None:
+            for fld in ENRICHMENT_FIELDS:
+                sec_val = sec_h.get(fld)
+                if not _is_empty(sec_val):
+                    merged_h[fld] = sec_val
+            merged_h['enrichment_source'] = 'both'
+            matched += 1
+        else:
+            merged_h['enrichment_source'] = 'primary_only'
+            unmatched_names.append(ph.get('horse_name', '?'))
+
+        merged_horses.append(merged_h)
+
+    total = len(primary_horses)
+    coverage_pct = (matched / total * 100) if total else 0
+
+    result = dict(primary_json)
+    result['horses'] = merged_horses
+
+    # Carry over races_detail from secondary if primary lacks it
+    if 'races_detail' not in result and 'races_detail' in secondary_json:
+        result['races_detail'] = secondary_json['races_detail']
+
+    result['merge_stats'] = {
+        'matched': matched,
+        'unmatched': len(unmatched_names),
+        'unmatched_names': unmatched_names,
+        'total_primary': total,
+        'total_secondary': len(secondary_horses),
+        'coverage_pct': round(coverage_pct, 1),
+        'coverage': f"{matched}/{total} horses matched",
+    }
+
+    return result

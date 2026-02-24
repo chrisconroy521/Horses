@@ -1,0 +1,152 @@
+META:
+track=Gulfstream Park
+date=February 19, 2026
+race=10
+surface=TURF
+distance=1 Mile
+class=MC
+purse=38,000
+restrictions=4&up
+pars={'E1': 79, 'E2': 74, 'LATE': 77, 'SPEED': 74}
+
+--- HORSE 1 Basilica Light ---
+Style: E (8)
+Prime Power: 96.3 (9th)
+Jockey: OCASIO JONATHAN | Trainer: DeSouza Crafton
+Odds: 20/1 | Weight: 123
+Life: 9 starts 0-0-1 $8,610 speed=71
+POSITIVE: Rail post is winning at 19% clip | Eligible to improve in 2nd start since layoff
+NEGATIVE: Beaten by weaker in last race | Poor trainer win% | Poor jockey win% this meet | 27Jan Pmm  3f  ft   :36«  B 1/5     17Jan Pmm  4f  ft   :51¨  B 58/68     08Jan Pmm  4f  ft   :52«  B 17/17     30Dec'25 Pmm  4f  ft   :53«  B 11/11     22Aug'25 Pmm  3f  ft   :37¨  B 13/20     31Jly'25 Pmm  3f  ft   :37«  B 2/3
+Running lines (9):
+  29Jan26 GP TURF spd=71 MC17500
+  24Aug25 GP DIRT spd=69 MC17500
+  02Aug25 GP DIRT spd=66 MC12500
+  19Jly25 GP DIRT spd=65 MC12500
+  23Jan25 GP DIRT spd=? MC12500
+  02Jan25 GP DIRT spd=57 MC12500
+Workouts: 27Jan Pmm 3f :36« | 17Jan Pmm 4f :51¨ | 08Jan Pmm 4f :52« | 30Dec'25 Pmm 4f :53«
+
+--- HORSE 2 She's Chloe ---
+Style: S (0)
+Prime Power: 100.6 (6th)
+Jockey: GAFFALIONE TYLER | Trainer: Walsh Brendan P
+Odds: 5/1 | Weight: 123
+Life: 1 starts 0-0-1 $4,240 speed=75
+POSITIVE: High % trainer | 21% trainer: Maiden Clming | Finished 3rd vs similar in only start
+NEGATIVE: Has not raced for more than 10 months
+Running lines (1):
+  17Apr25 GP TURF spd=75 MC35000
+Workouts: 13Feb Pmm 4f :51© | 06Feb Pmm 4f :51 | 30Jan Pmm 4f :52¨ | 09Jan Pmm 4f :51
+
+--- HORSE 3 Spinning Class ---
+Style: E/P (4)
+Prime Power: 115.9 (1st)
+Jockey: ORTIZ, JR. IRAD | Trainer: McGaughey III Claude R
+Odds: 5/2 | Weight: 123
+Life: 7 starts 0-1-1 $21,180 speed=80
+POSITIVE: Switches to a high % jockey | Highest last race speed rating | Drops in class today | 18% trainer: Shipper | Eligible to improve in 3rd start since layoff | Best Turf Speed is fastest among today's starters (tie) | Hot Jockey in last 7 days (8 2-0-3)
+NEGATIVE: Poor trainer win% this meet
+Running lines (7):
+  10Jan26 Tam TURF spd=78 Mdn
+  03Dec25 Tam TURF spd=71 Mdn
+  23Apr25 Kee TURF spd=71 Mdn
+  28Feb25 GP TURF spd=80 Mdn
+  03Mar24 GP TURF spd=77 Mdn
+  20Jan24 Tam TURF spd=73 Mdn
+Workouts: 08Feb GP 4f :48 | 31Jan GP 4f :49ª | 24Jan GP 4f :50 | 30Dec'25 GP 3f :38¨
+
+--- HORSE 4 Added Touch ---
+Style: P (4)
+Prime Power: 100.2 (7th)
+Jockey: ALVARADO JUNIOR | Trainer: Oliver Victoria H
+Odds: 8/1 | Weight: 123
+Life: 6 starts 0-0-1 $10,382 speed=72
+POSITIVE: Drops in class today
+NEGATIVE: Has not raced for more than 4 months | Poor trainer win%
+Running lines (6):
+  25Sep25 CD TURF spd=67 MC75000
+  26Feb25 GP DIRT spd=72 MC50000
+  26Jan25 GP TURF spd=67 Mdn
+  06Nov24 Ind DIRT spd=67 Mdn
+  05Sep24 KD TURF spd=56 Mdn
+  19Aug24 Elp TURF spd=55 Mdn
+Workouts: 10Feb Pay 4f :50 | 04Feb Pay 4f :50© | 28Jan Pay 4f :50ª | 30Nov'25 Kee 4f :48¨
+
+--- HORSE 5 Thames ---
+Style: E (4)
+Prime Power: 114.6 (2nd)
+Jockey: ZAYAS EDGARD J | Trainer: Mott Riley
+Odds: 7/2 | Weight: 123
+Life: 4 starts 0-0-0 $7,054 speed=80
+POSITIVE: Drops in class today | 19% trainer: Mdn to MdnClm | Best Turf Speed is fastest among today's starters (tie)
+NEGATIVE: Poor trainer win% this meet
+Running lines (4):
+  10Jan26 Tam TURF spd=77 Mdn
+  04Dec25 TP DIRT spd=57 Mdn
+  23Oct25 Kee TURF spd=80 Mdn
+  17Apr25 Kee TURF spd=72 Mdn
+Workouts: 11Feb Pmm ˜ (d) 5f 1:00¨ | 04Feb Pmm ˜ (d) 4f :49ª | 25Jan Pmm ˜ (d) 5f 1:02¨ | 31Dec'25 Pmm ˜ (d) 4f :50©
+
+--- HORSE 6 In Timing ---
+Style: E (8)
+Prime Power: 100.9 (5th)
+Jockey: MARTINEZ CARLOS | Trainer: Crichton Rohan G
+Odds: 15/1 | Weight: 116
+Life: 4 starts 0-0-1 $5,930 speed=76
+POSITIVE: Drops in class today | 30% trainer: Mdn to MdnClm | May improve at the longer distance
+NEGATIVE: Has not raced for more than 2 months | Poor jockey win% this meet | Has never raced at a route distance
+Running lines (4):
+  27Nov25 GP DIRT spd=70 Mdn
+  15Feb25 GPª TURF spd=61 Mdn
+  12Oct24 GP DIRT spd=50 Mdn
+  14Sep24 GP DIRT spd=71 Mdn
+Workouts: 12Feb GP 4f :50 | 30Jan GP 3f :37ª | 24Jan GP 4f :49 | 15Jan GP 3f :37«
+
+--- HORSE 7 Elektra King ---
+Style: S (0)
+Prime Power: 102.0 (4th)
+Jockey: CASTELLANO JAVIER | Trainer: Wilkes Ian R
+Odds: 8/1 | Weight: 123
+Life: 7 starts 0-1-2 $10,575 speed=74
+POSITIVE: 33% trainer: Up one class | May improve with Blinkers added today
+NEGATIVE: Beaten by weaker in last race | Poor 'Turf starts' trainer record: 7% wins 444 sts | 21Sep'25 Sky  4f  ft   :49©  B 1/5     14Sep'25 Sky  4f  ft   :49«  B 4/5     24Aug'25 Sky  4f  ft   :49¨  B 6/11     17Aug'25 Sky  4f  ft   :50¨  B 5/7     10Aug'25 Sky  4f  ft   :49©  B 7/8
+Running lines (7):
+  28Jan26 Tam TURF spd=70 MC25000
+  04Nov25 Ind TURF spd=56 MC30000
+  14Oct25 Ind TURF spd=74 MC25000
+  03Sep25 Ind TURF spd=63 MC25000
+  29Jan25 GP TURF spd=60 MC50000
+  08Jan25 GP TURF spd=67 MC75000
+Workouts: 18Jan Pmm ˜ 4f :47 | 11Jan Pmm ˜ (d) 4f :50ª | 04Jan Pmm 4f :50« | 28Dec'25 Pmm ˜ 4f :48«
+
+--- HORSE 8 Queen McKinzie ---
+Style: E/P (6)
+Prime Power: 112.9 (3rd)
+Jockey: MORELOS JOSE E | Trainer: Coy Ronald
+Odds: 3/1 | Weight: 123
+Life: 0 starts  $ speed=None
+POSITIVE: Drops in class today | Eligible to improve in 2nd start since layoff | May improve at the shorter distance | Best Turf speed is faster than the Avg Winning Speed | Hot Jockey in last 7 days (16 4-0-2)
+NEGATIVE: 10Dec'25 GP  3f  my   :36  Bg 1/4     29Nov'25 GP  4f  ft   :50  B 71/97     26Oct'25 GP  4f  ft   :51«  B 100/116 | 24Jly'25 GP  4f  gd   :48  B 1/6     28Jun'25 GP  4f  ft   :49¨  B 28/78     28May'25 GP  4f  ft   :51©  B 10/14     01May'25 GP  3f  ft   :38©  Bg 4/4     09Apr'25 GP  4f  gd   :49¨  B 2/2
+Running lines (10):
+  25Jan26 GP TURF spd=75 Mdn
+  12Oct25 GP DIRT spd=64 Mdn
+  13Sep25 GP DIRT spd=91 Mdn
+  10Aug25 GP DIRT spd=88 Mdn
+  06Jly25 GP DIRT spd=77 MC25000
+  08May25 GP DIRT spd=77 MC25000
+Workouts: 07Feb GP 4f :49 | 16Jan GP 4f :48¨ | 24Dec'25 GP 4f :48« | 10Dec'25 GP 3f :36
+
+--- HORSE 9 Contra ---
+Style: E (6)
+Prime Power: 97.8 (8th)
+Jockey: KARAMANOS HORACIO | Trainer: Nagle Sarah
+Odds: 30/1 | Weight: 120
+Life: 4 starts 0-0-0 $2,250 speed=69
+POSITIVE: Drops in class today
+NEGATIVE: Speed Figs rank poorly vs others
+Running lines (4):
+  01Feb26 Tam TURF spd=65 Mdn
+  27Nov25 GP DIRT spd=53 Mdn
+  25Apr25 Lrl TURF spd=69 Mdn
+  15Mar25 Cnl DIRT spd=40 ’Mdn
+Workouts: 24Jan Oec ˜ 4f :49« | 14Jan Oec ˜ 5f 1:00ª | 31Dec'25 Oec ˜ 6f 1:17© | 19Nov'25 Oec 4f :51©

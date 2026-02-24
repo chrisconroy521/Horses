@@ -1,0 +1,127 @@
+META:
+track=Gulfstream Park
+date=February 19, 2026
+race=2
+surface=AW
+distance=5½ Furlongs
+class=Clm
+purse=31,000
+restrictions=4&up
+pars={'E1': 91, 'E2': 91, 'LATE': 79, 'SPEED': 78}
+
+--- HORSE 1 Boot's On the Moon ---
+Style: S (0)
+Prime Power: 112.7 (5th)
+Jockey: GAFFALIONE TYLER | Trainer: Spatz Ronald B
+Odds: 8/1 | Weight: 123
+Life: 0 starts  $ speed=None
+POSITIVE: Drops in class today | Eligible to improve in 2nd start since layoff | Highest speed figure at today's distance | Best AW speed is fastest among today's starters
+NEGATIVE: Poor trainer win% this meet | Poor Speed Figure in only recent start | 15Dec'25 GP  3f  ft   :36  B 1/6
+Running lines (10):
+  18Jan26 GP DIRT spd=66 C25000b
+  29Aug25 GP DIRT spd=65 C17500b
+  03Aug25 GP DIRT spd=77 C17500b
+  13Jun25 GPª DIRT spd=82 C17500n2L
+  17May25 GP DIRT spd=74 C25000b
+  19Apr25 GP TURF spd=77 C35000b
+Workouts: 07Feb GP 4f :49© | 29Jan GP 5f 1:02¨ | 07Jan GP 4f :50ª | 31Dec'25 GP 4f :50ª
+
+--- HORSE 2 Seeking a Prayer ---
+Style: P (1)
+Prime Power: 113.9 (4th)
+Jockey: MARAGH RAJIV | Trainer: Palmer Nicholas
+Odds: 4/1 | Weight: 123
+Life: 0 starts  $ speed=None
+Running lines (10):
+  12Feb26 GP TURF spd=62 C17500n3L
+  02Jan26 GP TURF spd=78 C17500n3L-c¨¨§
+  14Dec25 GP DIRT spd=81 C17500n2L-c¨¨ª
+  27Nov25 GP DIRT spd=77 C17500n2L
+  25Oct25 GP TURF spd=81 C17500n2L-c¨¨¨
+  28Sep25 GP DIRT spd=75 C25000b
+Workouts: 21Nov'25 GP 4f :49« | 18Oct'25 Pmm 4f :49« | 16Aug'25 Pmm 4f :49« | 02Aug'25 Pmm 4f :50«
+
+--- HORSE 3 Neodera ---
+Style: E (8)
+Prime Power: 115.1 (2nd)
+Jockey: GUTIERREZ MARIO | Trainer: Lerman Michael
+Odds: 2/1 | Weight: 123
+Life: 7 starts 2-0-2 $62,380 speed=79
+POSITIVE: Drops in class today | Early speed running style helps chances
+NEGATIVE: 06Jly'25 Pmm  3f  ft   :37  B 1/4     29Jun'25 Pmm  4f  ft   :48«  B 3/13
+Running lines (7):
+  15Jan26 GP DIRT spd=43 A25000s
+  12Dec25 GPª DIRT spd=79 C17500n2L
+  21Nov25 GP DIRT spd=62 ‘OC20k/n1x-N¨¨§103
+  05Oct25 GP DIRT spd=61 ‘OC20k/n1x-N¨¨§
+  12Jly25 GP DIRT spd=79 Mdn
+  26Jly24 GP DIRT spd=74 Mdn
+Workouts: 14Nov'25 Pmm ˜ (d) 4f :52 | 07Nov'25 Pmm ˜ (d) 4f :53© | 24Oct'25 Pmm ˜ (d) 4f :52 | 06Jly'25 Pmm 3f :37
+
+--- HORSE 4 Speightfulelection ---
+Style: E/P (5)
+Prime Power: 114.8 (3rd)
+Jockey: DAVIS KATIE | Trainer: Dougherty Devon
+Odds: 5/1 | Weight: 121
+Life: 0 starts  $ speed=None
+POSITIVE: Early speed running style helps chances
+NEGATIVE: Beaten by weaker in last race | Poor trainer win% | 29Aug'25 GP  4f  ft   :47©  B 1/36     13Aug'25 GP  4f  ft   :48«  B 8/18 | 05Jly'25 GP  3f  gd   :35ª  B 1/31     05Jun'25 GP  4f  gd   :49«  B 3/6     13Apr'25 GP  4f  ft   :47«  B 4/57
+Running lines (10):
+  08Jan26 GP DIRT spd=71 C8000n3L-c
+  26Sep25 GP DIRT spd=79 C12500b
+  12Jly25 GP DIRT spd=74 C8000n2L
+  19Jun25 GPª DIRT spd=60 C12500n2L
+  17May25 GP DIRT spd=60 C25000b
+  20Apr25 GP TURF spd=53 OC25k/n1x-N¨§°
+Workouts: 01Feb GP 4f :50ª | 28Dec'25 GP 4f :53ª | 17Dec'25 GP 4f :47« | 14Nov'25 GP 3f :39
+
+--- HORSE 5 Bonita Diamond ---
+Style: E (7)
+Prime Power: 109.2 (6th)
+Jockey: JUAREZ NIK | Trainer: Villanueva Sergio E
+Odds: 15/1 | Weight: 123
+Life: 0 starts  $ speed=None
+POSITIVE: Drops in class today | Eligible to improve in 3rd start since layoff | Early speed running style helps chances
+NEGATIVE: Poor jockey win% this meet | Poor Speed Figures | Poor record at this distance | 15Nov'25 Njf  4f  gd   :50  B 1/6     01Nov'25 Njf  4f  gd   :50  B 4/10 | 30Aug'25 Mth  3f  ft   :37¨  B 1/8 | 10Aug'25 Mth  3f  ft   :35«  B 1/42     18May'25 Mth  4f  ft   :49©  B 73/194     17Feb'25 Njf  4f  gd   :50©  Bg 1/2     05Feb'25 Tam  4f  ft   :48«  B 8/23     05Jan'25 Njf  5f  gd   1:02«  B 1/1     28Dec'24 Njf  3f  gd   :39«  Bg 1/1
+Running lines (10):
+  18Jan26 GP DIRT spd=62 C25000b
+  13Dec25 Tam DIRT spd=63 C20000
+  13Sep25 Mth TURF spd=69 C16000b
+  12Jly25 Mth TURF spd=68 MC16000
+  21Jun25 Mth TURF spd=54 MC16000
+  25May25 Mth TURF spd=69 MC16000
+Workouts: 03Jan Njf 4f :50 | 08Dec'25 Njf 4f :51 | 26Nov'25 Tam 4f :49 | 15Nov'25 Njf 4f :50
+
+--- HORSE 6 Reading Time ---
+Style: E/P (1)
+Prime Power: 115.7 (1st)
+Jockey: ZAYAS EDGARD J | Trainer: Orseno Joseph F
+Odds: 9/5 | Weight: 123
+Life: 8 starts 2-0-1 $37,180 speed=90
+POSITIVE: Highest last race speed rating
+NEGATIVE: Never threatened leaders (on Turf) in last start | Has not raced in 48 days | 19Sep'25 CD  3f  ft   :36©  B 1/6     13Sep'25 CD  4f  ft   :49ª  B 99/154     06Sep'25 CD  4f  ft   :50ª  B 114/148     16Aug'25 CD  5f  ft   1:01©  B 24/55     09Aug'25 CD  4f  ft   :48«  B 34/140     28Jun'25 CD  3f  ft   :37«  B 18/33
+Running lines (8):
+  02Jan26 GP TURF spd=76 C17500n3L-c¨§°
+  30Nov25 GP DIRT spd=77 OC25k/n1x-N¨¨©
+  15Oct25 Ind TURF spd=77 C25000n2L
+  24Aug25 Elp TURF spd=90 MC16000
+  03Jly25 Ind TURF spd=70 MC20000
+  04Jun25 CDª DIRT spd=61 MC30000
+Workouts: 30Jan GP 4f :49 | 21Dec'25 Pmm 4f :49ª | 23Nov'25 Pmm 4f :50¨ | 10Oct'25 Kee 3f :36«
+
+--- HORSE 7 My Anticipation ---
+Style: S (0)
+Prime Power: 108.9 (7th)
+Jockey: LEON JOSE A | Trainer: Birdwell Tena
+Odds: 20/1 | Weight: 123
+Life: 9 starts 2-2-0 $103,695 speed=81
+POSITIVE: Drops in class today | 50% trainer: Blnkr back on | May improve with Blinkers added today
+NEGATIVE: Has not raced in 48 days | Poor Speed Figures in last 2 starts
+Running lines (9):
+  02Jan26 Tam DIRT spd=61 OC16k/n1x-N¨§¯
+  17Dec25 Tam TURF spd=64 A55500n1x
+  23Oct25 Baq TURF spd=79 C35000n2L
+  26Sep25 Baq DIRT spd=75 C35000n2L
+  03Jly25 Sar TURF spd=75 A110000n1x
+  11May25 Baq DIRT spd=81 Mdn
+Workouts: 04Feb Tam 4f :50© | 06Dec'25 Tam 4f :51 | 15Oct'25 Bel tr.t 4f :52 | 15Sep'25 Bel tr.t 4f :51©

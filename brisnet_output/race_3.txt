@@ -1,0 +1,125 @@
+META:
+track=Gulfstream Park
+date=February 19, 2026
+race=3
+surface=AW
+distance=1m70yds
+class=MC
+purse=26,500
+restrictions=4&up
+pars={'E1': 80, 'E2': 75, 'LATE': 77, 'SPEED': 75}
+
+--- HORSE 3 Lomax ---
+Style: S (0)
+Prime Power: 115.1 (2nd)
+Jockey: ORTIZ, JR. IRAD | Trainer: David Carlos A
+Odds: 9/5 | Weight: 123
+Life: 5 starts 0-0-1 $9,000 speed=83
+POSITIVE: High % trainer | Switches to a high % jockey | Highest last race speed rating | Drops in class today | 34% trainer: 2nd after clm | May improve in 4th start since layoff | Best AW speed is close to the Avg Winning Speed | Hot Jockey in last 7 days (8 2-0-3)
+Running lines (5):
+  06Feb26 GP TURF spd=83 
+  28Dec25 GP TURF spd=64 
+  07Dec25 GP DIRT spd=68 
+  12Jan25 GP TURF spd=73 
+  24Nov24 GP DIRT spd=75 
+Workouts: 01Feb Pmm 3f :37« | 25Jan Pmm 4f :49« | 11Jan Pmm 3f :36© | 29Nov'25 GP 4f :50ª
+
+--- HORSE 4 Animated ---
+Style: S (0)
+Prime Power: 111.9 (3rd)
+Jockey: VASQUEZ MIGUEL A | Trainer: Hurtak Daniel C
+Odds: 8/1 | Weight: 123
+Life: 0 starts  $ speed=None
+POSITIVE: Drops in class today | Best AW speed is fastest among today's starters
+NEGATIVE: Poor trainer win%
+Running lines (10):
+  15Jan26 GP DIRT spd=80 
+  03Jan26 GP DIRT spd=70 
+  06Dec25 GP TURF spd=68 
+  23Nov25 GP DIRT spd=67 
+  25Oct25 GP TURF spd=71 
+  11Oct25 GP DIRT spd=76 
+Workouts: 06Feb GP 4f :51© | 27Dec'25 GP 4f :49ª | 08Aug'25 Glm 4f :51© | 30Jly'25 Glm 4f :50
+
+--- HORSE 5 Numinous ---
+Style: P (2)
+Prime Power: 108.3 (4th)
+Jockey: NICHOLLS MIA | Trainer: Catanese III Joseph C
+Odds: 20/1 | Weight: 116
+Life: 7 starts 0-0-0 $4,100 speed=76
+POSITIVE: Drops in class today | Dam has 3 winners from 4 starters and 1 stakes winner
+NEGATIVE: Never In-the-money in 7 career starts | Poor trainer win% | 08Aug'25 GP  4f  ft   :48ª  B 1/18     30Jly'25 GP  4f  ft   :48  B 3/15     23Jly'25 GP  4f  ft   :49ª  B 5/10 | First time starter | Poor '1st time str' trainer record: 0% wins 18 sts
+Running lines (7):
+  15Jan26 GP DIRT spd=64 
+  12Dec25 GP TURF spd=76 
+  15Nov25 GPª DIRT spd=66 
+  17Oct25 GP TURF spd=75 
+  21Sep25 GP DIRT spd=66 
+  16Aug25 GP TURF spd=65 
+Workouts: 01Feb GP 4f :49© | 07Jan GP 4f :50 | 31Dec'25 GP 4f :49 | 07Dec'25 GP 4f :48
+
+--- HORSE 7 Frosted Punk ---
+Style: S (0)
+Prime Power: 100.9 (7th)
+Jockey: TORRES YOLBER | Trainer: O'Connell Kathleen
+Odds: 12/1 | Weight: 118
+Life: 4 starts 0-0-1 $3,730 speed=70
+POSITIVE: Finished 3rd vs similar in last race
+NEGATIVE: Has not raced for more than 7 months | Poor trainer win% this meet
+Running lines (4):
+  12Jly25 GP DIRT spd=70 
+  15Jun25 GP DIRT spd=58 
+  25May25 GP TURF spd=45 
+  01May25 GP DIRT spd=55 
+Workouts: 08Feb GP 4f :47ª | 31Jan GP 4f :49¨ | 18Jan GP 4f :50 | 03Jan GP 4f :51©
+
+--- HORSE 8 Secret Power ---
+Style: E (2)
+Prime Power: 90.0 (8th)
+Jockey: FIGUEROA HERIBERTO | Trainer: Cadahia Benny C
+Odds: 30/1 | Weight: 123
+Life: 0 starts  $ speed=None
+POSITIVE: May improve while returning to a route | Best AW speed is close to the Avg Winning Speed
+NEGATIVE: Always far back (on Dirt) in last start | Has not raced in 57 days | Poor trainer win% | Poor jockey win% this meet | Poor Speed Figures in last 2 starts
+Running lines (10):
+  24Dec25 GP DIRT spd=37 
+  06Dec25 GP TURF spd=61 
+  23Nov25 GP DIRT spd=73 
+  02Nov25 GP DIRT spd=74 
+  25Oct25 GP TURF spd=65 
+  11Oct25 GP DIRT spd=70 
+Workouts: 14Feb GP 3f :38ª | 23Aug'25 GP 3f :35¨ | 18Jly'25 GP 5f 1:01ª | 11Jly'25 GP 4f :49«
+
+--- HORSE 9 Tapstick ---
+Style: E (7)
+Prime Power: 105.6 (6th)
+Jockey: PANICI LUCA | Trainer: Smullen Heather
+Odds: 6/1 | Weight: 123
+Life: 8 starts 0-2-0 $12,882 speed=78
+POSITIVE: Best AW speed is faster than the Avg Winning Speed | Sharp 4F workout (Feb-13)
+NEGATIVE: Finished far back (on Dirt) in last start | Failed as favorite in last 2 starts | Poor 'Routes' trainer record: 6% wins 151 sts | 16Jan GP  4f  ft   :47©  B 1/22     28Dec'25 GP  4f  ft   :49ª  B 27/62     14Dec'25 GP  4f  ft   :47ª  B 5/18     26Oct'25 GP  5f  ft   1:01©  B 5/6
+Running lines (8):
+  23Jan26 GP DIRT spd=59 
+  03Jan26 GP DIRT spd=70 
+  23Nov25 GP DIRT spd=78 
+  02Nov25 GP DIRT spd=72 
+  19Sep25 Med TURF spd=66 
+  16Aug25 Mth TURF spd=66 
+Workouts: 13Feb GP 4f :47© | 06Feb GP 4f :49 | 16Jan GP 4f :47© | 28Dec'25 GP 4f :49ª
+
+--- HORSE 10 One More Duke ---
+Style: E/P (8)
+Prime Power: 108.3 (5th)
+Jockey: ROJAS RENZO | Trainer: Yates Michael
+Odds: 12/1 | Weight: 123
+Life: 9 starts 0-0-1 $7,600 speed=72
+POSITIVE: Drops in class today | May improve while returning to a route
+NEGATIVE: Speed Figs rank poorly vs others | Poor 'Sprint to Rte' trainer record: 6% wins 64 sts | 27Dec'25 GP  3f  ft   :35ª  B 1/18     09Oct'25 GP  3f  ft   :35¨  B 1/2     21Dec'24 GP  3f  ft   :37¨  B 3/11     30Nov'24 GP  3f  ft   :36©  B 4/34     09Nov'24 GP  4f  ft   :50©  B 76/122
+Running lines (9):
+  22Jan26 GP DIRT spd=64 
+  07Dec25 GP DIRT spd=61 
+  14Nov25 GP DIRT spd=72 
+  18Oct25 GP DIRT spd=69 
+  12Feb25 GP TURF spd=68 
+  02Jan25 GP TURF spd=71 
+Workouts: 08Jan GP 3f :36© | 27Dec'25 GP 3f :35ª | 09Oct'25 GP 3f :35¨ | 21Dec'24 GP 3f :37¨

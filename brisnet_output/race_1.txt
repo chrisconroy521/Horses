@@ -1,0 +1,113 @@
+META:
+track=Gulfstream Park
+date=February 19, 2026
+race=1
+surface=TURF
+distance=1ˆ Mile
+class=MC
+purse=38,000
+restrictions=3yo Fillies
+pars={'E1': 80, 'E2': 75, 'LATE': 77, 'SPEED': 75}
+
+--- HORSE 1 Mi Amada ---
+Style: E (7)
+Prime Power: 122.1 (1st)
+Jockey: ORTIZ, JR. IRAD | Trainer: Casse Mark E
+Odds: 9/5 | Weight: 122
+Life: 4 starts 0-2-1 $19,960 speed=72
+POSITIVE: High % Jockey | Drops in class today | 25% trainer: Btn favorite | Ran 2nd vs tougher in last race | May improve with Lasix added | Hot Jockey in last 7 days (8 2-0-3)
+NEGATIVE: Failed as favorite in last 2 starts | Has not raced for more than 2 months | 22Aug'25 GP  4f  ft   :47©  B 1/6     16Aug'25 GP  4f  ft   :50¨  Bg 30/58
+Running lines (4):
+  04Dec25 GP TURF spd=72 Moc50000
+  25Oct25 GP TURF spd=72 Mdn
+  27Sep25 GP DIRT spd=71 Mdn
+  12Sep25 GPª DIRT spd=74 Mdn
+Workouts: 08Feb GP 5f 1:01ª | 17Jan GP 5f 1:02ª | 02Jan GP 5f 1:02« | 19Dec'25 GP 4f :49«
+
+--- HORSE 2 Striking Finale ---
+Style: P (5)
+Prime Power: 115.0 (2nd)
+Jockey: RUIZ JORGE | Trainer: Trombetta Michael J
+Odds: 4/1 | Weight: 122
+Life: 5 starts 0-0-2 $11,460 speed=76
+POSITIVE: Highest last race speed rating | Drops in class today | Best Turf Speed is fastest among today's starters
+NEGATIVE: 10Oct'25 Fai  4f  ft   :48  Bg 1/30     04Oct'25 Fai  4f  ft   :50  B 18/27     27Sep'25 Fai  4f  ft   :50  B 31/45
+Running lines (5):
+  31Jan26 GP TURF spd=76 Moc50000-N¨¨¨
+  01Jan26 GP TURF spd=67 Moc50000-N¨¨§
+  04Dec25 GP TURF spd=71 Moc50000-N¨¨¨
+  31Oct25 Lrl DIRT spd=42 Mdn
+  27Jly25 Mth TURF spd=38 Mdn
+Workouts: 14Feb GP 3f :37 | 25Jan GP 4f :47« | 18Jan GP 4f :50© | 28Dec'25 GP 3f :38
+
+--- HORSE 3 Miss Magical ---
+Style: S (5)
+Prime Power: 102.1 (7th)
+Jockey: DAVIS KATIE | Trainer: Cazares Laura
+Odds: 12/1 | Weight: 122
+Life: 3 starts 0-1-0 $27,310 speed=67
+POSITIVE: 22% trainer: 2nd off layoff | Eligible to improve in 2nd start since layoff
+NEGATIVE: Finished far back in last start | Poor Speed Figure in only recent start
+Running lines (3):
+  09Jan26 GP TURF spd=59 MC35000-c
+  04Jly25 Sar DIRT spd=67 SchylrvlL
+  08Jun25 Sar DIRT spd=67 ’Mdn
+Workouts: 04Feb Pmm ˜ (d) 3f :38ª | 01Jan Pbd 4f :50¨ | 20Dec'25 Pbd 4f :51¨ | 11Dec'25 Pbd 4f :51©
+
+--- HORSE 4 Colonial Sense ---
+Style: S (2)
+Prime Power: 111.1 (4th)
+Jockey: ALVARADO JUNIOR | Trainer: Dobles Elizabeth L
+Odds: 6/1 | Weight: 122
+Life: 4 starts 0-0-2 $6,920 speed=72
+POSITIVE: May improve with Blinkers added today
+NEGATIVE: Beaten by weaker in last race | Failed as favorite in last race
+Running lines (4):
+  17Jan26 GP TURF spd=72 MC25000-c
+  01Jan26 GP TURF spd=64 Moc50000
+  22Nov25 GP DIRT spd=57 Mdn
+  13Oct25 Pid DIRT spd=72 Mdn
+Workouts: 07Feb Pmm 4f :49© | 31Jan Pmm 4f :50« | 28Dec'25 Pmm 4f :51 | 17Dec'25 Pmm 4f :49«
+
+--- HORSE 5 Nyfive ---
+Style: E (5)
+Prime Power: 102.3 (6th)
+Jockey: GAFFALIONE TYLER | Trainer: Fawkes David
+Odds: 5/1 | Weight: 122
+Life: 2 starts 0-1-0 $6,280 speed=65
+POSITIVE: 25% trainer: 1st after clm | May improve with Lasix added | Hot Trainer in last 14 days (6 2-1-0) | Sharp 4F workout (Feb-13) | Breeding suggests she will like the grass
+NEGATIVE: Beaten by weaker in last race | Has not raced for more than 2 months | Poor Speed Figures | Poor 'Up one class' trainer record: 0% wins 14 sts | First time starter | Poor 'Debut Turf' trainer record: 2% wins 34 sts
+Running lines (2):
+  18Dec25 GP TURF spd=65 MC25000-c
+  09Nov25 GP DIRT spd=56 Mdn
+Workouts: 13Feb GP 4f :47 | 07Feb GP 4f :47« | 01Feb GP 4f :47 | 25Jan GP 5f :59«
+
+--- HORSE 7 Del Mar Sunrise ---
+Style: P (2)
+Prime Power: 114.8 (3rd)
+Jockey: GUTIERREZ MARIO | Trainer: Barboza, Jr. Victor
+Odds: 9/2 | Weight: 122
+Life: 2 starts 0-1-0 $6,164 speed=73
+POSITIVE: Switches to a high% trainer | 34% trainer: 1st after clm | Best Turf speed is close to the Avg Winning Speed
+NEGATIVE: Beaten by weaker in last race
+Running lines (2):
+  17Jan26 GP TURF spd=73 MC25000-c
+  03Dec25 TP DIRT spd=64 Mdn
+Workouts: 12Feb GP 4f :51ª | 28Dec'25 Ttc 4f :50« | 26Nov'25 Ttc 4f :50ª | 16Nov'25 Ttc 4f :49¨
+
+--- HORSE 8 Lady Rockula ---
+Style: E (6)
+Prime Power: 107.4 (5th)
+Jockey: VASQUEZ MIGUEL A | Trainer: David Carlos A
+Odds: 15/1 | Weight: 122
+Life: 7 starts 0-1-3 $22,660 speed=70
+POSITIVE: High % trainer | Figures to improve while returning to Turf | Drops in class today | Sharp 3F workout (Feb-11) | Drops in class today | Longer distance offers hope for improvement | May improve with Lasix added
+NEGATIVE: Poor 'Dirt to Turf' trainer record: 9% wins 62 sts | 11Feb Pmm  ˜ (d) 3f  fm   :35ª  B 1/6     18Jan Pmm  4f  ft   :49¨  B 18/58     11Jan Pmm  4f  ft   :49¨  B 21/57     04Jan Pmm  4f  ft   :50©  B 32/57     28Dec'25 Pmm  3f  ft   :38ª  B 18/21     06Dec'25 Pmm  3f  ft   :37  B 23/71 | 09Nov'25 Pmm  3f  ft   :37  B 1/19     12Oct'25 Pmm  4f  ft   :49ª  B 18/28     27Sep'25 Pmm  4f  ft   :48«  B 23/66     20Sep'25 Pmm  4f  wf   :49¨  B 38/66     23Aug'25 Pmm  3f  ft   :36ª  B 9/29 | Has not raced for more than 2 months | Poor Speed Figures | 19Oct'25 Pmm  3f  ft   :36«  B 1/13     13Sep'25 Pmm  4f  wf   :51¨  B 49/50
+Running lines (11):
+  29Jan26 GP DIRT spd=65 Moc50000-N¨§°
+  11Dec25 GP DIRT spd=66 Moc50000-N¨¨¨
+  21Nov25 GP DIRT spd=69 ‘Mdn
+  26Oct25 GP DIRT spd=69 ‘Mdn
+  30Aug25 GP TURF spd=66 MC35000
+  09Aug25 GP DIRT spd=69 MC35000
+Workouts: 11Feb Pmm ˜ (d) 3f :35ª | 18Jan Pmm 4f :49¨ | 11Jan Pmm 4f :49¨ | 04Jan Pmm 4f :50©

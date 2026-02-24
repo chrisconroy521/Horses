@@ -10,12 +10,20 @@ from pathlib import Path
 from typing import List, Dict, Any
 import logging
 
+import re as _re
+import fitz as _fitz
 from dataclasses import asdict
 from ragozin_parser import RagozinParser, RaceData
 from gpt_parser_alternative import GPTRagozinParserAlternative
-from merge import merge_parsed_sessions
+from merge import merge_parsed_sessions, merge_primary_secondary
+from brisnet_parser import BrisnetParser, to_pipeline_json as brisnet_to_pipeline
+from persistence import Persistence
+import hashlib
 import dotenv
 dotenv.load_dotenv()
+
+# Cumulative horse database
+_db = Persistence(Path("horses.db"))
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -34,7 +42,46 @@ app.add_middleware(
 
 # Initialize parsers
 parser = RagozinParser()
+brisnet_parser = BrisnetParser()
 gpt_parser = None
+
+
+def detect_pdf_type(pdf_path: str) -> str:
+    """Detect PDF type from content of first 3 pages.
+
+    Returns one of:
+      'sheets'     – Ragozin-style sheets (page markers like ``CD  p1``)
+      'brisnet'    – BRISNET Ultimate PPs w/ QuickPlay
+      'brisnet_pp' – BRISNET PPs without QuickPlay
+      'unknown'    – unrecognised
+    """
+    try:
+        doc = _fitz.open(pdf_path)
+        pages_to_check = min(3, len(doc))
+        combined = ''
+        for i in range(pages_to_check):
+            combined += doc[i].get_text()[:2000] + '\n'
+        doc.close()
+        lower = combined.lower()
+
+        is_brisnet = 'brisnet.com' in lower or 'ultimate pp' in lower
+        has_quickplay = 'quickplay' in lower or 'QuickPlay' in combined
+
+        if is_brisnet and has_quickplay:
+            return 'brisnet'
+        if is_brisnet:
+            return 'brisnet_pp'
+
+        # Ragozin sheets markers: track codes followed by page refs like "CD  p1"
+        if _re.search(r'[A-Z]{2,3}\s+p\d', combined):
+            return 'sheets'
+    except Exception:
+        pass
+    return 'unknown'
+
+# Valid PDF types that can be used as primary / secondary uploads
+PRIMARY_TYPES = frozenset({'sheets', 'brisnet'})
+SECONDARY_TYPES = frozenset({'brisnet', 'brisnet_pp'})
 
 # Try to initialize GPT parser if API key is available
 try:
@@ -55,6 +102,9 @@ OUTPUT_DIR.mkdir(exist_ok=True)
 
 # In-memory storage for parsed data (in production, use a database)
 parsed_races: Dict[str, Dict[str, Any]] = {}
+
+# New dual-upload session storage
+sessions: Dict[str, Dict[str, Any]] = {}
 
 
 def _trad_to_dict(race_data: RaceData) -> Dict[str, Any]:
@@ -98,7 +148,7 @@ def _trad_to_dict(race_data: RaceData) -> Dict[str, Any]:
             'horse_name': horse.horse_name,
             'race_number': horse.race_number,
             'sex': 'Unknown',
-            'age': 0,
+            'age': getattr(horse, 'age', 0),
             'breeder_owner': 'Unknown',
             'foal_date': 'Unknown',
             'reg_code': 'Unknown',
@@ -126,6 +176,157 @@ def _gpt_to_dict(horse_performance) -> Dict[str, Any]:
     return asdict(horse_performance)
 
 
+# ---------------------------------------------------------------------------
+# Startup recovery
+# ---------------------------------------------------------------------------
+
+@app.on_event("startup")
+async def _recover_sessions():
+    """Rebuild sessions dict from *_primary.json files on disk."""
+    for path in OUTPUT_DIR.glob("*_primary.json"):
+        try:
+            with open(path, 'r') as f:
+                data = json.load(f)
+            meta = data.get('_session_meta')
+            if meta and meta.get('session_id'):
+                sid = meta['session_id']
+                sessions[sid] = meta
+                logger.info(f"Recovered session {sid} from {path.name}")
+        except Exception as e:
+            logger.warning(f"Could not recover session from {path.name}: {e}")
+
+    # Also rebuild legacy parsed_races from non-session JSON files
+    for path in OUTPUT_DIR.glob("*.json"):
+        name = path.stem
+        if name.endswith('_primary') or name.endswith('_secondary'):
+            continue
+        # Skip if already in parsed_races (shouldn't happen on fresh start)
+        if name in parsed_races:
+            continue
+        try:
+            with open(path, 'r') as f:
+                data = json.load(f)
+            horses_list = data.get('horses', [])
+            parsed_races[name] = {
+                "id": name,
+                "original_filename": "recovered",
+                "pdf_path": "",
+                "pdf_type": data.get('pdf_type', 'unknown'),
+                "track_name": data.get('track_name', ''),
+                "race_date": data.get('race_date', ''),
+                "race_number": data.get('race_number', ''),
+                "surface": data.get('surface', ''),
+                "distance": data.get('distance', ''),
+                "weather": data.get('weather', ''),
+                "horses_count": len(horses_list),
+                "total_races": sum(len(h.get('lines', [])) for h in horses_list),
+                "tracks_count": 0,
+                "surfaces_count": 0,
+                "date_range": "N/A",
+                "parsed_at": "",
+                "analysis_date": "",
+                "analysis_time": "",
+                "processing_duration": "",
+                "parser_used": data.get('parse_source', 'unknown'),
+                "gpt_attempted": False,
+                "fallback_to_traditional": False,
+            }
+        except Exception:
+            pass
+
+    logger.info(f"Startup recovery: {len(sessions)} session(s), {len(parsed_races)} legacy race(s)")
+
+
+# ---------------------------------------------------------------------------
+# Session helpers
+# ---------------------------------------------------------------------------
+
+def _build_session_meta(
+    session_id: str, track: str, date: str,
+    pdf_type: str, filename: str, pdf_path: str,
+    output_file: str, horses_count: int, races_count: int,
+    parser_used: str,
+) -> Dict[str, Any]:
+    """Create a new session dict for the sessions store."""
+    now = pd.Timestamp.now()
+    return {
+        "session_id": session_id,
+        "track": track,
+        "date": date,
+        "created_at": str(now),
+        # Primary
+        "primary_pdf_type": pdf_type,
+        "primary_pdf_filename": filename,
+        "primary_pdf_path": pdf_path,
+        "primary_output_file": output_file,
+        "primary_horses_count": horses_count,
+        "primary_races_count": races_count,
+        "primary_parser_used": parser_used,
+        "primary_parsed_at": str(now),
+        # Secondary (None until uploaded)
+        "secondary_pdf_type": None,
+        "secondary_pdf_filename": None,
+        "secondary_pdf_path": None,
+        "secondary_output_file": None,
+        "secondary_horses_count": None,
+        "secondary_parsed_at": None,
+        # Flags
+        "has_primary": True,
+        "has_secondary": False,
+        "merge_coverage": None,
+        # Legacy compat fields (so /races still works)
+        "id": session_id,
+        "original_filename": filename,
+        "pdf_type": pdf_type,
+        "track_name": track,
+        "race_date": date,
+        "horses_count": horses_count,
+        "total_races": races_count,
+        "parser_used": parser_used,
+        "analysis_date": now.strftime("%Y-%m-%d"),
+        "analysis_time": now.strftime("%H:%M:%S"),
+        "parsed_at": str(now),
+        "processing_duration": "",
+        "pdf_path": pdf_path,
+        "gpt_attempted": False,
+        "fallback_to_traditional": False,
+    }
+
+
+def _load_session_data(session_id: str, source: str = "merged") -> Dict[str, Any]:
+    """Load JSON data for a session.
+
+    ``source`` can be ``'primary'``, ``'secondary'``, or ``'merged'`` (default).
+    Merged loads both and calls ``merge_primary_secondary`` if secondary exists.
+    """
+    primary_path = OUTPUT_DIR / f"{session_id}_primary.json"
+    secondary_path = OUTPUT_DIR / f"{session_id}_secondary.json"
+
+    if source == "secondary":
+        if not secondary_path.exists():
+            return None
+        with open(secondary_path, 'r') as f:
+            data = json.load(f)
+        data.pop('_session_meta', None)
+        return data
+
+    if not primary_path.exists():
+        return None
+    with open(primary_path, 'r') as f:
+        primary = json.load(f)
+    primary.pop('_session_meta', None)
+
+    if source == "primary" or not secondary_path.exists():
+        return primary
+
+    # merged
+    with open(secondary_path, 'r') as f:
+        secondary = json.load(f)
+    secondary.pop('_session_meta', None)
+
+    return merge_primary_secondary(primary, secondary)
+
+
 @app.get("/")
 async def root():
     """Root endpoint"""
@@ -139,7 +340,7 @@ async def health_check():
 @app.post("/upload-pdf")
 async def upload_pdf(file: UploadFile = File(...), use_gpt: bool = False):
     """
-    Upload and parse a Ragozin PDF sheet
+    Upload and parse a racing PDF (auto-detects Ragozin vs BRISNET).
     """
     try:
         if not file.filename.lower().endswith('.pdf'):
@@ -157,52 +358,65 @@ async def upload_pdf(file: UploadFile = File(...), use_gpt: bool = False):
         start_time = pd.Timestamp.now()
         gpt_attempted = False
         gpt_error_text = None
-        trad_dict = None
-        gpt_dict = None
+        output_dict = None
 
-        # 1. Always run traditional parser
-        logger.info("Running traditional parser")
-        trad_data = parser.parse_ragozin_sheet(str(pdf_path))
-        trad_dict = _trad_to_dict(trad_data)
+        # Auto-detect PDF type
+        pdf_type = detect_pdf_type(str(pdf_path))
+        logger.info(f"Detected PDF type: {pdf_type}")
 
-        # 2. Optionally run GPT parser
-        if use_gpt and gpt_parser:
-            gpt_attempted = True
-            try:
-                logger.info("Running GPT-enhanced parser")
-                gpt_result = gpt_parser.parse_ragozin_sheet(str(pdf_path), use_direct_pdf=True)
-                gpt_horses = getattr(gpt_result, 'horses', [])
-                if len(gpt_horses) == 0:
-                    raise ValueError("GPT parser returned zero horses")
-                gpt_dict = _gpt_to_dict(gpt_result)
-            except Exception as gpt_err:
-                gpt_error_text = str(gpt_err)
-                logger.warning(f"GPT parser failed: {gpt_err}")
-                gpt_dict = None
-        elif use_gpt and not gpt_parser:
-            logger.warning("GPT parser requested but unavailable")
-
-        # 3. Merge or pick single source
-        if trad_dict and gpt_dict:
-            output_dict = merge_parsed_sessions(trad_dict, gpt_dict)
-            parse_source = "both"
-        elif gpt_dict:
-            output_dict = gpt_dict
-            output_dict['parse_source'] = 'gpt'
-            parse_source = "gpt"
+        if pdf_type == 'brisnet':
+            # --- BRISNET path ---
+            logger.info("Running BRISNET parser")
+            card = brisnet_parser.parse(str(pdf_path))
+            output_dict = brisnet_to_pipeline(card)
+            output_dict['parse_source'] = 'brisnet'
+            parse_source = "brisnet"
+            trad_data = None  # no CSV export for BRISNET
         else:
-            output_dict = trad_dict
-            output_dict['parse_source'] = 'traditional'
-            if gpt_attempted:
-                parse_source = "fallback"
-                output_dict['parse_source'] = 'fallback'
+            # --- Ragozin path (existing logic) ---
+            trad_dict = None
+            gpt_dict = None
+
+            logger.info("Running traditional parser")
+            trad_data = parser.parse_ragozin_sheet(str(pdf_path))
+            trad_dict = _trad_to_dict(trad_data)
+
+            if use_gpt and gpt_parser:
+                gpt_attempted = True
+                try:
+                    logger.info("Running GPT-enhanced parser")
+                    gpt_result = gpt_parser.parse_ragozin_sheet(str(pdf_path), use_direct_pdf=True)
+                    gpt_horses = getattr(gpt_result, 'horses', [])
+                    if len(gpt_horses) == 0:
+                        raise ValueError("GPT parser returned zero horses")
+                    gpt_dict = _gpt_to_dict(gpt_result)
+                except Exception as gpt_err:
+                    gpt_error_text = str(gpt_err)
+                    logger.warning(f"GPT parser failed: {gpt_err}")
+                    gpt_dict = None
+            elif use_gpt and not gpt_parser:
+                logger.warning("GPT parser requested but unavailable")
+
+            if trad_dict and gpt_dict:
+                output_dict = merge_parsed_sessions(trad_dict, gpt_dict)
+                parse_source = "both"
+            elif gpt_dict:
+                output_dict = gpt_dict
+                output_dict['parse_source'] = 'gpt'
+                parse_source = "gpt"
             else:
-                parse_source = "traditional"
+                output_dict = trad_dict
+                output_dict['parse_source'] = 'traditional'
+                if gpt_attempted:
+                    parse_source = "fallback"
+                    output_dict['parse_source'] = 'fallback'
+                else:
+                    parse_source = "traditional"
 
         end_time = pd.Timestamp.now()
         processing_duration = str(end_time - start_time).split('.')[0]
 
-        # 4. Compute stats from merged output
+        # Compute stats from output
         horses_list = output_dict.get('horses', [])
         horses_count = len(horses_list)
         total_races = sum(len(h.get('lines', [])) for h in horses_list)
@@ -222,7 +436,7 @@ async def upload_pdf(file: UploadFile = File(...), use_gpt: bool = False):
         analysis_date = analysis_timestamp.strftime("%Y-%m-%d")
         analysis_time = analysis_timestamp.strftime("%H:%M:%S")
 
-        # 5. Write output JSON
+        # Write output JSON
         race_id = str(uuid.uuid4())
         json_path = OUTPUT_DIR / f"{race_id}.json"
         csv_path = OUTPUT_DIR / f"{race_id}.csv"
@@ -230,14 +444,16 @@ async def upload_pdf(file: UploadFile = File(...), use_gpt: bool = False):
         with open(json_path, 'w') as f:
             json.dump(output_dict, f, indent=2, default=str)
 
-        # CSV from the traditional parser (always available)
-        parser.export_to_csv(trad_data, str(csv_path))
+        # CSV from the traditional parser (only for Ragozin)
+        if pdf_type != 'brisnet' and trad_data:
+            parser.export_to_csv(trad_data, str(csv_path))
 
-        # 6. Store session metadata
+        # Store session metadata
         parsed_races[race_id] = {
             "id": race_id,
             "original_filename": file.filename,
             "pdf_path": str(pdf_path),
+            "pdf_type": pdf_type,
             "track_name": output_dict.get('track_name', ''),
             "race_date": output_dict.get('race_date', ''),
             "race_number": output_dict.get('race_number', ''),
@@ -265,6 +481,7 @@ async def upload_pdf(file: UploadFile = File(...), use_gpt: bool = False):
             "analysis_date": analysis_date,
             "analysis_time": analysis_time,
             "processing_duration": processing_duration,
+            "pdf_type": pdf_type,
             "race_info": {
                 "track": output_dict.get('track_name', ''),
                 "date": output_dict.get('race_date', ''),
@@ -280,6 +497,7 @@ async def upload_pdf(file: UploadFile = File(...), use_gpt: bool = False):
             },
             "parser_info": {
                 "parser_used": parse_source,
+                "pdf_type": pdf_type,
                 "gpt_available": gpt_parser is not None,
                 "gpt_attempted": gpt_attempted,
                 "fallback_to_traditional": (parse_source == "fallback"),
@@ -287,37 +505,321 @@ async def upload_pdf(file: UploadFile = File(...), use_gpt: bool = False):
             },
             "files": {
                 "json": str(json_path),
-                "csv": str(csv_path),
+                "csv": str(csv_path) if csv_path.exists() else None,
             },
         }
 
     except Exception as e:
         logger.error(f"Error processing upload: {e}")
         raise HTTPException(status_code=500, detail=f"Error processing upload: {str(e)}")
+# ---------------------------------------------------------------------------
+# New dual-upload endpoints
+# ---------------------------------------------------------------------------
+
+@app.post("/upload_primary")
+async def upload_primary(file: UploadFile = File(...), use_gpt: bool = False):
+    """Upload a primary PDF (Ragozin sheets or BRISNET w/ QuickPlay).
+
+    Creates a new session and returns session_id + summary.
+    """
+    if not file.filename.lower().endswith('.pdf'):
+        raise HTTPException(status_code=400, detail="Only PDF files are allowed")
+
+    session_id = str(uuid.uuid4())
+    pdf_path = UPLOAD_DIR / f"{session_id}_primary.pdf"
+
+    with open(pdf_path, "wb") as buffer:
+        content = await file.read()
+        buffer.write(content)
+
+    pdf_type = detect_pdf_type(str(pdf_path))
+    logger.info(f"upload_primary: {file.filename} detected as {pdf_type}")
+
+    # Accept sheets/brisnet as primary, also accept unknown/brisnet_pp with a warning
+    if pdf_type not in PRIMARY_TYPES and pdf_type not in SECONDARY_TYPES:
+        # Still allow unknown through — parser may handle it
+        logger.warning(f"PDF type '{pdf_type}' not in PRIMARY_TYPES, proceeding anyway")
+
+    start_time = pd.Timestamp.now()
+    output_dict = None
+    parse_source = "unknown"
+
+    if pdf_type in ('brisnet', 'brisnet_pp'):
+        card = brisnet_parser.parse(str(pdf_path))
+        output_dict = brisnet_to_pipeline(card)
+        output_dict['parse_source'] = 'brisnet'
+        parse_source = "brisnet"
+    else:
+        # Ragozin / sheets / unknown → traditional parser
+        trad_data = parser.parse_ragozin_sheet(str(pdf_path))
+        trad_dict = _trad_to_dict(trad_data)
+
+        gpt_dict = None
+        if use_gpt and gpt_parser:
+            try:
+                gpt_result = gpt_parser.parse_ragozin_sheet(str(pdf_path), use_direct_pdf=True)
+                gpt_horses = getattr(gpt_result, 'horses', [])
+                if len(gpt_horses) == 0:
+                    raise ValueError("GPT parser returned zero horses")
+                gpt_dict = _gpt_to_dict(gpt_result)
+            except Exception as gpt_err:
+                logger.warning(f"GPT parser failed: {gpt_err}")
+
+        if trad_dict and gpt_dict:
+            output_dict = merge_parsed_sessions(trad_dict, gpt_dict)
+            parse_source = "both"
+        elif gpt_dict:
+            output_dict = gpt_dict
+            output_dict['parse_source'] = 'gpt'
+            parse_source = "gpt"
+        else:
+            output_dict = trad_dict
+            output_dict['parse_source'] = 'traditional'
+            parse_source = "traditional"
+
+    end_time = pd.Timestamp.now()
+    processing_duration = str(end_time - start_time).split('.')[0]
+
+    horses_list = output_dict.get('horses', [])
+    horses_count = len(horses_list)
+    races_count = len({h.get('race_number', 0) for h in horses_list})
+
+    track = output_dict.get('track_name', '')
+    date = output_dict.get('race_date', '')
+
+    # Embed session meta in the JSON for disk recovery
+    output_file = str(OUTPUT_DIR / f"{session_id}_primary.json")
+    session_meta = _build_session_meta(
+        session_id=session_id, track=track, date=date,
+        pdf_type=pdf_type, filename=file.filename,
+        pdf_path=str(pdf_path), output_file=output_file,
+        horses_count=horses_count, races_count=races_count,
+        parser_used=parse_source,
+    )
+    session_meta['processing_duration'] = processing_duration
+
+    output_dict['_session_meta'] = session_meta
+    with open(output_file, 'w') as f:
+        json.dump(output_dict, f, indent=2, default=str)
+
+    sessions[session_id] = session_meta
+
+    # --- Cumulative DB ingestion ---
+    try:
+        pdf_hash = hashlib.sha256(content).hexdigest()
+        _db.record_upload(
+            upload_id=session_id, source_type="brisnet" if parse_source == "brisnet" else "sheets",
+            pdf_filename=file.filename, pdf_hash=pdf_hash,
+            track=track, race_date=date, session_id=session_id,
+            horses_count=horses_count,
+        )
+        if parse_source == "brisnet":
+            _db.ingest_brisnet_card(session_id, output_dict, {})
+        else:
+            _db.ingest_sheets_card(session_id, output_dict)
+        _db.reconcile(session_id)
+    except Exception as db_err:
+        logger.warning(f"DB ingestion failed (non-fatal): {db_err}")
+
+    return {
+        "success": True,
+        "session_id": session_id,
+        "track": track,
+        "date": date,
+        "pdf_type": pdf_type,
+        "horses_count": horses_count,
+        "races_count": races_count,
+        "parser_used": parse_source,
+        "processing_duration": processing_duration,
+    }
+
+
+@app.post("/upload_secondary")
+async def upload_secondary(session_id: str, file: UploadFile = File(...)):
+    """Attach a secondary (enrichment) PDF to an existing session."""
+    if session_id not in sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+    session = sessions[session_id]
+    if not session.get('has_primary'):
+        raise HTTPException(status_code=400, detail="Session has no primary upload")
+    if not file.filename.lower().endswith('.pdf'):
+        raise HTTPException(status_code=400, detail="Only PDF files are allowed")
+
+    pdf_path = UPLOAD_DIR / f"{session_id}_secondary.pdf"
+    with open(pdf_path, "wb") as buffer:
+        content = await file.read()
+        buffer.write(content)
+
+    pdf_type = detect_pdf_type(str(pdf_path))
+    logger.info(f"upload_secondary: {file.filename} detected as {pdf_type}")
+
+    # Parse with BRISNET parser (secondary is always BRISNET PPs)
+    card = brisnet_parser.parse(str(pdf_path))
+    output_dict = brisnet_to_pipeline(card)
+    output_dict['parse_source'] = 'brisnet'
+
+    horses_list = output_dict.get('horses', [])
+    horses_count = len(horses_list)
+    now = pd.Timestamp.now()
+
+    output_file = str(OUTPUT_DIR / f"{session_id}_secondary.json")
+    with open(output_file, 'w') as f:
+        json.dump(output_dict, f, indent=2, default=str)
+
+    # Compute merge coverage
+    primary_data = _load_session_data(session_id, source="primary")
+    merge_coverage = None
+    if primary_data:
+        merged = merge_primary_secondary(primary_data, output_dict)
+        stats = merged.get('merge_stats', {})
+        merge_coverage = stats.get('coverage')
+
+    # Update session
+    session.update({
+        "secondary_pdf_type": pdf_type,
+        "secondary_pdf_filename": file.filename,
+        "secondary_pdf_path": str(pdf_path),
+        "secondary_output_file": output_file,
+        "secondary_horses_count": horses_count,
+        "secondary_parsed_at": str(now),
+        "has_secondary": True,
+        "merge_coverage": merge_coverage,
+    })
+
+    # --- Cumulative DB ingestion for secondary ---
+    try:
+        sec_upload_id = f"{session_id}_sec"
+        pdf_hash = hashlib.sha256(content).hexdigest()
+        _db.record_upload(
+            upload_id=sec_upload_id, source_type="brisnet",
+            pdf_filename=file.filename, pdf_hash=pdf_hash,
+            track=session.get("track", ""), race_date=session.get("date", ""),
+            session_id=session_id, horses_count=horses_count,
+        )
+        _db.ingest_brisnet_card(sec_upload_id, output_dict, {})
+        _db.reconcile(sec_upload_id)
+    except Exception as db_err:
+        logger.warning(f"DB ingestion (secondary) failed (non-fatal): {db_err}")
+
+    return {
+        "success": True,
+        "session_id": session_id,
+        "secondary_pdf_type": pdf_type,
+        "horses_count": horses_count,
+        "merge_coverage": merge_coverage,
+    }
+
+
+@app.get("/db/stats")
+async def db_stats():
+    """Return cumulative database statistics."""
+    return _db.get_db_stats()
+
+
+@app.get("/sessions")
+async def list_sessions():
+    """List all dual-upload sessions."""
+    items = []
+    for sid, s in sessions.items():
+        items.append({
+            "session_id": sid,
+            "track": s.get("track", ""),
+            "date": s.get("date", ""),
+            "has_primary": s.get("has_primary", False),
+            "has_secondary": s.get("has_secondary", False),
+            "primary_pdf_type": s.get("primary_pdf_type"),
+            "secondary_pdf_type": s.get("secondary_pdf_type"),
+            "primary_pdf_filename": s.get("primary_pdf_filename"),
+            "secondary_pdf_filename": s.get("secondary_pdf_filename"),
+            "primary_horses_count": s.get("primary_horses_count"),
+            "secondary_horses_count": s.get("secondary_horses_count"),
+            "merge_coverage": s.get("merge_coverage"),
+            "created_at": s.get("created_at"),
+        })
+    return {"sessions": items, "total_count": len(items)}
+
+
+@app.get("/sessions/{session_id}/summary")
+async def session_summary(session_id: str):
+    """Per-source counts for a session."""
+    if session_id not in sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+    session = sessions[session_id]
+
+    result = {
+        "session_id": session_id,
+        "primary_races": session.get("primary_races_count", 0),
+        "primary_horses": session.get("primary_horses_count", 0),
+        "secondary_horses": session.get("secondary_horses_count"),
+    }
+
+    if session.get("has_secondary"):
+        merged = _load_session_data(session_id, source="merged")
+        if merged:
+            stats = merged.get('merge_stats', {})
+            result["matched"] = stats.get("matched", 0)
+            result["unmatched"] = stats.get("unmatched", 0)
+            result["unmatched_names"] = stats.get("unmatched_names", [])
+            result["merge_coverage"] = stats.get("coverage")
+
+    return result
+
+
+@app.get("/sessions/{session_id}/races")
+async def session_races(session_id: str, source: str = "merged"):
+    """Get race data for a session.
+
+    Query param ``source``: ``primary``, ``secondary``, or ``merged`` (default).
+    """
+    if session_id not in sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    if source not in ("primary", "secondary", "merged"):
+        raise HTTPException(status_code=400, detail="source must be primary, secondary, or merged")
+
+    data = _load_session_data(session_id, source=source)
+    if data is None:
+        raise HTTPException(status_code=404, detail=f"No {source} data for this session")
+
+    return {"session_id": session_id, "source": source, "race_data": data}
+
+
+# ---------------------------------------------------------------------------
+# Legacy endpoints (wrappers)
+# ---------------------------------------------------------------------------
+
 @app.get("/races")
 async def list_races():
     """
-    List all parsed races
+    List all parsed races (legacy + sessions combined).
     """
+    all_races = list(parsed_races.values()) + list(sessions.values())
     return {
-        "races": list(parsed_races.values()),
-        "total_count": len(parsed_races)
+        "races": all_races,
+        "total_count": len(all_races)
     }
 
 @app.get("/races/{race_id}")
 async def get_race(race_id: str):
     """
-    Get detailed information about a specific race
+    Get detailed information about a specific race.
+    Checks sessions first (returns merged if secondary exists), then legacy.
     """
+    # Check sessions first
+    if race_id in sessions:
+        data = _load_session_data(race_id, source="merged")
+        if data:
+            return {"race_info": sessions[race_id], "race_data": data}
+
     if race_id not in parsed_races:
         raise HTTPException(status_code=404, detail="Race not found")
-    
+
     # Load the full race data from JSON file
     json_path = OUTPUT_DIR / f"{race_id}.json"
     if json_path.exists():
         with open(json_path, 'r') as f:
             race_data = json.load(f)
-        
+
         return {
             "race_info": parsed_races[race_id],
             "race_data": race_data
@@ -328,17 +830,24 @@ async def get_race(race_id: str):
 @app.get("/races/{race_id}/horses")
 async def get_race_horses(race_id: str):
     """
-    Get horses for a specific race
+    Get horses for a specific race.
+    Checks sessions first (returns merged if secondary exists), then legacy.
     """
+    # Check sessions first
+    if race_id in sessions:
+        data = _load_session_data(race_id, source="merged")
+        if data:
+            return {"race_id": race_id, "horses": data.get("horses", [])}
+
     if race_id not in parsed_races:
         raise HTTPException(status_code=404, detail="Race not found")
-    
+
     # Load the full race data from JSON file
     json_path = OUTPUT_DIR / f"{race_id}.json"
     if json_path.exists():
         with open(json_path, 'r') as f:
             race_data = json.load(f)
-        
+
         return {
             "race_id": race_id,
             "horses": race_data.get("horses", [])
@@ -366,29 +875,43 @@ async def download_race_data(race_id: str, format: str):
 @app.delete("/races/{race_id}")
 async def delete_race(race_id: str):
     """
-    Delete a parsed race and its associated files
+    Delete a parsed race/session and its associated files.
+    Handles both new sessions and legacy parsed_races.
     """
-    if race_id not in parsed_races:
+    found = race_id in sessions or race_id in parsed_races
+    if not found:
         raise HTTPException(status_code=404, detail="Race not found")
-    
+
     try:
-        # Remove files
-        pdf_path = Path(parsed_races[race_id]["pdf_path"])
-        json_path = OUTPUT_DIR / f"{race_id}.json"
-        csv_path = OUTPUT_DIR / f"{race_id}.csv"
-        
-        if pdf_path.exists():
-            pdf_path.unlink()
-        if json_path.exists():
-            json_path.unlink()
-        if csv_path.exists():
-            csv_path.unlink()
-        
-        # Remove from memory
-        del parsed_races[race_id]
-        
+        # Clean up session files (primary + secondary)
+        if race_id in sessions:
+            for suffix in ('_primary.pdf', '_secondary.pdf'):
+                p = UPLOAD_DIR / f"{race_id}{suffix}"
+                if p.exists():
+                    p.unlink()
+            for suffix in ('_primary.json', '_secondary.json'):
+                p = OUTPUT_DIR / f"{race_id}{suffix}"
+                if p.exists():
+                    p.unlink()
+            del sessions[race_id]
+
+        # Clean up legacy files
+        if race_id in parsed_races:
+            pdf_path = Path(parsed_races[race_id].get("pdf_path", ""))
+            json_path = OUTPUT_DIR / f"{race_id}.json"
+            csv_path = OUTPUT_DIR / f"{race_id}.csv"
+
+            if pdf_path.exists():
+                pdf_path.unlink()
+            if json_path.exists():
+                json_path.unlink()
+            if csv_path.exists():
+                csv_path.unlink()
+
+            del parsed_races[race_id]
+
         return {"success": True, "message": "Race deleted successfully"}
-    
+
     except Exception as e:
         logger.error(f"Error deleting race: {e}")
         raise HTTPException(status_code=500, detail=f"Error deleting race: {str(e)}")

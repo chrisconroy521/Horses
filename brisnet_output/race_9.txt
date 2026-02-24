@@ -1,0 +1,105 @@
+META:
+track=Gulfstream Park
+date=February 19, 2026
+race=9
+surface=DIRT
+distance=6 Furlongs
+class=OC
+purse=86,000
+restrictions=4&up
+pars={'E1': 94, 'E2': 98, 'LATE': 87, 'SPEED': 88}
+
+--- HORSE 1 Royal Poppy ---
+Style: E/P (1)
+Prime Power: 124.6 (3rd)
+Jockey: CASTELLANO JAVIER | Trainer: Subratie Gary A
+Odds: 20/1 | Weight: 121
+Life: 0 starts  $ speed=None
+POSITIVE: Finished 3rd vs similar in last race | Best Dirt Speed is fastest among today's starters
+Running lines (10):
+  01Feb26 GP DIRT spd=78 OC25k/n1x
+  08Jan26 GP DIRT spd=79 OC25k/n1x
+  06Dec25 GP DIRT spd=85 OC25k/n1x
+  22Nov25 GP DIRT spd=70 OC25k/n1x
+  08Nov25 GP DIRT spd=73 ‘OC20k/n1x¨¨¨
+  12Sep25 GP DIRT spd=73 ‘OC20k/n1x-v¨¨§
+Workouts: 20Oct'25 GP 4f :49¨ | 19Jly'25 GP 3f :37« | 14Jun'25 GP 4f :49© | 31May'25 GP 3f :37©
+
+--- HORSE 2 Arami's Factor ---
+Style: E (5)
+Prime Power: 114.6 (6th)
+Jockey: VELAZQUEZ JOHN R | Trainer: Carroll Josie
+Odds: 8/1 | Weight: 121
+Life: 6 starts 1-0-1 $49,093 speed=83
+POSITIVE: Early speed running style helps chances | May improve at the shorter distance | Hot Jockey in last 7 days (12 4-3-0) | Sharp 5F workout (Feb-12) | 25% trainer: Wnr last race | Won her debut race (SI 04/27 5.5f Dirt ft AOC 0) | Heavily Bet in debut | May improve with Lasix added
+NEGATIVE: Always far back in last start | 12Feb Pmm  5f  ft   1:01  B 1/5 | 05Feb Pmm  5f  ft   1:00«  B 1/7     29Jan Pmm  4f  ft   :49¨  B 3/16     10Jan Pmm  4f  ft   :47©  B 2/71 | 04Jan Pmm  5f  ft   1:01©  B 1/10     28Dec'25 Pmm  4f  ft   :48«  B 2/54 | 21Dec'25 Pmm  4f  ft   :47«  B 1/34     23Nov'25 WO  4f  ft   :48©  B 6/54     16Nov'25 WO  5f  ft   1:00«  B 2/4 | 07Nov'25 WO  5f  ft   1:00©  B 1/9 | 30Oct'25 WO  5f  ft   1:00©  B 1/14     23Oct'25 WO  5f  ft   1:01ª  B 6/9 | Has not raced for more than 9 months | 15Jan Pay  4f  ft   :49ª  B 1/5     07Jan Pay  4f  ft   :49ª  B 8/16     31Dec'25 Pay  4f  ft   :50«  B 30/45 | 16Dec'25 Pay  3f  ft   :36©  B 1/4     09Dec'25 Pay  3f  ft   :37©  B 5/8 | 29Nov'25 Pay  3f  ft   :37  B 1/12
+Running lines (6):
+  18Jan26 GP DIRT spd=37 OC25k/n1x-N¨§®
+  30Nov25 WO DIRT spd=83 OC32k/n1x-N¨¨ª
+  30Nov24 WO DIRT spd=67 OC50k/n2l-N¨§¯
+  19Oct24 WO DIRT spd=71 OC50k/n2l-N¨§°
+  02Sep24 WOª DIRT spd=74 Mdn
+  21Jun24 WO DIRT spd=59 Mdn
+Workouts: 12Feb Pmm 5f 1:01 | 05Feb Pmm 5f 1:00« | 29Jan Pmm 4f :49¨ | 10Jan Pmm 4f :47©
+
+--- HORSE 4 Chatter ---
+Style: E (7)
+Prime Power: 120.3 (4th)
+Jockey: GAFFALIONE TYLER | Trainer: Joseph, Jr. Saffie A
+Odds: 9/5 | Weight: 121
+Life: 7 starts 1-2-1 $90,680 speed=90
+POSITIVE: High % trainer | Highest last race speed rating | Early speed running style helps chances | Hot Trainer in last 14 days (24 8-2-5)
+NEGATIVE: Beaten by weaker in last race | Has not raced for more than 2 months | 07Feb Pmm  3f  ft   :35  B 1/37     31Jan Pmm  4f  ft   :49  B 10/54     24Jan Pmm  4f  ft   :47«  B 2/28     17Jan Pmm  4f  ft   :48¨  B 5/68 | 10Jan Pmm  3f  ft   :34¨  B 1/46
+Running lines (7):
+  20Dec25 GP DIRT spd=90 OC25k/n1x-N¨¨­
+  14Oct25 Ind TURF spd=51 A34000n1x
+  17Sep25 Ind TURF spd=73 A34000n1x
+  09Aug25 Sar DIRT spd=62 A110000n1x
+  04Jan25 OP DIRT spd=82 MckngbirdB
+  24Oct24 Kee DIRT spd=86 Mdn
+Workouts: 14Feb Pmm 3f :37© | 07Feb Pmm 3f :35 | 31Jan Pmm 4f :49 | 24Jan Pmm 4f :47«
+
+--- HORSE 5 Rock the Rainbow ---
+Style: E (5)
+Prime Power: 114.9 (5th)
+Jockey: FIGUEROA HERIBERTO | Trainer: Owens, Jr Eddie
+Odds: 20/1 | Weight: 121
+Life: 2 starts 1-0-0 $39,875 speed=82
+POSITIVE: May improve with Lasix added
+NEGATIVE: Beaten by weaker in last race | Has not raced for more than 4 months | Poor jockey win% this meet | Poor Speed Figures
+Running lines (2):
+  09Oct25 Del DIRT spd=64 A46000n1x
+  25Aug24 Mth DIRT spd=82 ‘Mdn
+Workouts: 14Feb GP 4f :50© | 07Feb GP 4f :48ª | 01Feb GP 4f :48 | 25Jan GP 5f :59©
+
+--- HORSE 6 Merry Madison ---
+Style: E/P (4)
+Prime Power: 125.1 (2nd)
+Jockey: ORTIZ, JR. IRAD | Trainer: Bauer Philip A
+Odds: 3/1 | Weight: 121
+Life: 7 starts 1-1-0 $76,578 speed=88
+POSITIVE: High % Jockey | Drops in class today | Hot Jockey in last 7 days (8 2-0-3)
+NEGATIVE: Has not raced for more than 2 months | 21Nov'25 CD  4f  sy   :48  B 1/16 | 31Oct'25 CD  4f  gd   :48©  B 1/51     22Oct'25 CD  4f  ft   :48ª  B 7/58     27Sep'25 CD  4f  ft   :48«  B 61/177     19Sep'25 CD  4f  ft   :46«  B 2/89 | 23Aug'25 CD  4f  ft   :46ª  B 1/151 | 31Jly'25 CD  3f  ft   :35ª  B 1/14
+Running lines (7):
+  28Nov25 CDª DIRT spd=88 A127000n1x
+  06Nov25 CDª DIRT spd=88 MC100k
+  04Oct25 Kee DIRT spd=70 Mdn
+  31Aug25 KD TURF spd=74 Mdn
+  05Aug25 Ind DIRT spd=79 Mdn
+  29Jun25 CD TURF spd=66 Mdn
+Workouts: 08Feb Pay 4f :49« | 30Jan Pay 4f :50 | 24Jan Pay 4f :50 | 17Jan Pay 4f :49«
+
+--- HORSE 7 Kapoor ---
+Style: E (8)
+Prime Power: 135.1 (1st)
+Jockey: KINGSLEY TAYLOR | Trainer: Mott William I
+Odds: 5/2 | Weight: 116
+Life: 4 starts 2-0-2 $105,488 speed=91
+POSITIVE: 25% trainer: Wnr last race | Won last race (TAM 01/23 6f Dirt ft fOC16000n1x) | Early speed running style helps chances | Best Dirt speed is faster than the Avg Winning Speed | Sharp 4F workout (Feb-08)
+NEGATIVE: Moves up in class from last start | 12Jan Pay  4f  ft   :48«  B 1/24     04Jan Pay  4f  ft   :49¨  B 5/48     28Dec'25 Pay  3f  ft   :37¨  B 2/8     20Dec'25 Pay  3f  ft   :36«  B 2/9     13Dec'25 Pay  3f  ft   :38«  B 13/15
+Running lines (4):
+  23Jan26 Tam DIRT spd=87 OC16k/n1x-N¨¨®
+  31May25 CD DIRT spd=91 Mdn
+  07Apr25 Kee DIRT spd=85 Mdn
+  09Feb25 GP DIRT spd=82 Mdn
+Workouts: 08Feb Pay 4f :49 | 12Jan Pay 4f :48« | 04Jan Pay 4f :49¨ | 28Dec'25 Pay 3f :37¨

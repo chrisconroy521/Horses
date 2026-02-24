@@ -7,6 +7,7 @@ import json
 from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass, field
 from pathlib import Path
+from datetime import date
 import logging
 
 # Configure logging
@@ -32,6 +33,7 @@ class HorseEntry:
     speed_rating: Optional[float]
     pace_rating: Optional[float]
     class_rating: Optional[float]
+    age: int = 0
     past_performances: List[Dict] = field(default_factory=list)
 
 @dataclass
@@ -66,12 +68,23 @@ _YEAR_SUMMARY_RE = re.compile(r'^\s*(\d+)\s+RACES?\s+(\d{2})\s*$')
 # Page marker: "CD  pN" where CD is the track code
 _PAGE_MARKER_RE = re.compile(r'^([A-Z]{2,4})\s+p(\d+)\s*$')
 
-# Horse name + sex + age line: "HORSE NAME      F  21 "
+# Horse name + sex + foal-year line: "HORSE NAME      F  23 "
 # Name is all-caps possibly with spaces, hyphens, apostrophes (straight or curly),
-# periods, -GB etc.  Sex is M or F, age is 1-2 digits.
+# periods, -GB etc.  Sex is M or F, last field is 2-digit foal year (or age if < 10).
 _HORSE_LINE_RE = re.compile(
     r"^([A-Z][A-Z\s'\u2018\u2019\.\-]+?)\s{2,}([FM])\s+(\d{1,2})\s*$"
 )
+
+
+def _foal_year_to_age(raw_val: int) -> int:
+    """Convert Ragozin foal-year notation to racing age.
+
+    Values >= 10 are 2-digit foal years (e.g. 23 = born 2023).
+    Values < 10 are assumed to already be the age.
+    """
+    if raw_val >= 10:
+        return date.today().year - (2000 + raw_val)
+    return raw_val
 
 # Post + Race line: "POST  Race N"
 # Post can be digits + optional letter suffix (1T, 5, 1116, etc.)
@@ -135,11 +148,14 @@ def _parse_data_line(line: str) -> Dict:
         return {'surface': 'DIRT', 'track': '', 'raw': line}
     prefix = line[:m.start()]
     track_code = m.group()
-    # Infer surface from lowercase chars before the track code
-    lc = prefix.lower()
-    if 't' in lc:
+    # Infer surface from prefix chars AND track code
+    lc_prefix = prefix.lower()
+    tc_upper = track_code.upper()
+    if 'AW' in tc_upper or 'aw' in lc_prefix:
+        surface = 'POLY'
+    elif 't' in lc_prefix:
         surface = 'TURF'
-    elif 's' in lc:
+    elif 's' in lc_prefix:
         surface = 'SLOP'
     else:
         surface = 'DIRT'
@@ -310,7 +326,7 @@ class RagozinParser:
             if hm:
                 horse_name = hm.group(1).strip()
                 sex = hm.group(2)
-                age = int(hm.group(3))
+                age = _foal_year_to_age(int(hm.group(3)))
                 # Sire is the line before dam, dam is the line before horse
                 if i >= 2:
                     sire = cleaned[i - 2] if _SIRE_RE.match(cleaned[i - 2]) else ''
@@ -406,6 +422,7 @@ class RagozinParser:
             speed_rating=None,
             pace_rating=None,
             class_rating=None,
+            age=age if age is not None else 0,
             past_performances=past_performances,
         )
         return entry
@@ -541,7 +558,7 @@ class RagozinParser:
             horse_dict = {
                 'horse_name': horse.horse_name,
                 'sex': horse.track_surface,  # placeholder
-                'age': 0,
+                'age': horse.age,
                 'breeder_owner': 'Unknown',
                 'foal_date': 'Unknown',
                 'reg_code': 'Unknown',

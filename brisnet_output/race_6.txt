@@ -1,0 +1,145 @@
+META:
+track=Gulfstream Park
+date=February 19, 2026
+race=6
+surface=DIRT
+distance=7 Furlongs
+class=Clm
+purse=36,000
+restrictions=4&up
+pars={'E1': 94, 'E2': 97, 'LATE': 86, 'SPEED': 87}
+
+--- HORSE 1 Vigano ---
+Style: S (0)
+Prime Power: 115.1 (8th)
+Jockey: DAVIS KATIE | Trainer: Zito Nicholas P
+Odds: 6/1 | Weight: 123
+Life: 0 starts  $ speed=None
+POSITIVE: Finished 3rd in last race
+NEGATIVE: Post Position 1 has poor win% | Poor 'Sprints' trainer record: 2% wins 104 sts | 11Mar'25 Pmm  4f  ft   :47ª  B 1/5     07Feb'25 Pmm  3f  ft   :38«  B 21/24     24Jan'25 Pmm  3f  ft   :35¨  B 2/16     09Jan'25 Pmm  4f  ft   :49«  B 19/27     03Dec'24 Pmm  4f  ft   :48«  B 3/9     11Oct'24 Sar  tr.t 4f  ft   :51«  B 28/31
+Running lines (10):
+  30Jan26 GP DIRT spd=83 
+  14Dec25 GP DIRT spd=78 
+  05Nov25 FL DIRT spd=79 
+  09Oct25 Baq DIRT spd=68 
+  15Sep25 FL DIRT spd=78 
+  26Jly25 Sar DIRT spd=72 
+Workouts: 08Jan Pmm 3f :37« | 02Dec'25 Pmm 4f :49 | 24Aug'25 Sar tr.t 4f :51ª | 15Jly'25 Sar tr.t 3f :37¨
+
+--- HORSE 2 Joey Muscles ---
+Style: P (0)
+Prime Power: 116.3 (7th)
+Jockey: MORELOS JOSE E | Trainer: Antonucci Jena M
+Odds: 12/1 | Weight: 123
+Life: 0 starts  $ speed=None
+POSITIVE: Drops in class today | Hot Jockey in last 7 days (16 4-0-2) | Sharp 4F workout (Feb-08)
+NEGATIVE: Showed declining form and speed in last start
+Running lines (10):
+  22Jan26 GP DIRT spd=73 
+  14Dec25 GP DIRT spd=79 
+  23Nov25 GP DIRT spd=74 
+  26Oct25 GP DIRT spd=85 
+  27Jly25 Sar DIRT spd=82 
+  07Jun25 Sar DIRT spd=71 
+Workouts: 08Feb GP 4f :48ª | 11Jan GP 3f :39 | 03Oct'25 GP 3f :38« | 07Sep'25 Sar 4f :47©
+
+--- HORSE 3 Dune Road ---
+Style: P (0)
+Prime Power: 118.4 (5th)
+Jockey: LEON JOSE A | Trainer: Jackson Gary G
+Odds: 15/1 | Weight: 122
+Life: 0 starts  $ speed=None
+NEGATIVE: Showed declining form and speed in last start | Poor jockey win%
+Running lines (10):
+  30Jan26 GP DIRT spd=77 
+  27Dec25 GP DIRT spd=85 
+  28Nov25 GPª DIRT spd=82 
+  02Nov25 GP DIRT spd=83 
+  19Jly25 GP DIRT spd=83 
+  19Jun25 GP DIRT spd=83 
+Workouts: 21Jan Pmm 4f :49« | 20Dec'25 Pmm 4f :49« | 13Dec'25 Pmm 5f 1:02 | 15Nov'25 Pmm 4f :50¨
+
+--- HORSE 4 Mr. Peeks ---
+Style: E/P (5)
+Prime Power: 122.1 (3rd)
+Jockey: VASQUEZ MIGUEL A | Trainer: Chapman Beau J
+Odds: 9/2 | Weight: 123
+Life: 0 starts  $ speed=None
+POSITIVE: Highest last race speed rating | Drops in class today | Finished 3rd vs tougher in last race | Hot Trainer in last 14 days (5 2-0-1)
+NEGATIVE: Poor 'Dirt starts' trainer record: 7% wins 13 sts | 20Sep'25 Pmm  5f  wf   :59  B 1/11 | 13Sep'25 Pmm  4f  wf   :46«  B 1/50     23Aug'25 Pmm  3f  ft   :36«  B 13/29     15Aug'25 Pmm  4f  ft   :48  B 3/34
+Running lines (10):
+  22Jan26 GP DIRT spd=89 
+  26Dec25 GP DIRT spd=74 
+  23Nov25 GP DIRT spd=77 
+  26Oct25 GP DIRT spd=93 
+  28Sep25 GP DIRT spd=78 
+  29Aug25 GP DIRT spd=77 
+Workouts: 16Jan Pmm 4f :49« | 10Jan Pmm 4f :49© | 19Dec'25 Pmm 4f :48« | 13Dec'25 Pmm 5f 1:02
+
+--- HORSE 5 Rocketeer ---
+Style: E (5)
+Prime Power: 125.8 (1st)
+Jockey: GAFFALIONE TYLER | Trainer: David Carlos A
+Odds: 9/5 | Weight: 123
+Life: 0 starts  $ speed=None
+POSITIVE: 29% trainer: 1st after clm | Won last race (GP 01/16 6f Dirt ft Clm25000n2lc) | Sharp 3F workout (Feb-13)
+NEGATIVE: Moves up in class from last start | 19Oct'25 Sar  tr.t 4f  ft   :47ª  B 1/35
+Running lines (10):
+  16Jan26 GP DIRT spd=86 
+  21Dec25 GPª DIRT spd=83 
+  01Nov25 Baq TURF spd=82 
+  31Aug25 Sar DIRT spd=74 
+  17Jly25 Sar DIRT spd=87 
+  07Jun25 Sar DIRT spd=73 
+Workouts: 13Feb Pmm 3f :36 | 10Jan Pmm 3f :36¨ | 13Dec'25 Pmm 4f :50¨ | 06Dec'25 Pmm 3f :35ª
+
+--- HORSE 6 Backonthechaingang ---
+Style: E/P (5)
+Prime Power: 117.5 (6th)
+Jockey: GUTIERREZ MARIO | Trainer: Drexler Martin
+Odds: 20/1 | Weight: 120
+Life: 0 starts  $ speed=None
+POSITIVE: Chance to improve while trying Dirt | 25% trainer: 2nd after clm | Eligible to improve in 2nd start since layoff
+NEGATIVE: Never threatened leaders (on AW) in last start | Poor Speed Figures
+Running lines (10):
+  06Feb26 GP DIRT spd=86 
+  13Oct25 WO DIRT spd=74 
+  26Sep25 WO DIRT spd=81 
+  05Sep25 WO DIRT spd=82 
+  08Aug25 WO DIRT spd=80 
+  17Jly25 WO DIRT spd=79 
+Workouts: 31Jan Pmm 3f :37© | 25Jan Pmm 3f :39« | 18Jan Pmm 3f :37« | 11Jan Pmm 4f :48ª
+
+--- HORSE 7 Keep On Moving ---
+Style: P (0)
+Prime Power: 121.6 (4th)
+Jockey: ORTIZ, JR. IRAD | Trainer: Yates Michael
+Odds: 2/1 | Weight: 123
+Life: 9 starts 2-2-0 $84,753 speed=89
+POSITIVE: Switches to a high % jockey | 21% trainer: 1st Time Clmg | Hot Jockey in last 7 days (8 2-0-3)
+NEGATIVE: Speed Figs rank poorly vs others | 25Jun'25 GP  4f  ft   :47  B 1/10 | 14Jun'25 GP  3f  ft   :35  B 1/46     09May'25 GP  4f  ft   :51«  B 22/25 | 20Mar'25 GP  5f  ft   :59«  B 1/5
+Running lines (9):
+  17Jan26 GP DIRT spd=81 
+  07Dec25 GP TURF spd=82 
+  08Nov25 GP DIRT spd=73 
+  11Oct25 GP DIRT spd=89 
+  29Aug25 GP DIRT spd=84 
+  12Jly25 GP DIRT spd=89 
+Workouts: 10Jan GP 3f :37« | 31Dec'25 GP 3f :36© | 28Nov'25 GP 4f :48© | 01Nov'25 GP 4f :48
+
+--- HORSE 8 Grim Reaper ---
+Style: E/P (3)
+Prime Power: 122.6 (2nd)
+Jockey: ZAYAS EDGARD J | Trainer: Orseno Joseph F
+Odds: 10/1 | Weight: 123
+Life: 9 starts 2-0-0 $36,706 speed=95
+POSITIVE: Drops in class today | Eligible to improve in 3rd start since layoff | Best Dirt Speed is fastest among today's starters
+NEGATIVE: 17Dec'25 Tam  4f  ft   :47ª  B 1/32     06Dec'25 Tam  4f  ft   :48¨  B 6/82 | 24Nov'25 Tam  5f  ft   1:00©  B 1/4     16Nov'25 Tam  4f  ft   :48¨  B 6/75     09Nov'25 GP  4f  ft   :48ª  B 14/96
+Running lines (9):
+  22Jan26 GP DIRT spd=84 
+  26Dec25 Tam DIRT spd=80 
+  28May25 Del DIRT spd=78 
+  17Apr25 GP DIRT spd=95 
+  22Mar25 GP TURF spd=79 
+  02Jan25 GP TURF spd=74 
+Workouts: 10Jan Tam 4f :48« | 17Dec'25 Tam 4f :47ª | 06Dec'25 Tam 4f :48¨ | 24Nov'25 Tam 5f 1:00©

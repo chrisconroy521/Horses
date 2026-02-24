@@ -1,0 +1,159 @@
+META:
+track=Gulfstream Park
+date=February 19, 2026
+race=5
+surface=TURF
+distance=5 Furlongs
+class=Clm
+purse=40,000
+restrictions=4&up
+pars={'E1': 91, 'E2': 91, 'LATE': 79, 'SPEED': 77}
+
+--- HORSE 1 Will Reign ---
+Style: E/P (4)
+Prime Power: 125.6 (1st)
+Jockey: CASTELLANO JAVIER | Trainer: Casse Mark E
+Odds: 3/1 | Weight: 123
+Life: 5 starts 1-1-0 $57,826 speed=82
+POSITIVE: Drops in class today | 20% trainer: 1st Time Clmg
+NEGATIVE: Has not raced for more than 6 months | 06Feb Caa  4f  ft   :48«  B 1/8 | 30Jan Caa  4f  ft   :49¨  B 1/7     31Dec'25 Caa  4f  ft   :50¨  B 4/10 | 24Dec'25 Caa  3f  ft   :37©  B 1/7     26Nov'25 Caa  4f  ft   :48ª  B 1/2     19Nov'25 Caa  4f  ft   :49©  B 2/3 | 31Jly'25 WO  4f  ft   :46ª  Bg 1/25 | 24Jly'25 WO  4f  ft   :46ª  B 1/27     11Jly'25 WO  5f  ft   1:00¨  B 2/16     28Jun'25 WO  4f  ft   :48«  B 56/111
+Running lines (5):
+  16Aug25 WO DIRT spd=69 OC50k/n2l-N¨¨§100
+  12Oct24 WO DIRT spd=82 Mdn
+  14Sep24 WO TURF spd=77 Natalma-G1
+  23Aug24 WO DIRT spd=79 CtchAGlmpL
+  18Jly24 Sar TURF spd=81 Mdn
+Workouts: 06Feb Caa 4f :48« | 30Jan Caa 4f :49¨ | 31Dec'25 Caa 4f :50¨ | 24Dec'25 Caa 3f :37©
+
+--- HORSE 2 Sunna ---
+Style: E (5)
+Prime Power: 110.6 (6th)
+Jockey: MORELOS JOSE E | Trainer: Sweezey J. Kent
+Odds: 8/1 | Weight: 123
+Life: 3 starts 1-0-1 $29,650 speed=83
+POSITIVE: Finished 3rd vs similar (on Dirt) in last race | Early speed running style helps chances | May improve at the shorter distance | Hot Jockey in last 7 days (16 4-0-2)
+NEGATIVE: Has never raced on the grass | 28Dec'25 Pmm  4f  ft   :48  B 1/54     14Dec'25 Pmm  4f  ft   :50«  B 40/46     07Dec'25 Pmm  4f  ft   :48ª  B 2/47 | 21Sep'25 Pmm  4f  ft   :47  B 1/21
+Running lines (3):
+  10Jan26 GPª DIRT spd=74 C35000n2L
+  22Nov25 GP DIRT spd=68 OC25k/n1x-N¨¨¨
+  12Oct25 GP DIRT spd=83 Mdn
+Workouts: 12Feb Pmm 4f :49ª | 01Feb Pmm 4f :49« | 04Jan Pmm 3f :39 | 28Dec'25 Pmm 4f :48
+
+--- HORSE 3 Midnightloveaffair ---
+Style: E/P (4)
+Prime Power: 111.6 (5th)
+Jockey: MARAGH RAJIV | Trainer: Maragh Collin
+Odds: 6/1 | Weight: 123
+Life: 6 starts 1-1-0 $41,710 speed=82
+POSITIVE: Figures to improve while returning to Turf | Eligible to improve in 2nd start since layoff | Best Turf Speed is fastest among today's starters
+NEGATIVE: Always far back (on AW) in last start | Poor Speed Figure in only recent start
+Running lines (6):
+  23Jan26 GP DIRT spd=62 C35000n2L
+  23Oct25 Baq TURF spd=79 C35000n2L
+  30Aug25 Sar TURF spd=66 A110000n1x
+  26Jun25 Baq TURF spd=82 MC50000
+  29Dec24 Aqu DIRT spd=57 Moc50000
+  01Nov24 Baq TURF spd=76 Mdn
+Workouts: 02Jan GP 3f :38© | 12Nov'25 Bel tr.t 4f :51 | 15Oct'25 Bel tr.t 4f :51© | 05Oct'25 Bel tr.t 4f :51ª
+
+--- HORSE 4 Brittany's Way ---
+Style: E/P (6)
+Prime Power: 119.4 (2nd)
+Jockey: RUIZ JORGE | Trainer: Owens Steven
+Odds: 9/2 | Weight: 123
+Life: 8 starts 1-2-2 $45,424 speed=80
+POSITIVE: Highest last race speed rating | Finished 3rd vs similar (on AW) in last race | Early speed running style helps chances
+NEGATIVE: 25Oct'25 WO  4f  ft   :47  B 1/66     17Oct'25 WO  4f  ft   :48©  B 11/29 | 12Sep'25 WO  4f  ft   :47  B 1/28     03Aug'25 WO  4f  ft   :48  B 12/76     13Jly'25 WO  4f  ft   :48¨  B 19/80     06Jly'25 WO  4f  ft   :47©  B 5/68     29Jun'25 WO  3f  ft   :36©  B 9/24
+Running lines (8):
+  23Jan26 GP DIRT spd=70 C35000n2L
+  02Nov25 WO DIRT spd=77 OC40k
+  20Sep25 WO TURF spd=74 OC40k
+  09Aug25 WO TURF spd=74 OC50k/n2l-N¨¨¨
+  19Jly25 WO DIRT spd=80 Moc40000
+  28Feb25 GP DIRT spd=68 MC35000
+Workouts: 13Feb GP 3f :35ª | 15Jan GP 4f :49« | 27Dec'25 GP 4f :48« | 06Dec'25 GP 4f :49¨
+
+--- HORSE 5 Miso Spicy ---
+Style: E (6)
+Prime Power: 113.7 (4th)
+Jockey: NICHOLLS MIA | Trainer: Joseph, Jr. Saffie A
+Odds: 8/1 | Weight: 113
+Life: 7 starts 1-0-0 $32,993 speed=81
+POSITIVE: High % trainer | 28% trainer: Claiming | Early speed running style helps chances | Hot Trainer in last 14 days (24 8-2-5)
+NEGATIVE: Finished far back (on AW) in last start | Poor Speed Figures | 11Oct'25 Pmm  4f  wf   :46«  B 1/55     04Oct'25 Pmm  3f  wf   :35¨  B 2/44
+Running lines (7):
+  23Jan26 GP DIRT spd=63 C35000n2L
+  23Nov25 GP DIRT spd=57 C25000b
+  17May25 CD TURF spd=66 A127000n1x
+  12Apr25 GP TURF spd=79 Mdn
+  16Mar25 GP TURF spd=66 Mdn
+  15Feb25 GPª TURF spd=67 Mdn
+Workouts: 13Feb Pmm ˜ (d) 4f :49© | 16Jan Pmm ˜ 4f :47« | 09Jan Pmm ˜ (d) 4f :50« | 02Jan Pmm ˜ (d) 4f :49©
+
+--- HORSE 6 Phoebeinwonderland ---
+Style: E/P (0)
+Prime Power: 116.3 (3rd)
+Jockey: GAFFALIONE TYLER | Trainer: Sanchez Amador M
+Odds: 2/1 | Weight: 123
+Life: 6 starts 1-1-0 $59,130 speed=86
+POSITIVE: 26% trainer: 1st after clm | Eligible to improve in 2nd start since layoff | Sharp 3F workout (Feb-09)
+NEGATIVE: Never a threat vs weaker (on AW) in last race | Failed as favorite in last race | 09Feb GP  3f  ft   :35«  B 1/6     31Jan GP  4f  ft   :50ª  B 75/91     25Jan GP  3f  ft   :38¨  B 12/15     29Dec'25 Pbd  ˜ 4f  fm   :48©  B 2/3     20Dec'25 Pbd  ˜ 4f  fm   :49©  B 1/1 | 16Nov'25 Pay  4f  ft   :48©  B 1/22     09Nov'25 Pay  4f  ft   :50¨  B 8/11     02Nov'25 Pay  4f  ft   :49ª  B 1/1
+Running lines (6):
+  09Jan26 GP DIRT spd=73 C25000n2L-c¨§°
+  26Sep25 Baq DIRT spd=80 C35000n2L
+  23Aug25 Sar TURF spd=73 ‘A95000n1x¨¨©
+  20Jly25 Sar DIRT spd=73 ‘A95000n1x¨¨¨
+  17Nov24 Aqu DIRT spd=60 ‘KeyCentsB
+  10May24 Baq DIRT spd=83 Clm
+Workouts: 15Feb GP 4f :51© | 09Feb GP 3f :35« | 31Jan GP 4f :50ª | 25Jan GP 3f :38¨
+
+--- HORSE 7 Girl in Blue ---
+Style: E (5)
+Prime Power: 107.4 (7th)
+Jockey: PANICI LUCA | Trainer: Lewis Lisa L
+Odds: 12/1 | Weight: 120
+Life: 8 starts 1-0-3 $36,310 speed=84
+POSITIVE: Finished 3rd (on AW) in last race
+NEGATIVE: Has not raced for more than 2 months | Poor record at this distance | Poor record at this track | 05Feb Pmm  3f  ft   :36¨  B 1/9     25Jan Pmm  3f  ft   :37  B 5/15     23Dec'25 Pmm  4f  ft   :48«  B 5/10     12Dec'25 Pmm  ˜ (d) 4f  fm   :51  B 59/70     14Nov'25 Pmm  4f  ft   :48«  B 14/42     15Oct'25 Pmm  4f  ft   :48©  B 5/16
+Running lines (8):
+  23Nov25 GP DIRT spd=75 C25000b
+  24Oct25 GP TURF spd=75 ‘OC20k/n1x-N¨¨¨
+  28Sep25 GPª DIRT spd=84 MC25000
+  30Nov24 GPª DIRT spd=67 Moc35000-N¨§¯
+  01Nov24 GPª DIRT spd=72 ‘Mdn
+  20Sep24 GP DIRT spd=77 ‘Mdn
+Workouts: 05Feb Pmm 3f :36¨ | 25Jan Pmm 3f :37 | 23Dec'25 Pmm 4f :48« | 12Dec'25 Pmm ˜ (d) 4f :51
+
+--- HORSE 8 Vivi Get Your Guns ---
+Style: S (0)
+Prime Power: 102.6 (8th)
+Jockey: OCASIO JONATHAN | Trainer: Simpson Willoughby
+Odds: 30/1 | Weight: 120
+Life: 9 starts 1-2-1 $37,740 speed=83
+POSITIVE: Drops in class today | May improve while returning to a sprint
+NEGATIVE: Poor trainer win% | Poor jockey win% this meet | Outside posts have poor win% | Has never raced on the grass
+Running lines (9):
+  08Jan26 GP DIRT spd=63 OC25k/n1x-N¨§°
+  08Nov25 GP DIRT spd=78 ‘OC20k/n1x-N¨¨©
+  12Oct25 GP DIRT spd=71 ‘OC20k/n1x-N¨¨¨
+  12Sep25 GP DIRT spd=83 ‘OC20k/n1x-N¨¨«
+  27Jly25 GP DIRT spd=78 C30000b
+  18Jly25 GP DIRT spd=73 C35000b
+Workouts: 14Feb GP 3f :36¨ | 07Feb GP 3f :36© | 31Jan GP 3f :37 | 03Jan GP 3f :36©
+
+--- HORSE 9 Spatula ---
+Style: E (8)
+Prime Power: 97.3 (9th)
+Jockey: MARTINEZ CARLOS | Trainer: Minguet Ramon
+Odds: 20/1 | Weight: 116
+Life: 7 starts 1-1-1 $29,470 speed=84
+POSITIVE: Finished 3rd (on Dirt) in last race | Early speed running style helps chances | May improve at the shorter distance
+NEGATIVE: Failed as favorite in last race | Poor jockey win% this meet | Poor Speed Figures in last 2 starts | Outside posts have poor win% | Poor 'Turf starts' trainer record: 0% wins 10 sts | 25Nov'25 Der  4f  gd   :50  B 1/4 | 12Oct'25 GP  3f  gd   :34  B 1/24     01Oct'25 Der  4f  gd   :52  B 7/7     02Sep'25 Der  4f  gd   :52  B 2/2     05Jly'25 GP  4f  gd   :48¨  B 11/71     02Jly'25 Der  4f  gd   :52  B 3/4
+Running lines (7):
+  11Jan26 Tam DIRT spd=65 C5000n1y
+  04Dec25 GPª DIRT spd=56 C8000n2L
+  18Oct25 GP DIRT spd=69 C8000n2L
+  13Jly25 GP DIRT spd=54 C25000b
+  08Jun25 GP TURF spd=54 OC75k/n1x-N¨§°
+  10Jan25 GP DIRT spd=81 MC50000
+Workouts: 25Nov'25 Der 4f :50 | 12Oct'25 GP 3f :34 | 01Oct'25 Der 4f :52 | 02Sep'25 Der 4f :52

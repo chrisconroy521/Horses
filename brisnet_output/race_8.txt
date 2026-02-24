@@ -1,0 +1,214 @@
+META:
+track=Gulfstream Park
+date=February 19, 2026
+race=8
+surface=TURF
+distance=7½ Furlongs
+class=Clm
+purse=31,000
+restrictions=4&up
+pars={'E1': 90, 'E2': 89, 'LATE': 76, 'SPEED': 74}
+
+--- HORSE 1 My Sweet Adaline ---
+Style: P (2)
+Prime Power: 82.7 (11th)
+Jockey: KARAMANOS HORACIO | Trainer: McKanas Leon J
+Odds: 30/1 | Weight: 123
+Life: 0 starts  $ speed=None
+POSITIVE: Rail post is winning at 22% clip | Chance to improve while trying grass
+NEGATIVE: Always far back vs weaker (on AW) in last race | Poor Speed Figures | Has never raced on the grass | Poor 'Turf starts' trainer record: 0% wins 38 sts
+Running lines (10):
+  18Jan26 GPª DIRT spd=48 C8000n2L
+  14Dec25 GP DIRT spd=57 C12500n2L
+  30Nov25 GP DIRT spd=58 C8000n2L
+  14Nov25 GP DIRT spd=78 C8000n2L
+  18Oct25 GP DIRT spd=55 C8000n2L
+  27Jly25 GP DIRT spd=68 MC12500
+Workouts: 01Nov'25 GP 4f :49© | 27Sep'25 GP 4f :49¨ | 20Sep'25 GP 5f 1:01¨ | 13Sep'25 GP 3f :37
+
+--- HORSE 2 Giddy Up Baby ---
+Style: S (0)
+Prime Power: 107.0 (4th)
+Jockey: ROJAS RENZO | Trainer: Medina Santiago
+Odds: 12/1 | Weight: 123
+Life: 0 starts  $ speed=None
+POSITIVE: Drops in class today
+NEGATIVE: Only 1 win(s) in 21 career starts | Poor 'Turf starts' trainer record: 0% wins 13 sts
+Running lines (10):
+  23Jan26 GP DIRT spd=73 C35000n2L
+  07Dec25 GP DIRT spd=68 MC12500
+  28Nov25 GP DIRT spd=74 MC17500
+  02Nov25 GP TURF spd=53 MC17500
+  05Oct25 GP TURF spd=70 MC17500
+  20Sep25 GP DIRT spd=73 MC17500
+Workouts: 12Jan Pmm 4f :50 | 12Jly'25 Pmm 4f :51 | 28Jun'25 Pmm 4f :49ª | 07Jun'25 Pmm 4f :52©
+
+--- HORSE 3 Pretty Shy ---
+Style: E/P (2)
+Prime Power: 101.6 (7th)
+Jockey: RUIZ JORGE | Trainer: Preciado Guadalupe
+Odds: 9/2 | Weight: 123
+Life: 9 starts 1-0-3 $23,925 speed=73
+POSITIVE: 38% trainer: 1st start w/trn | May improve with Blinkers added today
+NEGATIVE: Always far back (on AW) in last start | Has not raced for more than 2 months | Poor trainer win% this meet | 31Jly'25 Mth  4f  ft   :48©  H 1/23     20Jly'25 Mth  4f  my   :50  B 11/26
+Running lines (9):
+  27Nov25 GP DIRT spd=66 C17500n2L
+  17Oct25 Med TURF spd=62 C7500n2L
+  26Sep25 Med DIRT spd=70 C7500n2L
+  06Sep25 Mth TURF spd=61 MC16000
+  09Aug25 Mth DIRT spd=31 MC25000
+  04Oct24 GP TURF spd=72 ‘Mdn
+Workouts: 13Feb GP 4f :49 | 03Feb GP 4f :49ª | 27Jan GP 4f :49¨ | 16Nov'25 GP 4f :48©
+
+--- HORSE 4 Acheron ---
+Style: E/P (1)
+Prime Power: 115.9 (2nd)
+Jockey: BRAVO JOE | Trainer: Hills Timothy A
+Odds: 7/2 | Weight: 123
+Life: 0 starts  $ speed=None
+POSITIVE: Drops in class today | Hot Jockey in last 7 days (8 2-2-1) | Sharp 4F workout (Feb-13)
+NEGATIVE: Poor trainer win% this meet | Poor 'Turf starts' trainer record: 7% wins 168 sts | 05Apr'25 Fai  3f  ft   :37  B 1/17     29Mar'25 Fai  3f  ft   :37©  B 3/20     06Oct'24 Mth  4f  ft   :48¨  B 8/57
+Running lines (10):
+  18Jan26 GP DIRT spd=74 C50000n2L
+  30Nov25 GP DIRT spd=78 C35000n2L
+  24Oct25 Lrl TURF spd=72 A50000n1x
+  03Oct25 Med TURF spd=70 ‘Mdn
+  24Aug25 Mth TURF spd=57 
+  03Aug25 Mth TURF spd=81 Mdn
+Workouts: 13Feb GP 4f :48ª | 11Jan GP 4f :50ª | 28Sep'25 Mth 4f :49 | 21Sep'25 Mth 3f :37
+
+--- HORSE 5 Shedoo Kitten ---
+Style: P (0)
+Prime Power: 101.2 (9th)
+Jockey: PEREZ EDGAR | Trainer: Duco Luis
+Odds: 20/1 | Weight: None
+Life: 0 starts  $ speed=None
+POSITIVE: Finished 3rd vs similar (on AW) in last race
+NEGATIVE: Only 1 win(s) in 18 career starts | Has not raced for more than 2 months | Poor trainer win% | Poor record at this distance | Poor record at this track
+Running lines (10):
+  14Dec25 GP DIRT spd=70 C17500n2L
+  27Nov25 GP DIRT spd=68 C17500n2L
+  17Oct25 GP DIRT spd=67 C8000n2L
+  04Oct25 GP DIRT spd=64 C17500n2L
+  12Sep25 GP DIRT spd=65 C12500n2L
+  23Aug25 GP DIRT spd=70 C17500n2L
+Workouts: 13Feb GP 4f :51 | 16Jan GP 4f :48ª | 25Oct'25 GP 4f :48ª | 11Oct'25 GP 4f :49ª
+
+--- HORSE 6 Frosted Kisses ---
+Style: S (0)
+Prime Power: 110.2 (3rd)
+Jockey: ALVARADO JUNIOR | Trainer: Mott Riley
+Odds: 3/1 | Weight: 123
+Life: 9 starts 1-2-2 $30,876 speed=75
+POSITIVE: 21% trainer: Claiming
+NEGATIVE: Beaten by weaker (on AW) in last race | Poor trainer win% this meet | Poor 'AW to Turf' trainer record: 7% wins 27 sts
+Running lines (9):
+  23Jan26 GP DIRT spd=64 C12500n2L
+  14Dec25 GP DIRT spd=75 C17500n2L
+  24Sep25 Ind DIRT spd=60 C25000n2x
+  04Sep25 Ind TURF spd=73 C25000n2L
+  16Aug25 Elp TURF spd=73 C30000n2L
+  03Jly25 Ind TURF spd=73 MC20000
+Workouts: 14Feb Pmm 4f :50 | 07Feb Pmm 4f :49 | 18Jan Pmm ˜ 5f 1:00¨ | 11Jan Pmm 4f :49©
+
+--- HORSE 7 My Blessing ---
+Style: S (1)
+Prime Power: 106.6 (5th)
+Jockey: ZAYAS EDGARD J | Trainer: Preciado Guadalupe
+Odds: 5/2 | Weight: 123
+Life: 0 starts  $ speed=None
+POSITIVE: Figures to improve while returning to Turf | Drops in class today
+NEGATIVE: Has not raced for more than 10 months | Poor trainer win% this meet | 02Dec'25 GP  3f  ft   :36ª  B 1/4     24Nov'25 GP  3f  ft   :38ª  B 14/16     15Apr'25 GP  4f  ft   :50  B 8/8     04Apr'25 GP  4f  ft   :49«  B 21/33     26Mar'25 GP  4f  ft   :49©  B 9/13
+Running lines (10):
+  24Apr25 GP DIRT spd=64 A50000s
+  21Feb25 GP TURF spd=74 A50000s
+  30Oct24 Prx DIRT spd=71 OC25k-N
+  11Sep24 Del TURF spd=73 OC25k-N
+  10Jly24 Prx TURF spd=76 Mdn
+  12May24 Pim DIRT spd=71 Mdn
+Workouts: 13Feb GP 4f :48ª | 29Jan GP 4f :49© | 17Jan GP 4f :48© | 09Jan GP 3f :39ª
+
+--- HORSE 8 Lady River Lily ---
+Style: E/P (0)
+Prime Power: 93.1 (10th)
+Jockey: HARTSMAR CORNELIA | Trainer: Seyler Douglas J
+Odds: 10/1 | Weight: 123
+Life: 0 starts  $ speed=None
+POSITIVE: Figures to improve while returning to Turf | Drops in class today
+NEGATIVE: Only 1 win(s) in 18 career starts | Has not raced for more than 2 months | Poor trainer win% | Poor jockey win% | Outside posts have poor win% | 22Nov'25 Oxf  4f  ft   :48©  B 1/9 | 15Nov'25 Oxf  4f  ft   :51©  B 1/5     20Oct'25 Oxf  4f  ft   :50«  B 4/6 | 14Oct'25 Oxf  4f  ft   :49¨  B 1/4 | 01Oct'25 Oxf  5f  ft   1:02  B 1/5     24Sep'25 Oxf  4f  ft   :49«  B 2/8     16Sep'25 Oxf  5f  ft   1:02©  B 2/4     08Aug'25 Sar  tr.t 4f  ft   :50©  B 27/36     23Jly'25 Sar  tr.t 3f  ft   :37¨  B 4/8
+Running lines (10):
+  30Nov25 GP DIRT spd=66 C35000n2L
+  01Nov25 GP TURF spd=72 C25000b
+  28Aug25 Sar TURF spd=70 OC50k-N
+  15Aug25 Sar DIRT spd=74 C35000n2L
+  27Jly25 Sar DIRT spd=64 C35000n2L
+  06Jly25 Sar TURF spd=64 OC50k-N
+Workouts: 11Feb Pmm ˜ (d) 4f :49¨ | 30Jan Pmm ˜ (d) 4f :51¨ | 31Dec'25 Pmm ˜ (d) 4f :50« | 22Nov'25 Oxf 4f :48©
+
+--- HORSE 9 Ave Fenix ---
+Style: S (0)
+Prime Power: 82.7 (12th)
+Jockey: MARTINEZ CARLOS | Trainer: Lizardi Amparo E
+Odds: 50/1 | Weight: 116
+Life: 0 starts  $ speed=None
+POSITIVE: Return to Turf offers hope for improvement
+NEGATIVE: Always far back vs weaker (on AW) in last race | Only 1 win(s) in 45 career starts | Poor jockey win% this meet | Poor Speed Figures | Poor record at this distance | Outside posts have poor win%
+Running lines (10):
+  22Jan26 GP DIRT spd=47 C8000n2L
+  04Dec25 GPª DIRT spd=78 C8000n2L
+  14Nov25 GP DIRT spd=79 C8000n2L
+  27Sep25 GP DIRT spd=52 C8000n2L
+  22Aug25 GP DIRT spd=60 C8000n2L
+  25Jly25 GP DIRT spd=40 C8000n2L
+Workouts: 08Feb GP 4f :50 | 17Dec'25 GP 3f :37« | 30Nov'25 GP 3f :38 | 08Nov'25 GP 4f :49ª
+
+--- HORSE 10 Bonmati ---
+Style: E/P (0)
+Prime Power: 105.0 (6th)
+Jockey: MORELOS JOSE E | Trainer: Castro Jose M
+Odds: 12/1 | Weight: 123
+Life: 0 starts  $ speed=None
+POSITIVE: Hot Jockey in last 7 days (16 4-0-2)
+NEGATIVE: Finished far behind weaker (on AW) in last race | Only 1 win(s) in 24 career starts | Poor record at this distance | Outside posts have poor win% | Poor 'Turf starts' trainer record: 0% wins 16 sts
+Running lines (10):
+  22Jan26 GP DIRT spd=69 C8000n2L
+  02Jan26 GPª DIRT spd=71 C8000n2L
+  23Nov25 GP DIRT spd=64 C8000n2L
+  27Sep25 GP DIRT spd=71 C8000n2L
+  30Aug25 GP DIRT spd=75 C8000n2L
+  17May25 GP DIRT spd=72 C8000n2L
+Workouts: 13Feb Pmm 4f :51« | 07Feb Pmm 4f :52ª | 19Jan Pmm 3f :39¨ | 26Dec'25 Pmm 4f :49ª
+
+--- HORSE 11 Bembridge Ledge ---
+Style: E/P (1)
+Prime Power: 121.7 (1st)
+Jockey: ORTIZ, JR. IRAD | Trainer: D'Angelo Jose F
+Odds: 4/5 | Weight: 121
+Life: 9 starts 1-2-0 $118,064 speed=85
+POSITIVE: Highest last race speed rating | Drops in class today | 25% trainer: Btn favorite | Ran 2nd vs tougher in last race | Best Turf Speed is fastest among today's starters | Hot Tnr/Jky combo in last 14 days (3 2-1-0)
+NEGATIVE: Failed as favorite in last race | Outside posts have poor win%
+Running lines (9):
+  10Jan26 Tam TURF spd=79 C25000n2x
+  26Oct25 Baq TURF spd=67 OC50k/n1x-N¨¨§
+  06Sep25 KDª DIRT spd=67 A190000n1x
+  26Jly25 Elp TURF spd=77 A102000n2L¨¨©
+  14Jun25 CD TURF spd=85 Mdn
+  04Dec24 TP DIRT spd=69 Mdn
+Workouts: 11Feb Pmm ˜ (d) 3f :36© | 26Dec'25 Pmm ˜ 4f :47« | 17Nov'25 Fai tr.t 4f :49 | 18Oct'25 TP 4f :49©
+
+--- HORSE 12 Orquidea Real ---
+Style: E/P (1)
+Prime Power: 101.6 (8th)
+Jockey: OCASIO JONATHAN | Trainer: McKanas Leon J
+Odds: 20/1 | Weight: 123
+Life: 0 starts  $ speed=None
+POSITIVE: Figures to improve while returning to Turf
+NEGATIVE: Finished far back (on AW) in last start | Only 1 win(s) in 17 career starts | Has not raced for more than 2 months | Poor jockey win% this meet | Poor Speed Figures in last 2 starts | Outside posts have poor win% | Poor 'Turf starts' trainer record: 0% wins 38 sts | 29Nov'24 GP  3f  ft   :36  B 1/14     28Sep'24 GP  5f  ft   1:01«  B 18/41     20Sep'24 GP  4f  ft   :51¨  B 34/39
+Running lines (10):
+  14Dec25 GP DIRT spd=62 C17500n2L
+  15Nov25 GP DIRT spd=66 C17500n2L
+  13Sep25 Cnl TURF spd=71 MC16000
+  23Aug25 Cnl TURF spd=86 MC16000
+  25Jly25 Cnl DIRT spd=50 MC12500
+  26Jun25 GP DIRT spd=71 MC17500
+Workouts: 16Jan GP 4f :50 | 24Oct'25 GP 4f :50 | 17Oct'25 GP 4f :48ª | 19Jly'25 Cnl 3f :37

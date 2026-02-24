@@ -1,0 +1,127 @@
+META:
+track=Gulfstream Park
+date=February 19, 2026
+race=7
+surface=AW
+distance=5½ Furlongs
+class=Clm
+purse=33,000
+restrictions=
+pars={'E1': 92, 'E2': 93, 'LATE': 82, 'SPEED': 81}
+
+--- HORSE 1 Crazy Red ---
+Style: E (5)
+Prime Power: 109.3 (8th)
+Jockey: MORELOS JOSE E | Trainer: McGoey Monica
+Odds: 15/1 | Weight: 120
+Life: 3 starts 1-0-0 $18,230 speed=67
+POSITIVE: Eligible to improve in 2nd start since layoff | Hot Jockey in last 7 days (16 4-0-2)
+NEGATIVE: Finished far back (on Dirt) in last start | Poor trainer win% | Poor Speed Figures
+Running lines (3):
+  04Feb26 Tam DIRT spd=66 
+  14Jun25 Evd DIRT spd=69 
+  15May25 Evd DIRT spd=50 
+Workouts: 28Jan Itc 3f :38 | 21Jan Itc 3f :36 | 18Oct'25 Glp 4f :51« | 11Oct'25 Glp 4f :52
+
+--- HORSE 2 Italian Wine ---
+Style: E (3)
+Prime Power: 109.6 (7th)
+Jockey: ZAYAS EDGARD J | Trainer: Lynch Brian A
+Odds: 9/2 | Weight: 122
+Life: 4 starts 1-0-0 $15,040 speed=70
+POSITIVE: High % trainer | 26% trainer: Mdn win L/R | Won last race (GP 12/21 5.5f All Weather ft Md17500) | Early speed running style helps chances | May improve with Lasix added
+NEGATIVE: Moves up in class from last start | Has not raced in 60 days | Poor Recent Speed Figures | 05Oct'25 CD  4f  ft   :47ª  B 1/86     28Sep'25 CD  4f  ft   :49«  B 56/75     21Sep'25 CD  4f  ft   :48«  B 32/79
+Running lines (4):
+  21Dec25 GP DIRT spd=70 
+  30Nov25 GP DIRT spd=57 
+  16Oct25 Ind TURF spd=72 
+  05Sep25 Ind TURF spd=42 
+Workouts: 08Feb Pmm ˜ 5f 1:03 | 01Feb Pmm 4f :51© | 18Jan Pmm 4f :48« | 11Jan Pmm 4f :49ª
+
+--- HORSE 3 I'm Sam ---
+Style: S (0)
+Prime Power: 110.3 (6th)
+Jockey: NICHOLLS MIA | Trainer: Hurtak Daniel C
+Odds: 8/1 | Weight: 113
+Life: 4 starts 1-0-1 $19,600 speed=80
+POSITIVE: 17% trainer: 2nd time Lasix | Finished 3rd vs similar (on Dirt) in last race
+NEGATIVE: Poor trainer win% | Poor Speed Figures in last 2 starts | 22Dec'25 GP  4f  ft   :48¨  B 1/9     05Dec'25 GP  4f  ft   :49ª  B 10/18     23Oct'25 GP  4f  ft   :49  B 3/9 | 14Sep'25 GP  4f  ft   :46ª  B 1/60     31Aug'25 GP  3f  ft   :36ª  Bg 7/13     24Aug'25 GP  4f  my   :47¨  B 3/24 | 03Aug'25 GP  4f  ft   :49©  B 1/6     25Jly'25 GP  5f  ft   1:00«  B 4/11
+Running lines (4):
+  17Jan26 GPª DIRT spd=67 
+  08Nov25 GP DIRT spd=60 
+  28Sep25 GP DIRT spd=80 
+  10Aug25 GPª DIRT spd=76 
+Workouts: 14Feb GP 4f :50« | 09Feb GP 3f :38ª | 07Jan GP 4f :50 | 22Dec'25 GP 4f :48¨
+
+--- HORSE 4 Chimuelo ---
+Style: S (0)
+Prime Power: 110.6 (5th)
+Jockey: RUIZ JORGE | Trainer: D'Angelo Jose F
+Odds: 12/1 | Weight: 118
+Life: 4 starts 1-0-0 $16,730 speed=68
+POSITIVE: May improve with Lasix added
+NEGATIVE: Finished far back in last start | Has not raced for more than 2 months | Poor Speed Figures
+Running lines (4):
+  04Dec25 GP DIRT spd=68 
+  02Nov25 GP DIRT spd=85 
+  26Sep25 GP DIRT spd=53 
+  07Sep25 GP DIRT spd=37 
+Workouts: 13Feb Pmm ˜ (d) 4f :51© | 07Feb Pmm 4f :50« | 23Jan Pmm ˜ (d) 4f :50¨ | 16Jan Pmm ˜ 4f :50
+
+--- HORSE 5 Copernium ---
+Style: E (6)
+Prime Power: 114.4 (2nd)
+Jockey: VASQUEZ MIGUEL A | Trainer: Sisterson Jack
+Odds: 6/1 | Weight: 120
+Life: 2 starts 1-0-0 $24,750 speed=85
+POSITIVE: Drops in class today | Early speed running style helps chances | May improve at the shorter distance | May improve with Lasix added | Sharp 4F workout (Feb-13)
+NEGATIVE: Has not raced for more than 6 months | 02Sep'25 Pmm  4f  ft   :47¨  B 1/4     02Aug'25 Pmm  4f  ft   :48ª  B 8/76     26Jly'25 Pmm  4f  ft   :49©  B 32/85     12Jly'25 Pmm  4f  ft   :49  B 27/85     05Jly'25 Pmm  4f  ft   :50©  B 41/66
+Running lines (2):
+  09Aug25 GP DIRT spd=33 
+  02May25 GP DIRT spd=70 
+Workouts: 13Feb Pmm 4f :49 | 08Feb Pmm 4f :49© | 30Jan Pmm 4f :49« | 23Jan Pmm ˜ (d) 4f :48«
+
+--- HORSE 6 Chalky White ---
+Style: E (1)
+Prime Power: 113.2 (3rd)
+Jockey: ORTIZ, JR. IRAD | Trainer: Delgado Jorge
+Odds: 5/1 | Weight: 120
+Life: 8 starts 1-1-0 $84,590 speed=79
+POSITIVE: High % trainer | Switches to a high % jockey | 24% trainer: 2nd time Lasix | May improve while returning to a sprint | Hot Jockey in last 7 days (8 2-0-3)
+NEGATIVE: Always far back (on Turf) in last start | 01Jan GP  4f  ft   :48ª  B 1/7     24Dec'25 GP  3f  ft   :37¨  B 8/20
+Running lines (8):
+  12Feb26 GP TURF spd=65 
+  28Nov25 GP DIRT spd=76 
+  11Oct25 Del DIRT spd=60 
+  07Sep25 KD TURF spd=58 
+  20Aug25 Sar DIRT spd=79 
+  27Jly25 Sar DIRT spd=77 
+Workouts: 05Feb GP 4f :50¨ | 25Jan GP 4f :47« | 17Jan GP 4f :50 | 10Jan GP 4f :49«
+
+--- HORSE 7 Esoooo ---
+Style: E (6)
+Prime Power: 117.0 (1st)
+Jockey: TORRES YOLBER | Trainer: D'Angelo Jose F
+Odds: 2/1 | Weight: 117
+Life: 2 starts 1-0-0 $18,630 speed=79
+POSITIVE: Highest last race speed rating | Won last race (GP 11/28 5f All Weather ft Md17500) | Early speed running style helps chances | Best AW speed is fastest among today's starters | May improve with Lasix added
+NEGATIVE: Moves up in class from last start | Has not raced for more than 2 months | 23Jan Pmm  ˜ (d) 3f  fm   :35  B 1/9     31Dec'25 Pmm  ˜ (d) 3f  fm   :35ª  B 5/12     12Dec'25 Pmm  4f  ft   :48  B 6/53     18Oct'25 Pmm  4f  ft   :49ª  Bg 18/53     11Oct'25 Pmm  4f  wf   :48  B 12/55     27Sep'25 Pmm  3f  ft   :37  B 11/33
+Running lines (2):
+  28Nov25 GP DIRT spd=83 
+  25Oct25 GP DIRT spd=64 
+Workouts: 23Jan Pmm ˜ (d) 3f :35 | 31Dec'25 Pmm ˜ (d) 3f :35ª | 12Dec'25 Pmm 4f :48 | 18Oct'25 Pmm 4f :49ª
+
+--- HORSE 8 Kazooza ---
+Style: E (3)
+Prime Power: 111.1 (4th)
+Jockey: CASTELLANO JAVIER | Trainer: Moubarak Tareq
+Odds: 4/1 | Weight: 120
+Life: 4 starts 1-0-0 $17,500 speed=73
+POSITIVE: High % trainer | Won last race (GP 01/09 5.5f Dirt ft Md12500)
+NEGATIVE: Moves up in class from last start | Poor 'Dirt to AW' trainer record: 8% wins 12 sts
+Running lines (4):
+  09Jan26 GP DIRT spd=73 
+  14Dec25 GP DIRT spd=59 
+  14Nov25 GPª DIRT spd=64 
+  11Oct25 GP DIRT spd=72 
+Workouts: 13Feb GP 4f :50« | 06Feb GP 4f :53¨ | 28Jan GP 4f :50 | 03Jan GP 4f :50ª
