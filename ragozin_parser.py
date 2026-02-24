@@ -5,7 +5,7 @@ import numpy as np
 import re
 import json
 from typing import List, Dict, Any, Optional, Tuple
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 import logging
 
@@ -32,6 +32,7 @@ class HorseEntry:
     speed_rating: Optional[float]
     pace_rating: Optional[float]
     class_rating: Optional[float]
+    past_performances: List[Dict] = field(default_factory=list)
 
 @dataclass
 class RaceData:
@@ -86,6 +87,89 @@ _SIRE_RE = re.compile(r"^[A-Z][A-Z\s'\u2018\u2019\-\.]+(?:-[A-Z]{2,3})?\s*$")
 
 # Dam line: DAM-DAMSIRE   STATE+YEAR
 _DAM_RE = re.compile(r'^[A-Z].*\s{2,}[A-Z]{2}\d{4}\s*$')
+
+# Detect 2+ consecutive uppercase letters (track/race codes in data lines)
+_HAS_TRACK_CODE = re.compile(r'[A-Z]{2,}')
+
+
+def _is_figure_line(line: str) -> bool:
+    """True if line is a Ragozin figure line (not a data/header/noise line)."""
+    m = _FIGURE_RE.match(line)
+    if not m:
+        return False
+    prefix = m.group(1)
+    fig = float(m.group(2))
+    # Reject if prefix contains consecutive uppercase (track codes / horse names)
+    if _HAS_TRACK_CODE.search(prefix):
+        return False
+    # Reject impossible figures (>60)
+    if fig > 60:
+        return False
+    return True
+
+
+def _parse_figure_line(line: str) -> Optional[Dict]:
+    """Extract figure value, prefix symbols, suffix from a figure line."""
+    m = _FIGURE_RE.match(line)
+    if not m:
+        return None
+    prefix = m.group(1).strip()
+    suffix = m.group(3).strip()
+    flags = _symbols_to_flags(prefix, suffix)
+    return {
+        'raw_text': line,
+        'parsed_figure': float(m.group(2)),
+        'prefix': prefix,
+        'suffix': suffix,
+        'flags': flags,
+        'surface': 'DIRT',
+        'track': '',
+        'data_text': '',
+    }
+
+
+def _parse_data_line(line: str) -> Dict:
+    """Extract surface and track info from a race data line."""
+    m = _HAS_TRACK_CODE.search(line)
+    if not m:
+        return {'surface': 'DIRT', 'track': '', 'raw': line}
+    prefix = line[:m.start()]
+    track_code = m.group()
+    # Infer surface from lowercase chars before the track code
+    lc = prefix.lower()
+    if 't' in lc:
+        surface = 'TURF'
+    elif 's' in lc:
+        surface = 'SLOP'
+    else:
+        surface = 'DIRT'
+    return {'surface': surface, 'track': track_code, 'raw': line}
+
+
+def _symbols_to_flags(prefix: str, suffix: str) -> List[str]:
+    """Convert Ragozin prefix/suffix symbols to semantic flag names."""
+    flags: List[str] = []
+    for c in prefix:
+        if c == 'P':
+            flags.append('PACE')
+        elif c in ('\u2727', '*'):
+            flags.append('TOP')
+        elif c == '^':
+            flags.append('BOUNCE')
+        elif c == 'g':
+            flags.append('GROUND_SAVE')
+        elif c == 'F':
+            flags.append('FAST')
+        elif c == 'r':
+            flags.append('WIDE')
+    for c in suffix:
+        if c == '+':
+            flags.append('PLUS')
+        elif c == '-':
+            flags.append('MINUS')
+        elif c == '"':
+            flags.append('KEY')
+    return flags
 
 
 class RagozinParser:
@@ -174,6 +258,9 @@ class RagozinParser:
                 continue
             if re.match(r'^\d+yo>\s+', line):
                 continue
+            # Skip year-marker noise (e.g. "0^6062", "0 ^ 6 0 6 2")
+            if re.match(r'^0\s*\^?\s*6\s*0\s*6\s*2\s*$', line):
+                continue
             cleaned.append(line)
 
         # Fix concatenated dam+horse lines:
@@ -251,26 +338,56 @@ class RagozinParser:
             logger.debug(f"Page {page_num}: could not find horse name")
             return None
 
-        # Extract figure values from remaining lines
-        figures: List[float] = []
-        pre_symbols: List[str] = []
-        for line in cleaned:
-            fm = _FIGURE_RE.match(line)
-            if fm:
-                try:
-                    fig_val = float(fm.group(2))
-                    figures.append(fig_val)
-                    prefix = fm.group(1).strip()
-                    if prefix:
-                        pre_symbols.append(prefix)
-                except ValueError:
-                    pass
-
-        # Top figure = lowest (best) figure value, or first figure
-        top_figure = min(figures) if figures else None
-
         # Parse race date from raw (e.g. "25JUN6062" -> "06/25")
         race_date = self._parse_race_date(race_date_raw)
+
+        # --- Performance-line pairing (figure + data) ---
+        # Find where performance zone starts (after the header lines)
+        header_end = 0
+        for i, line in enumerate(cleaned[:10]):
+            if _CONDITIONS_RE.match(line) or (_RACE_LINE_RE.match(line) and horse_name):
+                header_end = max(header_end, i + 1)
+
+        past_performances: List[Dict] = []
+        pending_figure: Optional[Dict] = None
+
+        for line in cleaned[header_end:]:
+            # Stop at chart footer
+            if line.startswith('Ragozin --') or line == 'TM':
+                break
+            # Skip year-summary and year-marker noise
+            if _YEAR_SUMMARY_RE.match(line):
+                continue
+            if re.match(r'^0\s*\^?\s*6\s*0\s*6\s*2', line):
+                continue
+
+            # Try as figure line
+            if _is_figure_line(line):
+                if pending_figure is not None:
+                    past_performances.append(pending_figure)
+                pending_figure = _parse_figure_line(line)
+                continue
+
+            # Try as data line (pair with pending figure)
+            if pending_figure is not None and _HAS_TRACK_CODE.search(line):
+                data = _parse_data_line(line)
+                pending_figure['surface'] = data['surface']
+                pending_figure['track'] = data.get('track', '')
+                pending_figure['data_text'] = line
+                past_performances.append(pending_figure)
+                pending_figure = None
+                continue
+
+            # Otherwise: annotation (GELDED, etc.) or noise — skip
+
+        # Trailing unpaired figure
+        if pending_figure is not None:
+            past_performances.append(pending_figure)
+
+        # Best (lowest) figure from past performances
+        fig_vals = [pp['parsed_figure'] for pp in past_performances
+                    if pp.get('parsed_figure') is not None]
+        top_figure = min(fig_vals) if fig_vals else None
 
         entry = HorseEntry(
             horse_name=horse_name,
@@ -279,7 +396,7 @@ class RagozinParser:
             race_date=race_date,
             race_number=race_number,
             finish_position=None,
-            trouble_indicators=pre_symbols,
+            trouble_indicators=[],
             weather_conditions=None,
             distance=None,
             odds=None,
@@ -289,6 +406,7 @@ class RagozinParser:
             speed_rating=None,
             pace_rating=None,
             class_rating=None,
+            past_performances=past_performances,
         )
         return entry
 

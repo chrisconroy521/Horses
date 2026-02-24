@@ -177,8 +177,29 @@ def engine_page():
     source = selected.get('parser_used', 'unknown')
     total_lines = sum(len(h.get('lines', [])) for h in all_horses)
     st.caption(
-        f"Loaded races: {total_lines}, horses: {len(all_horses)} (source: {source})"
+        f"Loaded lines: {total_lines}, horses: {len(all_horses)} (source: {source})"
     )
+
+    # --- Figure quality sanity check ---
+    figure_warnings: dict = {}  # race_number -> pct_missing
+    _temp_groups: dict = {}
+    for h in all_horses:
+        rn = h.get('race_number', 0) or 0
+        _temp_groups.setdefault(rn, []).append(h)
+    for rn, horses_in_race in _temp_groups.items():
+        missing = 0
+        for h in horses_in_race:
+            figs = [_extract_figure(ln) for ln in h.get('lines', [])]
+            if not figs or max(figs) == 0:
+                missing += 1
+        pct = missing / len(horses_in_race) if horses_in_race else 0
+        if pct > 0.3:
+            figure_warnings[rn] = pct
+
+    figures_ok = len(figure_warnings) == 0
+    if not figures_ok:
+        warn_parts = [f"R{rn}: {pct:.0%} missing" for rn, pct in sorted(figure_warnings.items())]
+        st.warning(f"Figure quality issue — {', '.join(warn_parts)}. Projections may be unreliable.")
 
     # Group horses by race_number
     race_groups: dict = {}
@@ -340,7 +361,15 @@ def engine_page():
     st.divider()
     st.subheader("Best Bets (All Races)")
 
-    if st.button("Generate Best Bets"):
+    best_bets_blocked = not figures_ok
+    if best_bets_blocked:
+        override = st.checkbox("Override figure quality warning and allow Best Bets")
+        if override:
+            best_bets_blocked = False
+
+    if best_bets_blocked:
+        st.info("Best Bets disabled due to figure quality issues. Check the override box above to proceed anyway.")
+    elif st.button("Generate Best Bets"):
         all_bets = []
         progress = st.progress(0)
         race_keys = sorted(populated_races.keys())

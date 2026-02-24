@@ -61,26 +61,39 @@ def _trad_to_dict(race_data: RaceData) -> Dict[str, Any]:
     """Convert traditional RaceData to the JSON-output dict schema."""
     horses_dict = []
     for horse in race_data.horses:
-        race_line = {
-            'fig': str(horse.figure) if horse.figure is not None else '',
-            'flags': horse.trouble_indicators if horse.trouble_indicators else [],
-            'track': race_data.track_name,
-            'month': horse.race_date.split('/')[0] if horse.race_date and '/' in horse.race_date else '',
-            'surface': horse.track_surface,
-            'race_type': 'Unknown',
-            'race_date': horse.race_date,
-            'notes': (
-                f"Finish: {horse.finish_position}, Odds: {horse.odds}, "
-                f"Trainer: {horse.trainer}, Jockey: {horse.jockey}"
-                if any([horse.finish_position, horse.odds, horse.trainer, horse.jockey])
-                else ''
-            ),
-            'race_analysis': (
-                f"Speed: {horse.speed_rating}, Pace: {horse.pace_rating}, Class: {horse.class_rating}"
-                if any([horse.speed_rating, horse.pace_rating, horse.class_rating])
-                else ''
-            ),
-        }
+        # Build lines from past_performances (new) or fallback to single line
+        lines = []
+        if horse.past_performances:
+            for pp in horse.past_performances:
+                line = {
+                    'raw_text': pp.get('raw_text', ''),
+                    'fig': str(pp.get('parsed_figure', '')),
+                    'parsed_figure': pp.get('parsed_figure'),
+                    'flags': pp.get('flags', []),
+                    'surface': pp.get('surface', 'DIRT'),
+                    'surface_type': pp.get('surface', 'DIRT'),
+                    'track': pp.get('track', race_data.track_name),
+                    'data_text': pp.get('data_text', ''),
+                    'race_type': 'Unknown',
+                    'race_date': horse.race_date,
+                    'notes': '',
+                    'race_analysis': '',
+                }
+                lines.append(line)
+        if not lines:
+            # Fallback: single line from old-style fields
+            lines = [{
+                'fig': str(horse.figure) if horse.figure is not None else '',
+                'parsed_figure': horse.figure,
+                'flags': [],
+                'surface': horse.track_surface,
+                'track': race_data.track_name,
+                'race_type': 'Unknown',
+                'race_date': horse.race_date,
+                'notes': '',
+                'race_analysis': '',
+            }]
+
         horse_dict = {
             'horse_name': horse.horse_name,
             'race_number': horse.race_number,
@@ -89,15 +102,11 @@ def _trad_to_dict(race_data: RaceData) -> Dict[str, Any]:
             'breeder_owner': 'Unknown',
             'foal_date': 'Unknown',
             'reg_code': 'Unknown',
-            'races': 1,
+            'races': len(lines),
             'top_fig': str(horse.figure) if horse.figure is not None else '',
-            'horse_analysis': f"Ragozin Figure: {horse.figure}, Surface: {horse.track_surface}, Distance: {horse.distance}",
-            'performance_trend': (
-                f"Weather: {horse.weather_conditions}, Weight: {horse.weight} lbs"
-                if horse.weather_conditions or horse.weight
-                else 'No trend data available'
-            ),
-            'lines': [race_line],
+            'horse_analysis': f"Ragozin Figure: {horse.figure}",
+            'performance_trend': f"{len(lines)} past performances",
+            'lines': lines,
         }
         horses_dict.append(horse_dict)
     return {
