@@ -4,10 +4,13 @@ import plotly.express as px
 import plotly.graph_objects as go
 import requests
 import json
+import re
 from pathlib import Path
 import io
 import base64
 from datetime import datetime
+
+from handicap_engine import HandicappingEngine, HorseInput, FigureEntry, BiasInput
 
 # Configure page
 st.set_page_config(
@@ -28,11 +31,13 @@ def main():
     st.sidebar.header("Navigation")
     page = st.sidebar.selectbox(
         "Choose a page",
-        ["Upload PDF", "Horse Past Performance", "Horses Overview", "Individual Horse Analysis", "Race Analysis", "Statistics", "API Status"]
+        ["Upload PDF", "Engine", "Horse Past Performance", "Horses Overview", "Individual Horse Analysis", "Race Analysis", "Statistics", "API Status"]
     )
-    
+
     if page == "Upload PDF":
         upload_page()
+    elif page == "Engine":
+        engine_page()
     elif page == "Horse Past Performance":
         horse_past_performance_page()
     elif page == "Horses Overview":
@@ -45,6 +50,251 @@ def main():
         statistics_page()
     elif page == "API Status":
         api_status_page()
+
+def _extract_figure(line: dict) -> float:
+    """Extract a numeric Ragozin figure from a race-line dict. Returns 0.0 on failure."""
+    pf = line.get('parsed_figure')
+    if pf and isinstance(pf, (int, float)) and pf > 0:
+        return float(pf)
+    fig_str = line.get('fig', '')
+    if fig_str:
+        m = re.search(r'(\d+(?:\.\d+)?)', str(fig_str))
+        if m:
+            return float(m.group(1))
+    return 0.0
+
+
+def _horse_dict_to_input(horse: dict, post: str) -> HorseInput:
+    """Convert a parsed horse dict to a HorseInput for the engine."""
+    figures = []
+    for line in horse.get('lines', []):
+        val = _extract_figure(line)
+        surface = line.get('surface', line.get('surface_type', ''))
+        flags = line.get('flags', []) + line.get('post_symbols', [])
+        figures.append(FigureEntry(value=val, surface=surface, flags=flags))
+    return HorseInput(
+        name=horse.get('horse_name', 'Unknown'),
+        post=post,
+        style="P",
+        figures=figures,
+    )
+
+
+def engine_page():
+    st.header("🏁 Handicapping Engine")
+
+    engine = HandicappingEngine()
+
+    # --- Load last parsed session button ---
+    if st.button("Load last parsed session"):
+        try:
+            resp = requests.get(f"{API_BASE_URL}/races", timeout=15)
+            if resp.status_code == 200:
+                races = resp.json().get("races", [])
+                if races:
+                    latest = races[-1]
+                    st.session_state['engine_race_id'] = latest['id']
+                    st.session_state['engine_race_meta'] = latest
+                else:
+                    st.warning("No parsed sessions found. Upload a PDF first.")
+            else:
+                st.error(f"API error: {resp.text}")
+        except requests.exceptions.ConnectionError:
+            st.error("Cannot connect to API. Is the backend running on http://localhost:8000?")
+        except Exception as e:
+            st.error(f"Error: {e}")
+
+    # --- Session selector (same pattern as Horses Overview) ---
+    try:
+        resp = requests.get(f"{API_BASE_URL}/races", timeout=15)
+        if resp.status_code != 200:
+            st.error("Could not fetch sessions from API.")
+            return
+        races = resp.json().get("races", [])
+    except requests.exceptions.ConnectionError:
+        st.error("Cannot connect to API. Is the backend running on http://localhost:8000?")
+        return
+    except Exception as e:
+        st.error(f"Error: {e}")
+        return
+
+    if not races:
+        st.info("No parsed sessions yet. Upload a PDF to get started.")
+        return
+
+    # Default to last loaded or most recent
+    default_idx = 0
+    if 'engine_race_id' in st.session_state:
+        for i, r in enumerate(races):
+            if r['id'] == st.session_state['engine_race_id']:
+                default_idx = i
+                break
+
+    selected = st.selectbox(
+        "Session:",
+        options=races,
+        format_func=lambda x: f"{x['track_name']} - {x['horses_count']} horses ({x.get('analysis_date', x['race_date'])})",
+        index=default_idx,
+    )
+
+    if not selected:
+        return
+
+    # Fetch horse data for the session
+    try:
+        h_resp = requests.get(f"{API_BASE_URL}/races/{selected['id']}/horses", timeout=30)
+        if h_resp.status_code != 200:
+            st.error("Could not load horse data for this session.")
+            return
+        all_horses = h_resp.json().get("horses", [])
+    except requests.exceptions.ConnectionError:
+        st.error("Cannot connect to API.")
+        return
+    except Exception as e:
+        st.error(f"Error loading horses: {e}")
+        return
+
+    if not all_horses:
+        st.warning("Session contains no horse data.")
+        return
+
+    # --- Status panel ---
+    source = selected.get('parser_used', 'unknown')
+    total_lines = sum(len(h.get('lines', [])) for h in all_horses)
+    st.caption(
+        f"Loaded races: {total_lines}, horses: {len(all_horses)} (source: {source})"
+    )
+
+    # Group horses by race_number (fall back to a single group)
+    race_groups: dict = {}
+    for h in all_horses:
+        rn = h.get('race_number', 0) or 0
+        race_groups.setdefault(rn, []).append(h)
+
+    # List races with counts
+    race_summary_parts = []
+    for rn in sorted(race_groups.keys()):
+        count = len(race_groups[rn])
+        label = f"R{rn}" if rn else "Ungrouped"
+        race_summary_parts.append(f"{label}: {count} horses")
+    st.caption(" | ".join(race_summary_parts))
+
+    # --- Scratch selector ---
+    all_names = [h.get('horse_name', 'Unknown') for h in all_horses]
+    scratches = st.multiselect("Scratches:", options=all_names, default=[])
+
+    # Filter out scratched horses
+    active_horses = [h for h in all_horses if h.get('horse_name', '') not in scratches]
+
+    # Rebuild race groups after scratches
+    active_groups: dict = {}
+    for h in active_horses:
+        rn = h.get('race_number', 0) or 0
+        active_groups.setdefault(rn, []).append(h)
+
+    # Only show races with horses remaining
+    populated_races = {rn: horses for rn, horses in active_groups.items() if len(horses) > 0}
+
+    if not populated_races:
+        st.warning("All races are empty after scratches. Adjust your scratch list.")
+        return
+
+    # Race selector — only populated races
+    race_options = sorted(populated_races.keys())
+    race_labels = {rn: f"Race {rn} ({len(populated_races[rn])} horses)" if rn else f"All ({len(populated_races[rn])} horses)" for rn in race_options}
+
+    selected_race = st.selectbox(
+        "Race:",
+        options=race_options,
+        format_func=lambda rn: race_labels[rn],
+    )
+
+    race_horses = populated_races[selected_race]
+
+    # --- Bias controls ---
+    st.subheader("Bias Settings")
+    bcol1, bcol2, bcol3, bcol4, bcol5 = st.columns(5)
+    with bcol1:
+        e_pct = st.slider("E %", 0, 100, 25)
+    with bcol2:
+        ep_pct = st.slider("EP %", 0, 100, 25)
+    with bcol3:
+        p_pct = st.slider("P %", 0, 100, 25)
+    with bcol4:
+        s_pct = st.slider("S %", 0, 100, 25)
+    with bcol5:
+        speed_fav = st.checkbox("Speed favoring")
+
+    bias = BiasInput(
+        e_pct=float(e_pct),
+        ep_pct=float(ep_pct),
+        p_pct=float(p_pct),
+        s_pct=float(s_pct),
+        speed_favoring=speed_fav,
+    )
+
+    # --- Build HorseInput list ---
+    horse_inputs = []
+    for i, h in enumerate(race_horses):
+        post = str(h.get('race_number', i + 1))
+        hi = _horse_dict_to_input(h, post)
+        horse_inputs.append(hi)
+
+    # --- Run engine ---
+    if st.button("Run Projections", type="primary"):
+        projections = engine.analyze_race(horse_inputs, bias, scratches=scratches)
+
+        if not projections:
+            st.warning("No projections produced. All horses may lack usable figures.")
+            return
+
+        st.subheader("Projections")
+
+        rows = []
+        for p in projections:
+            rows.append({
+                'Horse': p.name,
+                'Post': p.post,
+                'Style': p.style,
+                'Proj Low': f"{p.projected_low:.1f}",
+                'Proj High': f"{p.projected_high:.1f}",
+                'Confidence': f"{p.confidence:.0%}",
+                'Tags': ', '.join(p.tags) if p.tags else '-',
+                'Raw Score': f"{p.raw_score:.1f}",
+                'Bias Score': f"{p.bias_score:.1f}",
+            })
+
+        df = pd.DataFrame(rows)
+        st.dataframe(df, use_container_width=True, hide_index=True)
+
+        # Confidence bar chart
+        fig = px.bar(
+            x=[p.name for p in projections],
+            y=[p.confidence for p in projections],
+            labels={'x': 'Horse', 'y': 'Confidence'},
+            title="Projection Confidence",
+        )
+        fig.update_yaxes(range=[0, 1])
+        st.plotly_chart(fig, use_container_width=True)
+
+        # Projection range chart
+        fig2 = go.Figure()
+        for p in projections:
+            fig2.add_trace(go.Bar(
+                name=p.name,
+                x=[p.name],
+                y=[p.projected_high - p.projected_low],
+                base=[p.projected_low],
+                text=[f"{p.projected_low:.1f}-{p.projected_high:.1f}"],
+                textposition='outside',
+            ))
+        fig2.update_layout(
+            title="Projected Figure Range",
+            yaxis_title="Ragozin Figure",
+            showlegend=False,
+        )
+        st.plotly_chart(fig2, use_container_width=True)
+
 
 def upload_page():
     st.header("📄 Upload Ragozin Sheet")
