@@ -666,15 +666,7 @@ def engine_page():
                     row['Tags'] = f"{existing}, NO_ODDS" if existing != '-' else "NO_ODDS"
             rows.append(row)
 
-        def _highlight_setup(row):
-            setup = row.get('Setup', '')
-            if '\u2b50' in setup:
-                return ['background-color: rgba(218,165,32,0.15); color: inherit'] * len(row)
-            elif '\u26a0' in setup:
-                return ['background-color: rgba(255,80,80,0.12); color: inherit'] * len(row)
-            return [''] * len(row)
-
-        render_styled_table(pd.DataFrame(rows), highlight_fn=_highlight_setup)
+        render_styled_table(pd.DataFrame(rows))
 
         # --- QuickPlay Comments (BRISNET only) ---
         if is_brisnet_data:
@@ -906,15 +898,7 @@ def engine_page():
 
         df = pd.DataFrame(rows)
 
-        def _highlight_setup_bb(row):
-            setup = row.get('Setup', '')
-            if '\u2b50' in setup:
-                return ['background-color: rgba(218,165,32,0.15); color: inherit'] * len(row)
-            elif '\u26a0' in setup:
-                return ['background-color: rgba(255,80,80,0.12); color: inherit'] * len(row)
-            return [''] * len(row)
-
-        styled = df.style.apply(_highlight_setup_bb, axis=1)
+        styled = df.style
         st.dataframe(styled, use_container_width=True, hide_index=True)
 
         # Highlight top 3
