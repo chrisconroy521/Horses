@@ -24,6 +24,9 @@ from bet_builder import (
     MultiRaceStrategy, build_multi_race_plan, multi_race_plan_to_dict,
     build_daily_double_plan, daily_double_plan_to_dict,
     DualModeSettings, build_dual_mode_day_plan, dual_mode_plan_to_dict,
+    recommend_bets_for_card, race_analysis_to_dict, bet_recommendation_to_dict,
+    build_exacta_tickets, build_trifecta_tickets, build_win_ticket, grade_race,
+    CountOverrides, apply_overrides,
 )
 import hashlib
 import subprocess as _subprocess
@@ -1872,6 +1875,154 @@ async def evaluate_bet_plan(plan_id: int):
     result = _db.evaluate_bet_plan_roi(plan_id)
     if "error" in result:
         raise HTTPException(status_code=404, detail=result["error"])
+    return result
+
+
+def _load_card_projections(sid: str, track: str, race_date: str):
+    """Load predictions from DB, inject odds, group by race, compute quality.
+
+    Returns (race_projections, race_quality) or raises HTTPException(404).
+    Shared helper for recommend / single-race / daily-double / multi-race.
+    """
+    preds = _db.get_predictions_vs_results(track=track, race_date=race_date, session_id=sid)
+    if not preds:
+        raise HTTPException(status_code=404, detail="No predictions found for this card")
+
+    ml_snaps = _db.get_odds_snapshots_full(track=track, race_date=race_date, source='morning_line')
+    ml_by_name: Dict[tuple, dict] = {}
+    for snap in ml_snaps:
+        key = (snap["race_number"], snap["normalized_name"])
+        ml_by_name[key] = snap
+    for p in preds:
+        if p.get('odds') is None:
+            key = (p.get('race_number', 0), _db._normalize_name(p.get('horse_name', '')))
+            snap = ml_by_name.get(key)
+            if snap and snap.get('odds_decimal') is not None:
+                p['odds'] = snap['odds_decimal']
+                p['odds_raw'] = snap.get('odds_raw', '')
+
+    race_projections: Dict[int, list] = {}
+    for p in preds:
+        rn = p.get("race_number", 0)
+        race_projections.setdefault(rn, []).append(p)
+
+    race_quality: Dict[int, float] = {}
+    for rn, projs in race_projections.items():
+        non_tossed = [p for p in projs if not p.get("tossed", False)]
+        with_figs = sum(1 for p in non_tossed if p.get("bias_score", 0) != 0)
+        race_quality[rn] = with_figs / len(non_tossed) if non_tossed else 0.0
+
+    return race_projections, race_quality
+
+
+@app.post("/bets/recommend")
+async def recommend_bets(payload: dict):
+    """Analyse full card and return bet recommendations.
+
+    Body: {session_id, track, race_date}
+    Returns: {analyses: {race_num: {...}}, recommendations: [...]}
+    """
+    sid = payload.get("session_id", "")
+    track = payload.get("track", "")
+    race_date = payload.get("race_date", "")
+    if not sid or not track or not race_date:
+        raise HTTPException(status_code=400, detail="session_id, track, race_date required")
+
+    race_projections, race_quality = _load_card_projections(sid, track, race_date)
+    settings = BetSettings(
+        bankroll=float(payload.get("bankroll", 1000)),
+    )
+
+    analyses, recs = recommend_bets_for_card(race_projections, race_quality, settings)
+
+    return {
+        "analyses": {
+            str(rn): race_analysis_to_dict(a) for rn, a in analyses.items()
+        },
+        "recommendations": [bet_recommendation_to_dict(r) for r in recs],
+    }
+
+
+@app.post("/bets/single-race")
+async def build_single_race(payload: dict):
+    """Build WIN / EXACTA / TRIFECTA tickets for a single race.
+
+    Body: {session_id, track, race_date, race_number, bet_type,
+           budget?, a_count?, b_count?, c_count?, save?}
+    """
+    sid = payload.get("session_id", "")
+    track = payload.get("track", "")
+    race_date = payload.get("race_date", "")
+    if not sid or not track or not race_date:
+        raise HTTPException(status_code=400, detail="session_id, track, race_date required")
+
+    race_number = int(payload.get("race_number", 0))
+    bet_type = payload.get("bet_type", "WIN").upper()
+    if bet_type not in ("WIN", "EXACTA", "TRIFECTA"):
+        raise HTTPException(status_code=400, detail="bet_type must be WIN, EXACTA, or TRIFECTA")
+
+    budget = float(payload.get("budget", 20))
+    a_count = int(payload.get("a_count", 1))
+    b_count = int(payload.get("b_count", 2))
+    c_count = int(payload.get("c_count", 0))
+
+    race_projections, race_quality = _load_card_projections(sid, track, race_date)
+
+    projs = race_projections.get(race_number, [])
+    if not projs:
+        raise HTTPException(status_code=404, detail=f"No projections for race {race_number}")
+
+    # Apply count overrides via pin/toss if provided
+    pinned = payload.get("pinned_a", [])
+    excluded = payload.get("excluded", [])
+    if pinned or excluded:
+        ov = CountOverrides(a_count=a_count, b_count=b_count, c_count=c_count,
+                            pinned_a=pinned, excluded=excluded)
+        projs = apply_overrides(projs, ov)
+
+    quality = race_quality.get(race_number, 0)
+    grade, reasons = grade_race(projs, quality)
+
+    tickets = []
+    if bet_type == "WIN":
+        t = build_win_ticket(projs, grade, budget)
+        if t:
+            tickets.append({
+                "bet_type": t.bet_type, "selections": t.selections,
+                "cost": t.cost, "rationale": t.rationale, "details": t.details,
+            })
+    elif bet_type == "EXACTA":
+        for t in build_exacta_tickets(projs, grade, budget):
+            tickets.append({
+                "bet_type": t.bet_type, "selections": t.selections,
+                "cost": t.cost, "rationale": t.rationale, "details": t.details,
+            })
+    elif bet_type == "TRIFECTA":
+        ov = CountOverrides(a_count=a_count, b_count=b_count, c_count=c_count)
+        for t in build_trifecta_tickets(projs, grade, budget, overrides=ov):
+            tickets.append({
+                "bet_type": t.bet_type, "selections": t.selections,
+                "cost": t.cost, "rationale": t.rationale, "details": t.details,
+            })
+
+    total_cost = sum(t["cost"] for t in tickets)
+    plan_dict = {
+        "bet_type": bet_type, "race_number": race_number,
+        "grade": grade, "grade_reasons": reasons,
+        "tickets": tickets, "total_cost": total_cost,
+    }
+
+    result: Dict[str, Any] = {"plan": plan_dict}
+
+    if payload.get("save", False):
+        plan_id = _db.save_bet_plan(
+            session_id=sid, track=track, race_date=race_date,
+            settings_dict={"budget": budget, "a_count": a_count, "b_count": b_count},
+            plan_dict=plan_dict, total_risk=total_cost, paper_mode=True,
+            engine_version=_ENGINE_VERSION, plan_type=f"single_{bet_type.lower()}",
+        )
+        result["plan_id"] = plan_id
+
     return result
 
 

@@ -755,151 +755,16 @@ def _render_best_bets_table(best_bets, odds_data, odds_by_post, key_prefix="eng"
 # Bet Commander
 # ---------------------------------------------------------------------------
 
-def _load_commander_data(session_id: str):
-    """Load engine outputs from session_state and prepare for commander.
-
-    Returns (race_projections, race_quality, ok).
-    race_projections: {race_num: [dict, ...]}
-    race_quality: {race_num: float}
-    """
-    from bet_builder import projection_to_dict
-
-    store = st.session_state.get("engine_outputs_by_session", {})
-    entry = store.get(session_id)
-    if not entry or not entry.get("race_outputs"):
-        return {}, {}, False
-
-    race_projections = {}
-    race_quality = {}
-    odds_cache = st.session_state.get(f"_odds_{session_id}", {})
-
-    for rn, data in entry["race_outputs"].items():
-        projs_raw = data.get("projections", [])
-        if not projs_raw:
-            continue
-        dicts = []
-        for p in projs_raw:
-            odds_key = getattr(p, "name", "") if not isinstance(p, dict) else p.get("name", "")
-            cached = odds_cache.get((rn, odds_key), {})
-            d = projection_to_dict(
-                p,
-                odds=cached.get("odds_decimal"),
-                odds_raw=cached.get("odds_raw", ""),
-            )
-            dicts.append(d)
-        race_projections[rn] = dicts
-
-        # quality: fraction of non-tossed with figures
-        non_tossed = [d for d in dicts if not d.get("tossed", False)]
-        with_figs = sum(1 for d in non_tossed if d.get("bias_score", 0) != 0)
-        race_quality[rn] = with_figs / len(non_tossed) if non_tossed else 0.0
-
-    return race_projections, race_quality, bool(race_projections)
-
-
-def _commander_build_tickets(entry):
-    """Build tickets for a single slip entry using existing builders.
-
-    Mutates entry in place: sets computed_tickets and total_cost.
-    """
-    from bet_builder import (
-        BetSettings, MultiRaceStrategy, CountOverrides, apply_overrides,
-        build_win_ticket, build_exacta_tickets, build_trifecta_tickets,
-        build_daily_double_with_overrides, build_multi_race_with_overrides,
-        grade_race,
-    )
-
-    bt = entry.get("bet_type", "")
-    races = entry.get("races", [])
-    base_wager = entry.get("base_wager", 2)
-    leg_overrides = entry.get("leg_overrides", {})
-    race_projections = entry.get("_race_projections", {})
-    race_quality = entry.get("_race_quality", {})
-
-    settings = BetSettings()
-    tickets = []
-
-    if bt == "WIN" and len(races) == 1:
-        rn = races[0]
-        projs = race_projections.get(rn, [])
-        if rn in leg_overrides:
-            projs = apply_overrides(projs, leg_overrides[rn])
-        if projs:
-            grade, _ = grade_race(projs, race_quality.get(rn, 0))
-            t = build_win_ticket(projs, grade, base_wager * 10)
-            if t:
-                tickets.append(t)
-
-    elif bt == "EXACTA" and len(races) == 1:
-        rn = races[0]
-        projs = race_projections.get(rn, [])
-        if rn in leg_overrides:
-            projs = apply_overrides(projs, leg_overrides[rn])
-        if projs:
-            grade, _ = grade_race(projs, race_quality.get(rn, 0))
-            tickets.extend(build_exacta_tickets(projs, grade, base_wager * 10))
-
-    elif bt == "TRIFECTA" and len(races) == 1:
-        rn = races[0]
-        projs = race_projections.get(rn, [])
-        ov = leg_overrides.get(rn)
-        if projs:
-            grade, _ = grade_race(projs, race_quality.get(rn, 0))
-            tickets.extend(build_trifecta_tickets(projs, grade, base_wager * 10, overrides=ov))
-
-    elif bt == "DD" and len(races) == 2:
-        strategy = MultiRaceStrategy(a_count=1, b_count=2, c_count=0)
-        dd_plan = build_daily_double_with_overrides(
-            race_projections, races[0], base_wager * 24, settings,
-            strategy, leg_overrides, race_quality,
-        )
-        if dd_plan and dd_plan.tickets:
-            for t in dd_plan.tickets:
-                tickets.append(type('Ticket', (), {
-                    'bet_type': 'DD',
-                    'selections': t.leg1 + t.leg2,
-                    'cost': t.cost,
-                    'rationale': t.reason,
-                    'details': {'leg1': t.leg1, 'leg2': t.leg2},
-                })())
-
-    elif bt in ("PICK3", "PICK4", "PICK5", "PICK6"):
-        span = {"PICK3": 3, "PICK4": 4, "PICK5": 5, "PICK6": 6}[bt]
-        strategy = MultiRaceStrategy(a_count=1, b_count=3, c_count=5)
-        mr_plan = build_multi_race_with_overrides(
-            race_projections, races[0], bt, base_wager * span * 16,
-            strategy, leg_overrides, settings, race_quality,
-        )
-        if mr_plan and mr_plan.legs:
-            from bet_builder import Ticket
-            cost = mr_plan.cost
-            sel = []
-            for lg in mr_plan.legs:
-                sel.extend(lg.horses)
-            tickets.append(Ticket(
-                bet_type=bt,
-                selections=sel,
-                cost=cost,
-                rationale=f"{bt} R{races[0]}-R{races[-1]} {mr_plan.combinations} combos ${cost:.0f}",
-                details={"legs": [{"race": lg.race_number, "horses": lg.horses} for lg in mr_plan.legs]},
-            ))
-
-    entry["computed_tickets"] = tickets
-    entry["total_cost"] = sum(
-        t.cost if hasattr(t, 'cost') else t.get('cost', 0) for t in tickets
-    )
-
-
 def bet_commander_page():
-    """Full-card Bet Commander: analyse, recommend, build, export."""
-    from bet_builder import (
-        BetSettings, CountOverrides, RaceAnalysis, BetRecommendation,
-        analyze_race_for_commander, recommend_bets_for_card,
-        commander_slip_to_text, commander_slip_to_json,
-    )
+    """Bet Commander — API-driven card analysis, recommendations, and ticket building.
+
+    Flow: Streamlit UI → FastAPI endpoints → DB predictions
+    Uses: /bets/recommend, /bets/daily-double, /bets/multi-race, /bets/single-race
+    """
+    from bet_builder import commander_slip_to_text, commander_slip_to_json
 
     st.header("Bet Commander")
-    st.caption("Full-card betting: card analysis, auto-recommendations, per-leg overrides, export.")
+    st.caption("Full-card betting: auto-recommendations (DD/EX/TRI/P3), adjustable A/B/C counts, export.")
 
     # --- Session selector ---
     try:
@@ -929,30 +794,8 @@ def bet_commander_page():
     # Track session changes — clear slip when session changes
     if st.session_state.get("commander_session_id") != cmd_sid:
         st.session_state["commander_slip"] = []
-        st.session_state["commander_analyses"] = {}
-        st.session_state["commander_recommendations"] = []
+        st.session_state["commander_rec_data"] = None
         st.session_state["commander_session_id"] = cmd_sid
-
-    # --- Engine output check ---
-    engine_store = st.session_state.get("engine_outputs_by_session", {})
-    cmd_engine_entry = engine_store.get(cmd_sid)
-    if not cmd_engine_entry or not cmd_engine_entry.get("races_run"):
-        st.warning("No engine outputs for this session. Run the engine first.")
-        if st.button("Run Full Card", type="primary", key="cmd_run_engine"):
-            with st.spinner("Running engine on full card..."):
-                ok = _run_engine_full_card(cmd_sid, cmd_sel)
-                if ok:
-                    st.success("Engine complete.")
-                    st.rerun()
-                else:
-                    st.error("No horse data found.")
-        return
-
-    # --- Load data ---
-    race_projections, race_quality, data_ok = _load_commander_data(cmd_sid)
-    if not data_ok:
-        st.error("Could not load engine outputs.")
-        return
 
     # --- Settings row ---
     st.divider()
@@ -964,26 +807,78 @@ def bet_commander_page():
         base_wager = st.number_input("Base Wager ($)", min_value=1, max_value=20,
                                      value=2, step=1, key="cmd_base_wager")
     with sc3:
-        risk_profile = st.selectbox("Risk Profile",
-                                    ["conservative", "standard", "aggressive"],
-                                    index=1, key="cmd_risk_profile")
+        total_budget = st.number_input("Total Budget ($)", min_value=10, max_value=5000,
+                                       value=200, step=10, key="cmd_total_budget")
 
-    settings = BetSettings()
+    # --- Per-bet-type A/B/C counts ---
+    st.markdown("**Counts per bet type**")
+    ct1, ct2, ct3, ct4 = st.columns(4)
+    with ct1:
+        st.caption("Daily Double")
+        dd_a = st.number_input("DD A", min_value=1, max_value=3, value=1, key="cmd_dd_a")
+        dd_b = st.number_input("DD B", min_value=1, max_value=4, value=2, key="cmd_dd_b")
+        dd_c = st.number_input("DD C", min_value=0, max_value=3, value=0, key="cmd_dd_c")
+    with ct2:
+        st.caption("Exacta")
+        ex_a = st.number_input("EX A", min_value=1, max_value=2, value=1, key="cmd_ex_a")
+        ex_b = st.number_input("EX B", min_value=1, max_value=4, value=3, key="cmd_ex_b")
+    with ct3:
+        st.caption("Trifecta")
+        tri_a = st.number_input("TRI 1st", min_value=1, max_value=2, value=1, key="cmd_tri_a")
+        tri_b = st.number_input("TRI 2nd", min_value=1, max_value=4, value=2, key="cmd_tri_b")
+        tri_c = st.number_input("TRI 3rd", min_value=0, max_value=4, value=2, key="cmd_tri_c")
+    with ct4:
+        st.caption("Pick 3")
+        p3_a = st.number_input("P3 A", min_value=1, max_value=3, value=1, key="cmd_p3_a")
+        p3_b = st.number_input("P3 B", min_value=1, max_value=4, value=3, key="cmd_p3_b")
+        p3_c = st.number_input("P3 C", min_value=0, max_value=6, value=5, key="cmd_p3_c")
 
     # =====================================================================
-    # [A] CARD SUMMARY
+    # [A] RECOMMEND PLAYS — calls POST /bets/recommend
     # =====================================================================
+    st.divider()
+    if st.button("Recommend Plays", type="primary", key="cmd_recommend"):
+        payload = {
+            "session_id": cmd_sid, "track": cmd_track, "race_date": cmd_date,
+            "bankroll": bankroll,
+        }
+        try:
+            resp = api_post("/bets/recommend", json=payload, timeout=30)
+            if resp.ok:
+                st.session_state["commander_rec_data"] = resp.json()
+            elif resp.status_code == 404:
+                st.session_state["commander_rec_data"] = None
+                st.warning("No predictions found in the database for this session.")
+                st.markdown("**Run the engine first**, then come back here.")
+                if st.button("Run Engine + Save Predictions", key="cmd_run_engine_save"):
+                    with st.spinner("Running engine on full card..."):
+                        ok = _run_engine_full_card(cmd_sid, cmd_sel)
+                    if ok:
+                        st.success("Engine complete and predictions saved. Click **Recommend Plays** again.")
+                        st.rerun()
+                    else:
+                        st.error("Engine produced no projections. Check session data.")
+                return
+            else:
+                st.error(f"Error: {resp.text}")
+        except Exception as e:
+            st.error(f"Error: {e}")
+
+    rec_data = st.session_state.get("commander_rec_data")
+    if not rec_data:
+        st.info("Click **Recommend Plays** to analyze the card and get recommendations.")
+        return
+
+    analyses = rec_data.get("analyses", {})
+    recommendations = rec_data.get("recommendations", [])
+
+    # --- Card Summary ---
     st.subheader("Card Summary")
 
-    analyses, recommendations = recommend_bets_for_card(race_projections, race_quality, settings)
-    st.session_state["commander_analyses"] = analyses
-    st.session_state["commander_recommendations"] = recommendations
-
-    # Metrics row
     race_count = len(analyses)
-    singles_count = sum(1 for a in analyses.values() if a.has_true_single)
-    chaos_count = sum(1 for a in analyses.values() if a.chaos_index > 0.55)
-    odds_coverage = sum(1 for a in analyses.values() if a.top_overlay is not None) / max(race_count, 1)
+    singles_count = sum(1 for a in analyses.values() if a.get("has_true_single"))
+    chaos_count = sum(1 for a in analyses.values() if a.get("chaos_index", 0) > 0.55)
+    odds_coverage = sum(1 for a in analyses.values() if a.get("top_overlay") is not None) / max(race_count, 1)
 
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Races", race_count)
@@ -991,22 +886,22 @@ def bet_commander_page():
     m3.metric("Chaos Races", chaos_count)
     m4.metric("Odds Coverage", f"{odds_coverage:.0%}")
 
-    # Card summary table
     card_rows = []
-    for rn in sorted(analyses.keys()):
+    for rn in sorted(analyses.keys(), key=lambda x: int(x)):
         a = analyses[rn]
+        overlay = a.get("top_overlay")
         card_rows.append({
-            "Race": rn,
-            "Grade": a.grade,
-            "Edge": f"{a.edge_score:.0f}",
-            "Chaos": f"{a.chaos_index:.2f}",
-            "Single": "Y" if a.has_true_single else "",
-            "Top Horse": a.top_horse,
-            "Cycle": a.top_cycle,
-            "Conf": f"{a.top_confidence:.0%}",
-            "Overlay": f"{a.top_overlay:.2f}" if a.top_overlay else "-",
-            "Quality": f"{a.figure_quality_pct:.0%}",
-            "Field": a.field_size,
+            "Race": int(rn),
+            "Grade": a.get("grade", "?"),
+            "Edge": f"{a.get('edge_score', 0):.0f}",
+            "Chaos": f"{a.get('chaos_index', 0):.2f}",
+            "Single": "Y" if a.get("has_true_single") else "",
+            "Top Horse": a.get("top_horse", ""),
+            "Cycle": a.get("top_cycle", ""),
+            "Conf": f"{a.get('top_confidence', 0):.0%}",
+            "Overlay": f"{overlay:.2f}" if overlay else "-",
+            "Quality": f"{a.get('figure_quality_pct', 0):.0%}",
+            "Field": a.get("field_size", 0),
         })
     if card_rows:
         st.dataframe(pd.DataFrame(card_rows), use_container_width=True, hide_index=True)
@@ -1017,46 +912,38 @@ def bet_commander_page():
     st.subheader("Recommended Plays")
 
     if not recommendations:
-        st.info("No plays recommended for this card. Consider manual ticket building below.")
+        st.info("No plays recommended for this card. Build custom tickets below.")
     else:
         rec_rows = []
-        for i, rec in enumerate(recommendations):
-            race_str = "-".join(str(r) for r in rec.races)
+        for rec in recommendations:
+            race_str = "-".join(str(r) for r in rec.get("races", []))
             rec_rows.append({
-                "Type": rec.bet_type,
+                "Type": rec.get("bet_type", ""),
                 "Race(s)": f"R{race_str}",
-                "Conf": f"{rec.confidence:.0%}",
-                "Key Horse": rec.key_horse or "",
-                "Reason": rec.reason_text,
+                "Conf": f"{rec.get('confidence', 0):.0%}",
+                "Key Horse": rec.get("key_horse", "") or "",
+                "Reason": rec.get("reason_text", ""),
             })
         st.dataframe(pd.DataFrame(rec_rows), use_container_width=True, hide_index=True)
 
-        # Add buttons
+        # Add to Slip buttons
         add_cols = st.columns(min(len(recommendations) + 1, 6))
         for i, rec in enumerate(recommendations):
             if i < len(add_cols) - 1:
                 with add_cols[i]:
-                    race_str = "-".join(str(r) for r in rec.races)
-                    if st.button(f"Add {rec.bet_type} R{race_str}", key=f"cmd_add_{i}"):
+                    race_str = "-".join(str(r) for r in rec.get("races", []))
+                    if st.button(f"Add {rec['bet_type']} R{race_str}", key=f"cmd_add_{i}"):
                         import uuid
                         new_entry = {
                             "id": str(uuid.uuid4())[:8],
-                            "bet_type": rec.bet_type,
-                            "races": rec.races,
+                            "bet_type": rec["bet_type"],
+                            "races": rec["races"],
                             "base_wager": base_wager,
-                            "leg_overrides": {
-                                rn: CountOverrides(
-                                    a_count=ov.a_count, b_count=ov.b_count,
-                                    c_count=ov.c_count,
-                                )
-                                for rn, ov in rec.suggested_counts.items()
-                            },
-                            "_race_projections": race_projections,
-                            "_race_quality": race_quality,
+                            "suggested_counts": rec.get("suggested_counts", {}),
                             "computed_tickets": [],
                             "total_cost": 0,
+                            "built": False,
                         }
-                        _commander_build_tickets(new_entry)
                         st.session_state.setdefault("commander_slip", []).append(new_entry)
                         st.rerun()
         with add_cols[-1]:
@@ -1065,27 +952,19 @@ def bet_commander_page():
                 for rec in recommendations:
                     new_entry = {
                         "id": str(uuid.uuid4())[:8],
-                        "bet_type": rec.bet_type,
-                        "races": rec.races,
+                        "bet_type": rec["bet_type"],
+                        "races": rec["races"],
                         "base_wager": base_wager,
-                        "leg_overrides": {
-                            rn: CountOverrides(
-                                a_count=ov.a_count, b_count=ov.b_count,
-                                c_count=ov.c_count,
-                            )
-                            for rn, ov in rec.suggested_counts.items()
-                        },
-                        "_race_projections": race_projections,
-                        "_race_quality": race_quality,
+                        "suggested_counts": rec.get("suggested_counts", {}),
                         "computed_tickets": [],
                         "total_cost": 0,
+                        "built": False,
                     }
-                    _commander_build_tickets(new_entry)
                     st.session_state.setdefault("commander_slip", []).append(new_entry)
                 st.rerun()
 
     # =====================================================================
-    # [C] BET SLIP
+    # [C] BET SLIP — per-leg A/B/C overrides + Build Tickets via API
     # =====================================================================
     st.divider()
     st.subheader("Bet Slip")
@@ -1093,23 +972,20 @@ def bet_commander_page():
     slip = st.session_state.get("commander_slip", [])
 
     if not slip:
-        st.info("Slip is empty. Add plays from recommendations above or build custom tickets.")
+        st.info("Slip is empty. Add plays from recommendations above.")
     else:
         total_cost = sum(e.get("total_cost", 0) for e in slip)
         budget_pct = total_cost / bankroll if bankroll > 0 else 0
 
-        # Budget bar
         bc1, bc2 = st.columns([3, 1])
         with bc1:
             st.progress(min(budget_pct, 1.0))
         with bc2:
-            color = "red" if total_cost > bankroll else "green"
             st.markdown(f"**${total_cost:.2f}** / ${bankroll:.0f}")
 
         if total_cost > bankroll:
             st.error(f"Over budget by ${total_cost - bankroll:.2f}!")
 
-        # Per-entry expanders
         to_remove = []
         for idx, entry in enumerate(slip):
             eid = entry.get("id", str(idx))
@@ -1117,86 +993,59 @@ def bet_commander_page():
             races = entry.get("races", [])
             race_str = "-".join(str(r) for r in races)
             entry_cost = entry.get("total_cost", 0)
+            built = entry.get("built", False)
+            status = f"${entry_cost:.2f}" if built else "not built"
 
-            with st.expander(f"{bt} R{race_str} — ${entry_cost:.2f}", expanded=False):
-                # Per-leg override controls
-                needs_rebuild = False
+            with st.expander(f"{bt} R{race_str} — {status}", expanded=not built):
+                # Per-leg A/B/C override controls
+                suggested = entry.get("suggested_counts", {})
                 for rn in races:
-                    ov = entry.get("leg_overrides", {}).get(rn, CountOverrides())
+                    rn_key = str(rn)
+                    sug = suggested.get(rn_key, {})
+                    # Use bet-type defaults, overridden by suggested
+                    if bt == "DD":
+                        def_a, def_b, def_c = dd_a, dd_b, dd_c
+                    elif bt == "EXACTA":
+                        def_a, def_b, def_c = ex_a, ex_b, 0
+                    elif bt == "TRIFECTA":
+                        def_a, def_b, def_c = tri_a, tri_b, tri_c
+                    elif bt == "PICK3":
+                        def_a, def_b, def_c = p3_a, p3_b, p3_c
+                    elif bt == "WIN":
+                        def_a, def_b, def_c = 1, 0, 0
+                    else:
+                        def_a, def_b, def_c = 1, 3, 5
+
                     st.markdown(f"**Race {rn}**")
                     lc1, lc2, lc3 = st.columns(3)
                     with lc1:
-                        new_a = st.number_input("A count", min_value=1, max_value=5,
-                                                value=ov.a_count,
-                                                key=f"cmd_a_{eid}_{rn}")
+                        entry.setdefault("_a", {})[rn] = st.number_input(
+                            "A", min_value=1, max_value=5,
+                            value=sug.get("a_count", def_a),
+                            key=f"cmd_a_{eid}_{rn}")
                     with lc2:
-                        new_b = st.number_input("B count", min_value=0, max_value=6,
-                                                value=ov.b_count,
-                                                key=f"cmd_b_{eid}_{rn}")
+                        entry.setdefault("_b", {})[rn] = st.number_input(
+                            "B", min_value=0, max_value=6,
+                            value=sug.get("b_count", def_b),
+                            key=f"cmd_b_{eid}_{rn}")
                     with lc3:
-                        new_c = st.number_input("C count", min_value=0, max_value=6,
-                                                value=ov.c_count,
-                                                key=f"cmd_c_{eid}_{rn}")
+                        entry.setdefault("_c", {})[rn] = st.number_input(
+                            "C", min_value=0, max_value=6,
+                            value=sug.get("c_count", def_c),
+                            key=f"cmd_c_{eid}_{rn}")
 
-                    # Pin/Toss checkboxes
-                    projs = race_projections.get(rn, [])
-                    non_tossed_names = [
-                        p.get("name", p.get("horse_name", "?"))
-                        for p in projs if not p.get("tossed", False)
-                    ][:8]
-
-                    if non_tossed_names:
-                        pin_cols = st.columns(min(len(non_tossed_names), 4))
-                        new_pinned = list(ov.pinned_a)
-                        new_excluded = list(ov.excluded)
-                        for hi, hname in enumerate(non_tossed_names[:4]):
-                            with pin_cols[hi % len(pin_cols)]:
-                                is_pinned = st.checkbox(
-                                    f"Pin {hname}", value=hname in ov.pinned_a,
-                                    key=f"cmd_pin_{eid}_{rn}_{hi}")
-                                is_excluded = st.checkbox(
-                                    f"Toss {hname}", value=hname in ov.excluded,
-                                    key=f"cmd_toss_{eid}_{rn}_{hi}")
-                                # Mutual exclusion
-                                if is_pinned and is_excluded:
-                                    is_excluded = False
-                                if is_pinned and hname not in new_pinned:
-                                    new_pinned.append(hname)
-                                elif not is_pinned and hname in new_pinned:
-                                    new_pinned.remove(hname)
-                                if is_excluded and hname not in new_excluded:
-                                    new_excluded.append(hname)
-                                elif not is_excluded and hname in new_excluded:
-                                    new_excluded.remove(hname)
-
-                        updated_ov = CountOverrides(
-                            a_count=new_a, b_count=new_b, c_count=new_c,
-                            pinned_a=new_pinned, excluded=new_excluded,
-                        )
-                        if (updated_ov.a_count != ov.a_count or
-                                updated_ov.b_count != ov.b_count or
-                                updated_ov.c_count != ov.c_count or
-                                set(updated_ov.pinned_a) != set(ov.pinned_a) or
-                                set(updated_ov.excluded) != set(ov.excluded)):
-                            entry.setdefault("leg_overrides", {})[rn] = updated_ov
-                            needs_rebuild = True
-
-                # Rebuild button
-                if st.button("Rebuild Tickets", key=f"cmd_rebuild_{eid}"):
-                    needs_rebuild = True
-
-                if needs_rebuild:
-                    entry["_race_projections"] = race_projections
-                    entry["_race_quality"] = race_quality
-                    _commander_build_tickets(entry)
+                # Build Tickets button — calls API
+                if st.button("Build Tickets", type="primary", key=f"cmd_build_{eid}"):
+                    _commander_build_via_api(
+                        entry, cmd_sid, cmd_track, cmd_date, base_wager,
+                    )
                     st.rerun()
 
-                # Ticket preview
+                # Show built tickets
                 for t in entry.get("computed_tickets", []):
-                    rat = t.rationale if hasattr(t, 'rationale') else t.get('rationale', '')
+                    rat = t.get("rationale", "") if isinstance(t, dict) else ""
                     st.markdown(f"- {rat}")
 
-                # Remove button
                 if st.button("Remove", key=f"cmd_remove_{eid}"):
                     to_remove.append(idx)
 
@@ -1207,7 +1056,7 @@ def bet_commander_page():
             st.rerun()
 
     # =====================================================================
-    # [D] OUTPUT
+    # [D] OUTPUT — Build All + Export + Save
     # =====================================================================
     st.divider()
     st.subheader("Output")
@@ -1217,13 +1066,12 @@ def bet_commander_page():
 
     d1, d2, d3, d4 = st.columns(4)
     with d1:
-        build_disabled = not slip or total_cost > bankroll
-        if st.button("Build All Tickets", type="primary", key="cmd_build_all",
-                     disabled=build_disabled):
+        if slip and st.button("Build All Tickets", type="primary", key="cmd_build_all"):
             for entry in slip:
-                entry["_race_projections"] = race_projections
-                entry["_race_quality"] = race_quality
-                _commander_build_tickets(entry)
+                if not entry.get("built"):
+                    _commander_build_via_api(
+                        entry, cmd_sid, cmd_track, cmd_date, base_wager,
+                    )
             st.session_state["commander_slip"] = slip
             st.rerun()
     with d2:
@@ -1238,7 +1086,6 @@ def bet_commander_page():
                                "application/json", key="cmd_dl_json")
     with d4:
         if slip and st.button("Save to Database", key="cmd_save_db"):
-            # Serialize slip for API
             serialized = []
             for entry in slip:
                 ser = {
@@ -1246,38 +1093,129 @@ def bet_commander_page():
                     "races": entry.get("races", []),
                     "base_wager": entry.get("base_wager", 2),
                     "total_cost": entry.get("total_cost", 0),
-                    "tickets": [
-                        {
-                            "bet_type": t.bet_type if hasattr(t, 'bet_type') else t.get('bet_type', ''),
-                            "selections": t.selections if hasattr(t, 'selections') else t.get('selections', []),
-                            "cost": t.cost if hasattr(t, 'cost') else t.get('cost', 0),
-                            "rationale": t.rationale if hasattr(t, 'rationale') else t.get('rationale', ''),
-                        }
-                        for t in entry.get("computed_tickets", [])
-                    ],
+                    "tickets": entry.get("computed_tickets", []),
                 }
                 serialized.append(ser)
             payload = {
-                "session_id": cmd_sid,
-                "track": cmd_track,
-                "race_date": cmd_date,
-                "slip_entries": serialized,
-                "total_cost": total_cost,
-                "bankroll": bankroll,
+                "session_id": cmd_sid, "track": cmd_track, "race_date": cmd_date,
+                "slip_entries": serialized, "total_cost": total_cost, "bankroll": bankroll,
             }
             try:
                 resp = api_post("/bets/commander-save", json=payload, timeout=15)
                 if resp.ok:
-                    plan_id = resp.json().get("plan_id")
-                    st.success(f"Saved! Plan ID: {plan_id}")
+                    st.success(f"Saved! Plan ID: {resp.json().get('plan_id')}")
                 else:
                     st.error(f"Save failed: {resp.text}")
             except Exception as e:
                 st.error(f"Save failed: {e}")
 
-    # Summary
     if slip:
         st.caption(f"Slip: {len(slip)} plays | Total: ${total_cost:.2f} | Bankroll: ${bankroll:.0f}")
+
+
+def _commander_build_via_api(entry, sid, track, race_date, base_wager):
+    """Build tickets for a slip entry by calling the appropriate API endpoint.
+
+    Mutates entry in place: sets computed_tickets, total_cost, built.
+    """
+    bt = entry.get("bet_type", "")
+    races = entry.get("races", [])
+    a_counts = entry.get("_a", {})
+    b_counts = entry.get("_b", {})
+    c_counts = entry.get("_c", {})
+
+    tickets = []
+    error = None
+
+    try:
+        if bt in ("WIN", "EXACTA", "TRIFECTA") and len(races) == 1:
+            rn = races[0]
+            payload = {
+                "session_id": sid, "track": track, "race_date": race_date,
+                "race_number": rn, "bet_type": bt,
+                "budget": base_wager * 20,
+                "a_count": a_counts.get(rn, 1),
+                "b_count": b_counts.get(rn, 2),
+                "c_count": c_counts.get(rn, 0),
+                "save": False,
+            }
+            resp = api_post("/bets/single-race", json=payload, timeout=15)
+            if resp.ok:
+                plan = resp.json().get("plan", {})
+                tickets = plan.get("tickets", [])
+            else:
+                error = resp.text
+
+        elif bt == "DD" and len(races) == 2:
+            # Use the first leg's counts as the strategy
+            payload = {
+                "session_id": sid, "track": track, "race_date": race_date,
+                "start_race": races[0],
+                "budget": base_wager * 24,
+                "a_count": a_counts.get(races[0], 1),
+                "b_count": b_counts.get(races[0], 2),
+                "c_count": c_counts.get(races[0], 0),
+                "save": False,
+            }
+            resp = api_post("/bets/daily-double", json=payload, timeout=15)
+            if resp.ok:
+                plan = resp.json().get("plan", {})
+                # Convert DD tickets to common format
+                for t in plan.get("tickets", []):
+                    tickets.append({
+                        "bet_type": "DD",
+                        "selections": t.get("leg1", []) + t.get("leg2", []),
+                        "cost": t.get("cost", 0),
+                        "rationale": t.get("reason", ""),
+                        "details": {"leg1": t.get("leg1"), "leg2": t.get("leg2")},
+                    })
+                if plan.get("passed"):
+                    tickets = [{"bet_type": "DD", "selections": [], "cost": 0,
+                                "rationale": f"PASS — {plan.get('pass_reason', '')}",
+                                "details": {}}]
+            else:
+                error = resp.text
+
+        elif bt in ("PICK3", "PICK6"):
+            payload = {
+                "session_id": sid, "track": track, "race_date": race_date,
+                "start_race": races[0], "bet_type": bt,
+                "budget": base_wager * len(races) * 16,
+                "a_count": a_counts.get(races[0], 1),
+                "b_count": b_counts.get(races[0], 3),
+                "c_count": c_counts.get(races[0], 5),
+                "save": False,
+            }
+            resp = api_post("/bets/multi-race", json=payload, timeout=15)
+            if resp.ok:
+                plan = resp.json().get("plan", {})
+                legs = plan.get("legs", [])
+                cost = plan.get("cost", 0)
+                combos = plan.get("combinations", 0)
+                leg_summary = " / ".join(
+                    f"R{lg.get('race_number')}({lg.get('horse_count', 0)})"
+                    for lg in legs
+                )
+                tickets.append({
+                    "bet_type": bt,
+                    "selections": [h for lg in legs for h in lg.get("horses", [])],
+                    "cost": cost,
+                    "rationale": f"{bt} R{races[0]}-R{races[-1]}: {leg_summary} = {combos} combos ${cost:.0f}",
+                    "details": {"legs": legs},
+                })
+            else:
+                error = resp.text
+
+    except Exception as e:
+        error = str(e)
+
+    if error:
+        tickets = [{"bet_type": bt, "selections": [], "cost": 0,
+                     "rationale": f"ERROR: {error}", "details": {}}]
+
+    entry["computed_tickets"] = tickets
+    entry["total_cost"] = sum(t.get("cost", 0) for t in tickets)
+    entry["built"] = True
 
 
 def dashboard_page():

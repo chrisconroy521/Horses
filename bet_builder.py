@@ -2626,3 +2626,42 @@ def commander_slip_to_json(slip_entries: List[Dict]) -> str:
             },
         })
     return json.dumps(export, indent=2)
+
+
+def race_analysis_to_dict(a: "RaceAnalysis") -> Dict[str, Any]:
+    """Serialize RaceAnalysis for API response."""
+    return {
+        "race_number": a.race_number,
+        "grade": a.grade,
+        "grade_reasons": a.grade_reasons,
+        "edge_score": a.edge_score,
+        "chaos_index": a.chaos_index,
+        "has_true_single": a.has_true_single,
+        "top_overlay": a.top_overlay,
+        "figure_quality_pct": a.figure_quality_pct,
+        "field_size": a.field_size,
+        "top_horse": a.top_horse,
+        "top_confidence": a.top_confidence,
+        "top_cycle": a.top_cycle,
+        "a_horses": a.a_horses,
+        "b_horses": a.b_horses,
+    }
+
+
+def bet_recommendation_to_dict(r: "BetRecommendation") -> Dict[str, Any]:
+    """Serialize BetRecommendation for API response."""
+    return {
+        "bet_type": r.bet_type,
+        "races": r.races,
+        "confidence": r.confidence,
+        "reason_codes": r.reason_codes,
+        "reason_text": r.reason_text,
+        "key_horse": r.key_horse,
+        "suggested_counts": {
+            str(rn): {
+                "a_count": ov.a_count, "b_count": ov.b_count,
+                "c_count": ov.c_count,
+            }
+            for rn, ov in r.suggested_counts.items()
+        },
+    }
