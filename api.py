@@ -2142,5 +2142,38 @@ async def save_commander_plan(payload: dict):
     return {"plan_id": plan_id, "total_cost": total_cost}
 
 
+# ------------------------------------------------------------------
+# Trainer bucket stats
+# ------------------------------------------------------------------
+
+@app.get("/trainer/stats/{trainer_name}")
+async def get_trainer_stats(trainer_name: str):
+    """Return all bucket stats for a single trainer."""
+    buckets = _db.get_trainer_buckets(trainer_name)
+    enriched = []
+    for b in buckets:
+        win_pct = (b["wins"] / b["starts"]) if b["starts"] else 0.0
+        enriched.append({**b, "win_pct": round(win_pct, 4)})
+    return {"trainer": trainer_name, "buckets": enriched}
+
+
+@app.post("/trainer/stats/bulk")
+async def get_trainer_stats_bulk(request: Request):
+    """Return bucket stats for multiple trainers in one call."""
+    body = await request.json()
+    trainers = body.get("trainers", [])
+    if not trainers:
+        return {"trainers": {}}
+    raw = _db.get_trainer_buckets_bulk(trainers)
+    result = {}
+    for t, buckets in raw.items():
+        enriched = []
+        for b in buckets:
+            win_pct = (b["wins"] / b["starts"]) if b["starts"] else 0.0
+            enriched.append({**b, "win_pct": round(win_pct, 4)})
+        result[t] = enriched
+    return {"trainers": result}
+
+
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

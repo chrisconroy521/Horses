@@ -441,6 +441,19 @@ class Persistence:
             );
             CREATE INDEX IF NOT EXISTS idx_os_lookup
                 ON odds_snapshots(track, race_date, race_number, normalized_name, source);
+
+            CREATE TABLE IF NOT EXISTS trainer_bucket_stats (
+                stat_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+                trainer      TEXT NOT NULL,
+                bucket_type  TEXT NOT NULL,
+                bucket_value TEXT,
+                starts       INTEGER DEFAULT 0,
+                wins         INTEGER DEFAULT 0,
+                itm          INTEGER DEFAULT 0,
+                roi          REAL DEFAULT 0.0,
+                updated_at   TEXT,
+                UNIQUE(trainer, bucket_type)
+            );
             """
         )
         self.conn.commit()
@@ -3185,3 +3198,61 @@ class Persistence:
             "ticket_results": ticket_results,
             "evaluated_at": datetime.utcnow().isoformat(),
         }
+
+    # ------------------------------------------------------------------
+    # Trainer bucket stats
+    # ------------------------------------------------------------------
+
+    def upsert_trainer_bucket(
+        self, trainer: str, bucket_type: str, starts: int, wins: int,
+        itm: int, roi: float, bucket_value: str = None,
+    ) -> None:
+        """Insert or update a single trainer bucket stat row."""
+        now = datetime.utcnow().isoformat()
+        self.conn.execute(
+            """INSERT INTO trainer_bucket_stats
+                   (trainer, bucket_type, bucket_value, starts, wins, itm, roi, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(trainer, bucket_type) DO UPDATE SET
+                   starts=excluded.starts, wins=excluded.wins,
+                   itm=excluded.itm, roi=excluded.roi,
+                   bucket_value=excluded.bucket_value,
+                   updated_at=excluded.updated_at""",
+            (trainer, bucket_type, bucket_value, starts, wins, itm, roi, now),
+        )
+        self.conn.commit()
+
+    def get_trainer_buckets(self, trainer: str) -> List[Dict]:
+        """Return all bucket stats for a trainer."""
+        cur = self.conn.execute(
+            """SELECT bucket_type, bucket_value, starts, wins, itm, roi, updated_at
+               FROM trainer_bucket_stats WHERE trainer = ?""",
+            (trainer,),
+        )
+        return [
+            {
+                "bucket_type": r[0], "bucket_value": r[1],
+                "starts": r[2], "wins": r[3], "itm": r[4],
+                "roi": r[5], "updated_at": r[6],
+            }
+            for r in cur.fetchall()
+        ]
+
+    def get_trainer_buckets_bulk(self, trainers: List[str]) -> Dict[str, List[Dict]]:
+        """Return bucket stats for multiple trainers in one query."""
+        if not trainers:
+            return {}
+        placeholders = ",".join("?" for _ in trainers)
+        cur = self.conn.execute(
+            f"""SELECT trainer, bucket_type, bucket_value, starts, wins, itm, roi, updated_at
+                FROM trainer_bucket_stats WHERE trainer IN ({placeholders})""",
+            tuple(trainers),
+        )
+        result: Dict[str, List[Dict]] = {t: [] for t in trainers}
+        for r in cur.fetchall():
+            result.setdefault(r[0], []).append({
+                "bucket_type": r[1], "bucket_value": r[2],
+                "starts": r[3], "wins": r[4], "itm": r[5],
+                "roi": r[6], "updated_at": r[7],
+            })
+        return result

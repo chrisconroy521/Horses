@@ -427,9 +427,77 @@ def _run_engine_full_card(session_id: str, session_meta: dict):
 # Shared display helpers (used by Engine + Dashboard)
 # ---------------------------------------------------------------------------
 
-def _render_top_picks(display_projections, race_number, key_prefix="eng"):
+_BUCKET_LABELS = {
+    "LAYOFF_0_15": "Fresh (0-15d)",
+    "LAYOFF_16_30": "Layoff 16-30d",
+    "LAYOFF_31_60": "Layoff 31-60d",
+    "LAYOFF_61_PLUS": "Long Layoff 61d+",
+    "SURFACE_SWITCH_TD": "Turf\u2192Dirt",
+    "SURFACE_SWITCH_DT": "Dirt\u2192Turf",
+    "SECOND_OFF_LAYOFF": "2nd Off Layoff",
+    "THIRD_OFF_LAYOFF": "3rd Off Layoff",
+    "CLASS_DROP": "Class Drop",
+    "FIRST_OFF_CLAIM": "1st Off Claim",
+}
+
+
+def _fetch_trainer_intents(race_horses):
+    """Batch-fetch trainer bucket stats and build intent dict keyed by horse name."""
+    trainers = {}
+    for h in race_horses:
+        t = h.get("trainer")
+        if t:
+            trainers.setdefault(t, []).append(h.get("horse_name", ""))
+    if not trainers:
+        return {}
+    try:
+        resp = _api_post("/trainer/stats/bulk", json={"trainers": list(trainers.keys())}, timeout=5)
+        if resp.status_code != 200:
+            return {}
+        bulk = resp.json().get("trainers", {})
+    except Exception:
+        return {}
+
+    intents = {}
+    for trainer_name, horse_names in trainers.items():
+        buckets = bulk.get(trainer_name, [])
+        if not buckets:
+            for hn in horse_names:
+                intents[hn] = {}
+            continue
+        # Pick the bucket with highest sample size as the primary pattern
+        best = max(buckets, key=lambda b: b.get("starts", 0))
+        starts = best.get("starts", 0)
+        wins = best.get("wins", 0)
+        win_pct = best.get("win_pct", 0.0)
+        roi = best.get("roi", 0.0)
+        btype = best.get("bucket_type", "")
+        label = _BUCKET_LABELS.get(btype, btype.replace("_", " ").title())
+        # Badge rules
+        badge = None
+        badge_color = ""
+        if starts >= 25 and win_pct >= 0.18:
+            if roi >= 1.05:
+                badge = "TRAINER_EDGE"
+                badge_color = "green"
+            elif roi < 0.85:
+                badge = "OVERBET_WARNING"
+                badge_color = "orange"
+        intent = {
+            "pattern": btype, "label": label,
+            "win_pct": win_pct, "roi": roi, "sample_size": starts,
+            "badge": badge, "badge_color": badge_color,
+        }
+        for hn in horse_names:
+            intents[hn] = intent
+    return intents
+
+
+def _render_top_picks(display_projections, race_number, race_horses=None,
+                      trainer_intents=None, key_prefix="eng"):
     """Render top 3 pick cards for a race."""
     top3 = display_projections[:3]
+    trainer_intents = trainer_intents or {}
     st.subheader(f"Top 3 Picks \u2014 Race {race_number}")
     for rank, p in enumerate(top3, 1):
         col1, col2, col3 = st.columns([1, 2, 3])
@@ -449,6 +517,10 @@ def _render_top_picks(display_projections, race_number, key_prefix="eng"):
         with col3:
             if badge:
                 st.markdown(f"**Tags:** {badge.strip()}")
+            intent = trainer_intents.get(p.name, {})
+            if intent.get("badge"):
+                color = "green" if intent["badge"] == "TRAINER_EDGE" else "orange"
+                st.markdown(f":{color}[{intent['badge']}]")
             st.caption(p.summary)
             if p.new_top_setup:
                 st.caption(
@@ -458,8 +530,10 @@ def _render_top_picks(display_projections, race_number, key_prefix="eng"):
 
 
 def _render_ranked_table(display_projections, race_horses, show_odds,
-                         odds_data, odds_by_post, race_num, key_prefix="eng"):
+                         odds_data, odds_by_post, race_num,
+                         trainer_intents=None, key_prefix="eng"):
     """Render the full ranked table with optional odds column."""
+    trainer_intents = trainer_intents or {}
     is_brisnet_data = any(
         h.get('figure_source') == 'brisnet' or h.get('quickplay_positive')
         for h in race_horses
@@ -486,6 +560,7 @@ def _render_ranked_table(display_projections, race_horses, show_odds,
             'Style': p.style,
             'Cycle': p.projection_type,
             'Setup': '',
+            'Trainer Intent': '',
             'Proj Mid': f"{p.proj_mid:.1f}" if hasattr(p, 'proj_mid') else '',
             'Proj Low': f"{p.projected_low:.1f}",
             'Proj High': f"{p.projected_high:.1f}",
@@ -499,6 +574,17 @@ def _render_ranked_table(display_projections, race_horses, show_odds,
             row['Setup'] = f"{stars} {p.new_top_setup_type} ({p.new_top_confidence}%)"
         elif p.bounce_risk:
             row['Setup'] = "\u26a0\ufe0f BOUNCE RISK"
+        # Trainer intent column
+        intent = trainer_intents.get(p.name, {})
+        if intent.get("pattern"):
+            pct = f"{intent['win_pct']:.0%}" if intent.get("win_pct") is not None else "?"
+            roi_str = f"ROI {intent['roi']:.2f}" if intent.get("roi") is not None else ""
+            n_str = f"n={intent['sample_size']}" if intent.get("sample_size") else ""
+            badge_icon = "\u2b50" if intent.get("badge") == "TRAINER_EDGE" else "\u26a0" if intent.get("badge") == "OVERBET_WARNING" else ""
+            parts = [s for s in [badge_icon, intent["label"], f"({pct}", roi_str, f"{n_str})"] if s]
+            row['Trainer Intent'] = " ".join(parts)
+        else:
+            row['Trainer Intent'] = "\u2014"
         if is_brisnet_data:
             matching = [h for h in race_horses if h.get('horse_name') == p.name]
             if matching:
@@ -1580,10 +1666,15 @@ def dashboard_page():
                         if d_last:
                             st.caption(f"Last computed at: {d_last}")
                         sorted_by_bias = sorted(d_projs, key=lambda p: p.bias_score, reverse=True)
-                        _render_top_picks(sorted_by_bias, dash_race, key_prefix="dash")
+                        _dash_trainer_intents = _fetch_trainer_intents(race_horses)
+                        _render_top_picks(sorted_by_bias, dash_race,
+                                          race_horses=race_horses,
+                                          trainer_intents=_dash_trainer_intents,
+                                          key_prefix="dash")
                         show_odds = st.checkbox("Show Odds", value=True, key=f"dash_show_odds_{dash_race}")
                         _render_ranked_table(sorted_by_bias, race_horses, show_odds,
                                              _d_odds_data, _d_odds_by_post, dash_race,
+                                             trainer_intents=_dash_trainer_intents,
                                              key_prefix="dash")
                         _render_analysis_expanders(sorted_by_bias, d_audit, race_horses,
                                                    key_prefix="dash")
@@ -1998,13 +2089,19 @@ def engine_page():
             if not display_projections:
                 st.info("No New Top Setup horses found in this race.")
 
+        # --- Trainer intent (batch fetch) ---
+        _trainer_intents = _fetch_trainer_intents(race_horses)
+
         # --- Top 3 Picks ---
-        _render_top_picks(display_projections, selected_race, key_prefix=f"eng_{sel_id}")
+        _render_top_picks(display_projections, selected_race,
+                          race_horses=race_horses, trainer_intents=_trainer_intents,
+                          key_prefix=f"eng_{sel_id}")
 
         # --- Full Ranked Table ---
         show_odds = st.checkbox("Show Odds", value=True, key=f"show_odds_{sel_id}_{selected_race}")
         _render_ranked_table(display_projections, race_horses, show_odds,
                              _odds_data, _odds_by_post, selected_race,
+                             trainer_intents=_trainer_intents,
                              key_prefix=f"eng_{sel_id}")
 
         # --- Analysis expanders ---
