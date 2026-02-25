@@ -145,6 +145,42 @@ def _best_bet_score(p):
     return p.bias_score + (p.confidence * 10) - spread
 
 
+def _normalize_name_ui(name: str) -> str:
+    """Uppercase, strip punctuation, collapse whitespace (mirror persistence logic)."""
+    import re as _re
+    n = (name or "").upper().strip()
+    n = _re.sub(r"[\u2018\u2019\u201C\u201D'\-.,()\"']", "", n)
+    n = _re.sub(r"\s+", " ", n)
+    return n
+
+
+def _lookup_odds(race_number, horse_name, post, odds_data, odds_by_post):
+    """Lookup ML odds: priority (race_number, post), fallback (race_number, normalized_name)."""
+    if post is not None:
+        try:
+            key_post = (int(race_number), int(post))
+            if key_post in odds_by_post:
+                return odds_by_post[key_post]
+        except (ValueError, TypeError):
+            pass
+    norm = _normalize_name_ui(horse_name)
+    key_name = (int(race_number), norm)
+    return odds_data.get(key_name)
+
+
+def _fmt_odds_display(odds_entry):
+    """Format odds for table display: prefer raw string, fallback decimal."""
+    if not odds_entry:
+        return "\u2014"
+    raw = odds_entry.get("odds_raw") or ""
+    dec = odds_entry.get("odds_decimal")
+    if raw:
+        return raw
+    if dec is not None:
+        return f"{dec:.1f}-1"
+    return "\u2014"
+
+
 def _persist_predictions(session_id, track, race_date, race_number, projections):
     """Save engine projections to the DB via the API."""
     try:
@@ -275,6 +311,26 @@ def engine_page():
     if not all_horses:
         st.warning("Session contains no horse data.")
         return
+
+    # --- Fetch ML odds for this session (cached in session_state) ---
+    _odds_cache_key = f"_odds_{sel_id}"
+    if _odds_cache_key not in st.session_state:
+        _odds_data = {}
+        _odds_by_post = {}
+        try:
+            _o_resp = requests.get(f"{API_BASE_URL}/odds/snapshots/{sel_id}", timeout=10)
+            if _o_resp.ok:
+                for snap in _o_resp.json().get("snapshots", []):
+                    entry = {"odds_raw": snap.get("odds_raw", ""), "odds_decimal": snap.get("odds_decimal")}
+                    key_name = (snap["race_number"], snap["normalized_name"])
+                    _odds_data[key_name] = entry
+                    if snap.get("post") is not None:
+                        key_post = (snap["race_number"], snap["post"])
+                        _odds_by_post[key_post] = entry
+        except Exception:
+            pass
+        st.session_state[_odds_cache_key] = (_odds_data, _odds_by_post)
+    _odds_data, _odds_by_post = st.session_state[_odds_cache_key]
 
     # --- Status panel ---
     source = selected.get('parser_used', 'unknown')
@@ -536,6 +592,17 @@ def engine_page():
             h.get('figure_source') == 'brisnet' or h.get('quickplay_positive')
             for h in race_horses
         )
+
+        # Odds toggle + coverage metric
+        show_odds = st.checkbox("Show Odds", value=True, key=f"show_odds_{sel_id}_{selected_race}")
+        if show_odds:
+            odds_found = sum(
+                1 for p in display_projections
+                if _lookup_odds(selected_race, p.name, p.post, _odds_data, _odds_by_post)
+                and _lookup_odds(selected_race, p.name, p.post, _odds_data, _odds_by_post).get("odds_decimal") is not None
+            )
+            st.caption(f"Odds coverage: {odds_found}/{len(display_projections)} horses")
+
         with st.expander("Full ranked table", expanded=False):
             rows = []
             for p in display_projections:
@@ -561,6 +628,12 @@ def engine_page():
                     matching = [h for h in race_horses if h.get('horse_name') == p.name]
                     if matching:
                         row['Prime Power'] = matching[0].get('prime_power', '')
+                if show_odds:
+                    o = _lookup_odds(selected_race, p.name, p.post, _odds_data, _odds_by_post)
+                    row['Odds (ML)'] = _fmt_odds_display(o)
+                    if not o or o.get("odds_decimal") is None:
+                        existing = row.get('Tags', '-')
+                        row['Tags'] = f"{existing}, NO_ODDS" if existing != '-' else "NO_ODDS"
                 rows.append(row)
             df = pd.DataFrame(rows)
 
@@ -773,6 +846,7 @@ def engine_page():
         top_n = min(10, len(best_bets))
         st.caption(f"Showing top {top_n} of {len(best_bets)} entries")
 
+        bb_show_odds = st.checkbox("Show Odds", value=True, key=f"bb_show_odds_{sel_id}")
         rows = []
         for rn, p in best_bets[:top_n]:
             score = _best_bet_score(p)
@@ -795,6 +869,9 @@ def engine_page():
                 row['Setup'] = f"{stars} {p.new_top_setup_type} ({p.new_top_confidence}%)"
             elif p.bounce_risk:
                 row['Setup'] = "\u26a0\ufe0f BOUNCE RISK"
+            if bb_show_odds:
+                o = _lookup_odds(rn, p.name, p.post, _odds_data, _odds_by_post)
+                row['Odds (ML)'] = _fmt_odds_display(o)
             rows.append(row)
 
         df = pd.DataFrame(rows)

@@ -1236,6 +1236,22 @@ async def parser_diagnose(session_id: str, race_number: int):
 
 
 # ---------------------------------------------------------------------------
+# Odds endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/odds/snapshots/{session_id}")
+async def get_odds_snapshots_endpoint(session_id: str):
+    """Return ML odds snapshots for a session's track/date."""
+    if session_id not in sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+    s = sessions[session_id]
+    track = s.get("track", "")
+    race_date = s.get("date", "")
+    rows = _db.get_odds_snapshots_full(track, race_date, source="morning_line")
+    return {"session_id": session_id, "source": "morning_line", "snapshots": rows}
+
+
+# ---------------------------------------------------------------------------
 # Bet Builder endpoints
 # ---------------------------------------------------------------------------
 
@@ -1274,14 +1290,19 @@ async def build_bets(payload: dict):
     if not preds:
         raise HTTPException(status_code=404, detail="No predictions found for this card")
 
-    # Inject morning line odds where result odds are missing
-    ml_odds = _db.get_odds_snapshots(track=track, race_date=race_date, source='morning_line')
+    # Inject morning line odds (with raw string) where result odds are missing
+    ml_snaps = _db.get_odds_snapshots_full(track=track, race_date=race_date, source='morning_line')
+    ml_by_name: Dict[tuple, dict] = {}
+    for snap in ml_snaps:
+        key = (snap["race_number"], snap["normalized_name"])
+        ml_by_name[key] = snap
     for p in preds:
         if p.get('odds') is None:
             key = (p.get('race_number', 0), _db._normalize_name(p.get('horse_name', '')))
-            ml = ml_odds.get(key)
-            if ml is not None:
-                p['odds'] = ml
+            snap = ml_by_name.get(key)
+            if snap and snap.get('odds_decimal') is not None:
+                p['odds'] = snap['odds_decimal']
+                p['odds_raw'] = snap.get('odds_raw', '')
                 p['odds_source'] = 'morning_line'
             else:
                 p['odds_source'] = 'missing'

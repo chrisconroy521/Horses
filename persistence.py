@@ -2414,6 +2414,22 @@ class Persistence:
         ).fetchall()
         return {(r["race_number"], r["normalized_name"]): r["odds_decimal"] for r in rows}
 
+    def get_odds_snapshots_full(
+        self, track: str, race_date: str,
+        source: str = "morning_line",
+    ) -> List[Dict[str, Any]]:
+        """Return full odds snapshot rows for a card (includes odds_raw)."""
+        track = self._normalize_track(track)
+        race_date = self._normalize_date(race_date)
+        rows = self.conn.execute(
+            """SELECT race_number, post, horse_name, normalized_name,
+                      odds_raw, odds_decimal
+               FROM odds_snapshots
+               WHERE track = ? AND race_date = ? AND source = ?""",
+            (track, race_date, source),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
     def evaluate_bet_plan_roi(self, plan_id: int) -> Dict[str, Any]:
         """Compute realized ROI for a stored bet plan by joining tickets
         against result_entries using tiered matching.

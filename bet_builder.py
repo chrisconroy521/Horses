@@ -105,6 +105,17 @@ def _risk_multiplier(profile: str) -> float:
     return {"conservative": 0.6, "standard": 1.0, "aggressive": 1.4}.get(profile, 1.0)
 
 
+def _fmt_odds(proj: Dict[str, Any]) -> str:
+    """Format odds for ticket text: prefer raw ('9/5'), fallback decimal ('4.0-1')."""
+    raw = proj.get("odds_raw") or ""
+    dec = proj.get("odds")
+    if raw:
+        return raw
+    if dec is not None:
+        return f"{dec:.1f}-1"
+    return ""
+
+
 def _horse_name(p: Dict[str, Any]) -> str:
     """Extract horse name from a projection dict.
 
@@ -287,17 +298,19 @@ def build_win_ticket(
     stake = max(stake, _BET_BASE)
     stake = min(stake, race_budget)
 
+    odds_str = _fmt_odds(top)
     return Ticket(
         bet_type="WIN",
         selections=[name],
         cost=stake,
         rationale=(
-            f"WIN #{name} @ {odds:.1f}-1 — "
+            f"WIN {name} @ {odds_str} — "
             f"Kelly={kf:.3f}, stake=${stake:.0f}"
         ),
         details={
             **_ids,
             "odds": odds,
+            "odds_raw": top.get("odds_raw", ""),
             "kelly_fraction": round(kf, 4),
             "win_prob_est": round(win_prob, 3),
             "method": "kelly",
@@ -335,11 +348,13 @@ def build_exacta_tickets(
     under_names = names[1:1 + key_count]
     key_cost = key_count * _BET_BASE
     if key_cost <= exacta_budget:
+        top_odds = _fmt_odds(ranked[0])
+        top_label = f"{names[0]} @ {top_odds}" if top_odds else names[0]
         tickets.append(Ticket(
             bet_type="EXACTA",
             selections=[names[0]] + under_names,
             cost=key_cost,
-            rationale=f"EX KEY {names[0]} / {','.join(under_names)} — ${key_cost:.0f}",
+            rationale=f"EX KEY {top_label} over {','.join(under_names)} — ${key_cost:.0f}",
             details={
                 "structure": "key", "top": names[0], "unders": under_names,
                 "horses": {n: horse_ids.get(n, {}) for n in [names[0]] + under_names},
@@ -354,11 +369,16 @@ def build_exacta_tickets(
             saver_names = names[1:3]
             saver_cost = len(saver_names) * _BET_BASE
             if saver_cost <= exacta_budget:
+                saver_labels = []
+                for sn in saver_names:
+                    sp = next((p for p in ranked if _horse_name(p) == sn), {})
+                    os = _fmt_odds(sp)
+                    saver_labels.append(f"{sn} @ {os}" if os else sn)
                 tickets.append(Ticket(
                     bet_type="EXACTA",
                     selections=saver_names + [names[0]],
                     cost=saver_cost,
-                    rationale=f"EX SAVER {','.join(saver_names)} / {names[0]} — ${saver_cost:.0f}",
+                    rationale=f"EX SAVER {','.join(saver_labels)} / {names[0]} — ${saver_cost:.0f}",
                     details={
                         "structure": "saver", "overs": saver_names, "under": names[0],
                         "horses": {n: horse_ids.get(n, {}) for n in saver_names + [names[0]]},

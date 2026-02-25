@@ -179,3 +179,81 @@ class TestPipelineJsonOddsDecimal:
         result = to_pipeline_json(card)
         horses = result.get("horses", [])
         assert horses[0]["odds_decimal"] is None
+
+
+class TestOddsInjectedIntoRankedRows:
+    def test_lookup_by_post_and_name(self, tmp_path):
+        """Odds snapshots can be looked up by (race_number, post) and (race_number, name)."""
+        db = Persistence(tmp_path / "test.db")
+        snapshots = [
+            {"race_number": 1, "post": 3, "horse_name": "Alpha", "odds_raw": "5/1", "odds_decimal": 5.0},
+            {"race_number": 1, "post": 5, "horse_name": "Beta", "odds_raw": "9/5", "odds_decimal": 1.8},
+        ]
+        db.save_odds_snapshots("s1", "GP", "2026-02-26", snapshots)
+        full = db.get_odds_snapshots_full("GP", "2026-02-26")
+
+        # Build lookup dicts like the UI does
+        odds_data = {}
+        odds_by_post = {}
+        for snap in full:
+            key_name = (snap["race_number"], snap["normalized_name"])
+            key_post = (snap["race_number"], snap["post"])
+            entry = {"odds_raw": snap.get("odds_raw", ""), "odds_decimal": snap.get("odds_decimal")}
+            odds_data[key_name] = entry
+            if snap.get("post") is not None:
+                odds_by_post[key_post] = entry
+
+        # Lookup by post (priority)
+        key_post = (1, 3)
+        assert key_post in odds_by_post
+        assert odds_by_post[key_post]["odds_raw"] == "5/1"
+        assert odds_by_post[key_post]["odds_decimal"] == 5.0
+
+        # Lookup by name (fallback)
+        key_name = (1, "BETA")
+        assert key_name in odds_data
+        assert abs(odds_data[key_name]["odds_decimal"] - 1.8) < 1e-9
+
+        # Missing horse returns None
+        key_missing = (1, "GAMMA")
+        assert key_missing not in odds_data
+
+
+class TestTicketTextIncludesOdds:
+    def test_win_ticket_shows_raw_odds(self):
+        """WIN ticket rationale uses raw odds string when available."""
+        preds = {
+            1: [
+                {
+                    "horse_name": "Stubold", "race_number": 1, "pick_rank": 1,
+                    "projection_type": "PAIRED", "bias_score": 12.0,
+                    "confidence": 0.72, "projected_low": 10.0, "projected_high": 12.0,
+                    "tags": [], "new_top_setup": False, "bounce_risk": False,
+                    "tossed": False, "odds": 5.0, "odds_raw": "5/1", "post": 3,
+                },
+                {
+                    "horse_name": "Runner", "race_number": 1, "pick_rank": 2,
+                    "projection_type": "NEUTRAL", "bias_score": 8.0,
+                    "confidence": 0.45, "projected_low": 14.0, "projected_high": 16.0,
+                    "tags": [], "new_top_setup": False, "bounce_risk": False,
+                    "tossed": False, "odds": 8.0, "odds_raw": "8/1", "post": 5,
+                },
+            ]
+        }
+        settings = BetSettings(bankroll=1000, min_odds_a=2.0, paper_mode=True)
+        plan = build_day_plan(preds, settings)
+        tickets = plan.race_plans[0].tickets
+
+        # WIN ticket should contain raw odds
+        win_tickets = [t for t in tickets if t.bet_type == "WIN"]
+        assert len(win_tickets) == 1
+        assert "5/1" in win_tickets[0].rationale
+        assert win_tickets[0].details.get("method") == "kelly"
+        assert win_tickets[0].details.get("odds_raw") == "5/1"
+
+        # EXACTA ticket should contain odds for key horse
+        ex_tickets = [t for t in tickets if t.bet_type == "EXACTA"]
+        if ex_tickets:
+            key_ticket = next((t for t in ex_tickets if "KEY" in t.rationale), None)
+            if key_ticket:
+                assert "5/1" in key_ticket.rationale
