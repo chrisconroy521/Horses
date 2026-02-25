@@ -102,7 +102,7 @@ def main():
     # Sidebar
     st.sidebar.header("Navigation")
     pages = [
-        "Daily Best WIN Bets", "Bet Commander", "Dual Mode Betting", "Dashboard",
+        "Daily Best Bets", "Bet Commander", "Dual Mode Betting", "Dashboard",
         "Upload PDF", "Engine", "Bet Builder",
         "Results", "Results Inbox", "Calibration",
         "Horse Past Performance", "Horses Overview",
@@ -141,7 +141,7 @@ def main():
         bet_builder_page()
     elif page == "Results Inbox":
         results_inbox_page()
-    elif page == "Daily Best WIN Bets":
+    elif page == "Daily Best Bets":
         daily_wins_page()
     elif page == "Dual Mode Betting":
         dual_mode_page()
@@ -1515,7 +1515,7 @@ def dashboard_page():
             st.rerun()
 
     # ===== Section B: Daily Best WIN Bets =====
-    with st.expander("Daily Best WIN Bets", expanded=True):
+    with st.expander("Daily Best Bets", expanded=True):
         from datetime import date as _date
         dw_date = st.date_input("Race Date", value=_date.today(), key="dash_dw_date")
         dw_date_str = dw_date.strftime("%m/%d/%Y") if dw_date else ""
@@ -1675,8 +1675,13 @@ def dashboard_page():
                             for tl in ticket_lines:
                                 st.markdown(f"- {tl}")
 
-    # ===== Section D: Engine Drilldown =====
-    with st.expander("Engine Drilldown", expanded=True):
+        st.divider()
+        if st.button("Open Bet Commander (full workflow)", key="dash_open_commander"):
+            st.session_state['_nav_target'] = "Bet Commander"
+            st.rerun()
+
+    # ===== Section D: Race Analysis =====
+    with st.expander("Race Analysis", expanded=True):
         engine = HandicappingEngine()
 
         # Session selector
@@ -1837,13 +1842,6 @@ def dashboard_page():
                                                    key_prefix="dash")
                     else:
                         st.info("Click **Run Projections** to analyze this race.")
-
-    # ===== Section E: Bet Commander =====
-    with st.expander("Bet Commander", expanded=False):
-        st.markdown("Full-card betting workflow with recommender, per-leg overrides, and export.")
-        if st.button("Open Bet Commander", key="dash_open_commander"):
-            st.session_state['_nav_target'] = "Bet Commander"
-            st.rerun()
 
     # ===== Section E: Results & ROI =====
     with st.expander("Results & ROI", expanded=False):
@@ -4489,7 +4487,7 @@ def _render_exotic_table(title: str, plays: list, multi_race: bool = False):
 
 
 def daily_wins_page():
-    st.header("Daily Best WIN Bets")
+    st.header("Daily Best Bets")
     st.caption("Cross-track A-grade WIN bets ranked by value overlay, with Kelly sizing.")
 
     # --- Date input ---
@@ -4574,8 +4572,25 @@ def daily_wins_page():
 
     paper_mode = st.checkbox("Paper mode", value=True, key="dw_paper")
 
+    # --- Exotic ticket depth ---
+    with st.expander("Exotic Ticket Depth (A/B/C counts)", expanded=False):
+        ec1, ec2, ec3 = st.columns(3)
+        with ec1:
+            st.caption("Daily Double")
+            dw_dd_a = st.number_input("DD A", min_value=1, max_value=3, value=1, key="dw_dd_a")
+            dw_dd_b = st.number_input("DD B", min_value=1, max_value=4, value=2, key="dw_dd_b")
+        with ec2:
+            st.caption("Exacta")
+            dw_ex_a = st.number_input("EX A", min_value=1, max_value=2, value=1, key="dw_ex_a")
+            dw_ex_b = st.number_input("EX B", min_value=1, max_value=5, value=3, key="dw_ex_b")
+        with ec3:
+            st.caption("Trifecta")
+            dw_tri_a = st.number_input("TRI A", min_value=1, max_value=2, value=1, key="dw_tri_a")
+            dw_tri_b = st.number_input("TRI B", min_value=1, max_value=4, value=2, key="dw_tri_b")
+            dw_tri_c = st.number_input("TRI C", min_value=1, max_value=5, value=3, key="dw_tri_c")
+
     # --- Generate ---
-    if st.button("Generate Daily WIN Bets", type="primary", key="btn_daily_wins"):
+    if st.button("Generate Daily Best Bets", type="primary", key="btn_daily_wins"):
         if not dw_date_str:
             st.warning("Select a race date.")
         else:
@@ -4603,9 +4618,13 @@ def daily_wins_page():
                         st.session_state["dw_last_date"] = dw_date_str
                         plan_id = resp.json().get("plan_id", "?")
                         st.success(f"Plan generated (plan_id={plan_id})")
-                        # Also fetch exotics
+                        # Also fetch exotics (with A/B/C counts)
                         try:
-                            ex_resp = api_post("/bets/daily-exotics", json=payload, timeout=30)
+                            ex_payload = {**payload,
+                                          "dd_a": dw_dd_a, "dd_b": dw_dd_b,
+                                          "ex_a": dw_ex_a, "ex_b": dw_ex_b,
+                                          "tri_a": dw_tri_a, "tri_b": dw_tri_b, "tri_c": dw_tri_c}
+                            ex_resp = api_post("/bets/daily-exotics", json=ex_payload, timeout=30)
                             if ex_resp.status_code == 200:
                                 st.session_state["dw_exotics"] = ex_resp.json()
                             else:

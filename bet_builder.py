@@ -1202,10 +1202,13 @@ def best_exactas(
     settings: BetSettings,
     max_plays: int = 5,
     race_quality: Optional[Dict[tuple, float]] = None,
+    a_count: int = 1,
+    b_count: int = 3,
 ) -> List[ExoticPlay]:
     """Build cross-track best exacta plays.
 
     Eligibility: grade A/B, chaos <= 0.55, top2 model_prob >= 0.35, field >= 4.
+    a_count/b_count control how many A/B horses appear in the ticket.
     Returns active plays sorted by confidence desc, then PASS entries.
     """
     plays: List[ExoticPlay] = []
@@ -1271,22 +1274,26 @@ def best_exactas(
             top_name = _horse_name(ranked[0])
 
             if ana["has_single"] or ana["gap_1_2"] >= 3.0:
-                # KEY: A1 over (A2+B1+B2)
-                with_horses = a_names[1:] + b_names[:2]
+                # KEY: A over (A2+B picks)
+                with_horses = a_names[1:a_count] + b_names[:b_count]
                 if not with_horses and len(ranked) >= 2:
                     with_horses = [_horse_name(ranked[1])]
-                if len(ranked) >= 3 and _horse_name(ranked[2]) not in with_horses:
-                    with_horses.append(_horse_name(ranked[2]))
-                with_horses = with_horses[:3]
+                for r in ranked[1:]:
+                    nm = _horse_name(r)
+                    if nm not in with_horses and len(with_horses) < b_count:
+                        with_horses.append(nm)
                 legs = [[top_name], with_horses]
                 combos = len(with_horses)
                 ticket_desc = f"KEY {top_name} over {','.join(with_horses)}"
             else:
-                # BOX A1/A2
-                second_name = _horse_name(ranked[1]) if len(ranked) >= 2 else top_name
-                legs = [[top_name, second_name]]
-                combos = 2  # 2 permutations
-                ticket_desc = f"BOX {top_name}/{second_name}"
+                # BOX top A horses
+                box_names = a_names[:a_count]
+                if len(box_names) < 2 and len(ranked) >= 2:
+                    box_names.append(_horse_name(ranked[1]))
+                box_names = box_names[:max(a_count, 2)]
+                legs = [box_names]
+                combos = len(box_names) * (len(box_names) - 1)
+                ticket_desc = f"BOX {'/'.join(box_names)}"
 
             cost = combos * 2.0
             badges = _exotic_reason_badges(ana)
@@ -1314,10 +1321,14 @@ def best_trifectas(
     settings: BetSettings,
     max_plays: int = 5,
     race_quality: Optional[Dict[tuple, float]] = None,
+    a_count: int = 1,
+    b_count: int = 2,
+    c_count: int = 3,
 ) -> List[ExoticPlay]:
     """Build cross-track best trifecta plays.
 
     Eligibility: grade A/B, chaos <= 0.45, field >= 6, top3 prob >= 0.45.
+    a_count/b_count/c_count control ticket depth per position.
     Returns active plays sorted by confidence desc, then PASS entries.
     """
     plays: List[ExoticPlay] = []
@@ -1378,32 +1389,29 @@ def best_trifectas(
                     break
             conf = max(0, min(int(conf * quality_factor), 100))
 
-            # --- Ticket: KEY TRI  A1 / (A2+B1) / (A2+B1+B2) ---
+            # --- Ticket: KEY TRI  A / (2nd pool) / (3rd pool) ---
             ranked = ana["ranked"]
             a_names = ana["a_horses"]
             b_names = ana["b_horses"]
             first_name = _horse_name(ranked[0])
 
-            # second pool: A2 + first B
+            # second pool: up to b_count horses from A2+B
             second_pool: List[str] = []
             if len(a_names) > 1:
                 second_pool.append(a_names[1])
-            if b_names:
-                second_pool.append(b_names[0])
+            for bn in b_names:
+                if bn not in second_pool and len(second_pool) < b_count:
+                    second_pool.append(bn)
             for r in ranked[1:]:
                 nm = _horse_name(r)
-                if nm not in second_pool and len(second_pool) < 2:
+                if nm not in second_pool and len(second_pool) < b_count:
                     second_pool.append(nm)
 
-            # third pool: second_pool + next B
+            # third pool: second_pool + extras up to c_count
             third_pool = list(second_pool)
-            if len(b_names) >= 2 and b_names[1] not in third_pool:
-                third_pool.append(b_names[1])
-            elif len(b_names) >= 1 and b_names[0] not in third_pool:
-                third_pool.append(b_names[0])
             for r in ranked[1:]:
                 nm = _horse_name(r)
-                if nm not in third_pool and nm != first_name and len(third_pool) < 3:
+                if nm not in third_pool and nm != first_name and len(third_pool) < c_count:
                     third_pool.append(nm)
 
             # Compute combos (no horse in two positions)
@@ -1450,11 +1458,14 @@ def best_daily_doubles(
     settings: BetSettings,
     max_plays: int = 5,
     race_quality: Optional[Dict[tuple, float]] = None,
+    a_count: int = 1,
+    b_count: int = 2,
 ) -> List[ExoticPlay]:
     """Build cross-track best daily double plays.
 
     Finds adjacent race pairs at each track. Both legs must have predictions.
     At least one leg must not be chaotic.
+    a_count/b_count control how many A/B horses per leg.
     Returns active plays sorted by confidence desc, then PASS entries.
     """
     plays: List[ExoticPlay] = []
@@ -1521,26 +1532,24 @@ def best_daily_doubles(
             # --- Ticket structure ---
             if ana1["has_single"]:
                 leg1_picks = [top1_name]
-                leg2_picks = ana2["a_horses"][:1] + ana2["b_horses"][:1]
+                leg2_picks = ana2["a_horses"][:a_count] + ana2["b_horses"][:b_count]
                 if not leg2_picks:
                     leg2_picks = [top2_name]
-                ticket_desc = f"SINGLE({top1_name}) × {'+'.join(leg2_picks)}"
+                ticket_desc = f"SINGLE({top1_name}) \u00d7 {'+'.join(leg2_picks)}"
             elif ana2["has_single"]:
-                leg1_picks = ana1["a_horses"][:1] + ana1["b_horses"][:1]
+                leg1_picks = ana1["a_horses"][:a_count] + ana1["b_horses"][:b_count]
                 if not leg1_picks:
                     leg1_picks = [top1_name]
                 leg2_picks = [top2_name]
-                ticket_desc = f"{'+'.join(leg1_picks)} × SINGLE({top2_name})"
+                ticket_desc = f"{'+'.join(leg1_picks)} \u00d7 SINGLE({top2_name})"
             else:
-                leg1_picks = ana1["a_horses"][:1]
+                leg1_picks = ana1["a_horses"][:a_count] + ana1["b_horses"][:max(b_count - 1, 0)]
                 if not leg1_picks:
                     leg1_picks = [top1_name]
-                leg2_a = ana2["a_horses"][:1]
-                leg2_b = ana2["b_horses"][:1]
-                leg2_picks = leg2_a + leg2_b
+                leg2_picks = ana2["a_horses"][:a_count] + ana2["b_horses"][:b_count]
                 if not leg2_picks:
                     leg2_picks = [top2_name]
-                ticket_desc = f"{'+'.join(leg1_picks)} × {'+'.join(leg2_picks)}"
+                ticket_desc = f"{'+'.join(leg1_picks)} \u00d7 {'+'.join(leg2_picks)}"
 
             combos = len(leg1_picks) * len(leg2_picks)
             cost = combos * 2.0

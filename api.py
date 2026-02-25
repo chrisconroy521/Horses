@@ -1667,18 +1667,27 @@ async def build_daily_exotics_endpoint(payload: dict):
 
     odds_by_key = _db.get_all_odds_for_date(race_date)
 
+    # A/B/C count overrides
+    dd_a = int(payload.get("dd_a", 1))
+    dd_b = int(payload.get("dd_b", 2))
+    ex_a = int(payload.get("ex_a", 1))
+    ex_b = int(payload.get("ex_b", 3))
+    tri_a = int(payload.get("tri_a", 1))
+    tri_b = int(payload.get("tri_b", 2))
+    tri_c = int(payload.get("tri_c", 3))
+
     # Build all three exotic types
     dd_plays = best_daily_doubles(
         predictions_by_track, odds_by_key, settings,
-        max_plays=max_plays,
+        max_plays=max_plays, a_count=dd_a, b_count=dd_b,
     )
     ex_plays = best_exactas(
         predictions_by_track, odds_by_key, settings,
-        max_plays=max_plays,
+        max_plays=max_plays, a_count=ex_a, b_count=ex_b,
     )
     tri_plays = best_trifectas(
         predictions_by_track, odds_by_key, settings,
-        max_plays=max_plays,
+        max_plays=max_plays, a_count=tri_a, b_count=tri_b, c_count=tri_c,
     )
 
     from dataclasses import asdict as _asdict_ex
