@@ -60,6 +60,23 @@ def api_delete(path: str, **kwargs):
 st.markdown("""<style>
 h3 { margin-top: 1.5rem; margin-bottom: 0.75rem; }
 div[data-testid="stExpander"] { margin-bottom: 0.75rem; }
+
+/* Mobile-first responsive layout */
+@media (max-width: 768px) {
+    section[data-testid="stSidebar"] { width: 0px; min-width: 0px; }
+    section[data-testid="stSidebar"][aria-expanded="true"] { width: 260px; min-width: 260px; }
+    div[data-testid="column"] { width: 100% !important; flex: 100% !important; min-width: 100% !important; }
+    button, .stButton > button, .stDownloadButton > button {
+        min-height: 48px !important; min-width: 48px !important;
+        font-size: 1rem !important; padding: 0.5rem 1rem !important;
+    }
+    .block-container { padding: 1rem 0.75rem !important; }
+    .stDataFrame { font-size: 0.85rem; }
+}
+@media (min-width: 769px) and (max-width: 1024px) {
+    .block-container { padding: 1.5rem 1rem !important; }
+    div[data-testid="column"] { min-width: 45% !important; }
+}
 </style>""", unsafe_allow_html=True)
 
 def main():
@@ -85,9 +102,9 @@ def main():
     # Sidebar
     st.sidebar.header("Navigation")
     pages = [
-        "Dashboard", "Upload PDF", "Engine", "Results", "Results Inbox",
-        "Bet Builder", "Daily Best WIN Bets", "Calibration", "Database",
-        "Horse Past Performance", "Horses Overview",
+        "Daily Best WIN Bets", "Dashboard", "Upload PDF", "Engine",
+        "Results", "Results Inbox", "Bet Builder", "Calibration",
+        "Database", "Horse Past Performance", "Horses Overview",
         "Individual Horse Analysis", "Race Analysis", "Statistics",
         "Manage Sheets", "API Status",
     ]
