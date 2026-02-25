@@ -20,7 +20,8 @@ from brisnet_parser import BrisnetParser, to_pipeline_json as brisnet_to_pipelin
 from persistence import Persistence
 from bet_builder import (
     BetSettings, build_day_plan, day_plan_to_dict, day_plan_to_text, day_plan_to_csv,
-    build_daily_wins, DailyWinCandidate,
+    build_daily_wins, DailyWinCandidate, ExoticPlay,
+    best_exactas, best_trifectas, best_daily_doubles,
     MultiRaceStrategy, build_multi_race_plan, multi_race_plan_to_dict,
     build_daily_double_plan, daily_double_plan_to_dict,
     DualModeSettings, build_dual_mode_day_plan, dual_mode_plan_to_dict,
@@ -1611,6 +1612,57 @@ async def build_daily_wins_endpoint(payload: dict):
         result["plan_id"] = plan_id
 
     return result
+
+
+@app.post("/bets/daily-exotics")
+async def build_daily_exotics_endpoint(payload: dict):
+    """Generate cross-track exotic recommendations (DD, Exacta, Trifecta).
+
+    Body: same as /bets/daily-wins — {race_date, bankroll?, risk_profile?, ...}
+    Returns: {daily_doubles: [...], exactas: [...], trifectas: [...]}
+    """
+    race_date = payload.get("race_date", "")
+    if not race_date:
+        raise HTTPException(status_code=400, detail="race_date required")
+
+    settings = BetSettings(
+        bankroll=float(payload.get("bankroll", 1000)),
+        risk_profile=payload.get("risk_profile", "standard"),
+        max_risk_per_day_pct=float(payload.get("max_risk_per_day_pct", 6.0)),
+        min_confidence=float(payload.get("min_confidence", 0.65)),
+        min_odds_a=float(payload.get("min_odds_a", 2.0)),
+        paper_mode=bool(payload.get("paper_mode", True)),
+        allow_missing_odds=bool(payload.get("allow_missing_odds", True)),
+        min_overlay=float(payload.get("min_overlay", 1.10)),
+    )
+    max_plays = int(payload.get("max_plays", 5))
+
+    predictions_by_track = _db.get_all_predictions_for_date(race_date)
+    if not predictions_by_track:
+        raise HTTPException(status_code=404, detail="No predictions found for this date")
+
+    odds_by_key = _db.get_all_odds_for_date(race_date)
+
+    # Build all three exotic types
+    dd_plays = best_daily_doubles(
+        predictions_by_track, odds_by_key, settings,
+        max_plays=max_plays,
+    )
+    ex_plays = best_exactas(
+        predictions_by_track, odds_by_key, settings,
+        max_plays=max_plays,
+    )
+    tri_plays = best_trifectas(
+        predictions_by_track, odds_by_key, settings,
+        max_plays=max_plays,
+    )
+
+    from dataclasses import asdict as _asdict_ex
+    return {
+        "daily_doubles": [_asdict_ex(p) for p in dd_plays],
+        "exactas": [_asdict_ex(p) for p in ex_plays],
+        "trifectas": [_asdict_ex(p) for p in tri_plays],
+    }
 
 
 @app.post("/bets/multi-race")

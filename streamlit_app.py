@@ -4190,6 +4190,47 @@ def results_inbox_page():
                 st.warning("No matching session found. Upload sheets for this track and date first.")
 
 
+def _render_exotic_table(title: str, plays: list, multi_race: bool = False):
+    """Render a single exotic recommendations table (DD, EX, or TRI)."""
+    st.divider()
+    st.subheader(title)
+
+    active = [p for p in plays if not p.get("passed")]
+    passed = [p for p in plays if p.get("passed")]
+
+    if not active:
+        st.info(f"No qualifying plays found.")
+    else:
+        rows = []
+        for p in active:
+            race_str = "-".join(str(r) for r in p.get("race_numbers", []))
+            badges = ", ".join(p.get("reason_badges", [])) or "—"
+            flags = ", ".join(p.get("risk_flags", [])) or "—"
+            rows.append({
+                "Track": p.get("track", ""),
+                "Race(s)" if multi_race else "Race": race_str,
+                "Ticket": p.get("ticket_desc", ""),
+                "Conf": p.get("confidence", 0),
+                "Edge Badges": badges,
+                "Risk Flags": flags,
+                "Cost": f"${p.get('cost', 0):.0f}",
+            })
+        st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+
+    if passed:
+        with st.expander(f"PASS entries ({len(passed)})"):
+            pass_rows = []
+            for p in passed:
+                race_str = "-".join(str(r) for r in p.get("race_numbers", []))
+                pass_rows.append({
+                    "Track": p.get("track", ""),
+                    "Race(s)" if multi_race else "Race": race_str,
+                    "Grade": p.get("grade", ""),
+                    "Reason": p.get("pass_reason", ""),
+                })
+            st.dataframe(pd.DataFrame(pass_rows), hide_index=True, use_container_width=True)
+
+
 def daily_wins_page():
     st.header("Daily Best WIN Bets")
     st.caption("Cross-track A-grade WIN bets ranked by value overlay, with Kelly sizing.")
@@ -4245,6 +4286,15 @@ def daily_wins_page():
                         st.session_state["dw_last_date"] = dw_date_str
                         plan_id = resp.json().get("plan_id", "?")
                         st.success(f"Plan generated (plan_id={plan_id})")
+                        # Also fetch exotics
+                        try:
+                            ex_resp = api_post("/bets/daily-exotics", json=payload, timeout=30)
+                            if ex_resp.status_code == 200:
+                                st.session_state["dw_exotics"] = ex_resp.json()
+                            else:
+                                st.session_state["dw_exotics"] = None
+                        except Exception:
+                            st.session_state["dw_exotics"] = None
                     elif resp.status_code == 404:
                         st.warning("No predictions found for this date. Run the engine on sessions first.")
                     else:
@@ -4332,6 +4382,23 @@ def daily_wins_page():
             with ec2:
                 st.download_button("Download Text", "\n".join(text_lines),
                                    "daily_wins.txt", "text/plain", key="dw_dl_txt")
+
+        # --- Exotic Recommendations ---
+        exotics = st.session_state.get("dw_exotics")
+        if exotics:
+            _render_exotic_table(
+                "Best Daily Doubles (Top 5)",
+                exotics.get("daily_doubles", []),
+                multi_race=True,
+            )
+            _render_exotic_table(
+                "Best Exactas (Top 5)",
+                exotics.get("exactas", []),
+            )
+            _render_exotic_table(
+                "Best Trifectas (Top 5)",
+                exotics.get("trifectas", []),
+            )
 
         # --- Past plans ---
         st.divider()

@@ -129,6 +129,27 @@ class DailyWinCandidate:
     bounce_risk: bool
 
 
+@dataclass
+class ExoticPlay:
+    """A single cross-track exotic recommendation (DD / EXACTA / TRIFECTA)."""
+    track: str
+    session_id: str
+    bet_type: str                      # "DD", "EXACTA", "TRIFECTA"
+    race_numbers: List[int]            # [5,6] for DD, [3] for EX/TRI
+    ticket_desc: str                   # "KEY A1 over A2,B1,B2"
+    legs: List[List[str]]              # [["HORSE_A"], ["HORSE_B","HORSE_C"]]
+    confidence: int                    # 0–100
+    reason_badges: List[str]           # ["TRUE_SINGLE","LOW_CHAOS","OVERLAY"]
+    risk_flags: List[str]              # ["NEW_TOP_BOUNCE","LOW_ODDS_COVERAGE"]
+    cost: float                        # Total ticket cost
+    top_horse: str                     # Key horse name
+    top_cycle: str                     # PAIRED, REBOUND, etc.
+    top_confidence: float              # 0–1
+    grade: str                         # A, B
+    passed: bool = False               # True = not eligible
+    pass_reason: str = ""              # Why skipped
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -1019,6 +1040,534 @@ def build_daily_wins(
         total_risk += c.stake
 
     return selected
+
+
+# ---------------------------------------------------------------------------
+# Daily Best Exotics (cross-track DD / EX / TRI)
+# ---------------------------------------------------------------------------
+
+def _exotic_race_analysis(
+    projs: List[Dict[str, Any]],
+    settings: BetSettings,
+    quality: Optional[float],
+) -> Dict[str, Any]:
+    """Shared per-race analysis for exotic builders.
+
+    Computes grade, chaos_index, probs, A/B horses, and odds coverage.
+    """
+    grade, reasons = grade_race(projs, settings, figure_quality_pct=quality)
+
+    non_tossed = [p for p in projs if not p.get("tossed", False)]
+    if not non_tossed:
+        non_tossed = projs
+
+    ranked = sorted(non_tossed, key=lambda p: p.get("bias_score", 0), reverse=True)
+    top = ranked[0]
+
+    probs = _compute_race_probs(projs)
+    probs.sort(key=lambda x: x["model_prob"], reverse=True)
+
+    has_single = is_true_single(top)
+
+    # --- chaos_index (0-1) ---
+    chaos = 0.0
+    q = quality if quality is not None else 0.85
+    if q < 0.80:
+        chaos += 0.25
+    top_conf = top.get("confidence", 0)
+    if top_conf < 0.50:
+        chaos += 0.20
+    gap_1_2 = 0.0
+    if len(ranked) >= 2:
+        gap_1_2 = abs(ranked[0].get("bias_score", 0) - ranked[1].get("bias_score", 0))
+        if gap_1_2 < 1.0:
+            chaos += 0.15
+    top_mid = ranked[0].get("proj_mid", 0)
+    cluster = sum(1 for p in ranked[1:] if abs(p.get("proj_mid", 0) - top_mid) <= 2.0)
+    if cluster > 3:
+        chaos += 0.15
+    if top.get("bounce_risk", False):
+        chaos += 0.10
+    if len(projs) >= 12:
+        chaos += 0.05
+    chaos = min(chaos, 1.0)
+
+    # Odds coverage
+    odds_present = sum(1 for p in ranked if p.get("odds") is not None and p.get("odds", 0) > 0)
+    odds_coverage = odds_present / len(ranked) if ranked else 0
+
+    # A/B horse names
+    a_horses: List[str] = []
+    b_horses: List[str] = []
+    for i, p in enumerate(ranked):
+        nm = _horse_name(p)
+        if i == 0:
+            a_horses.append(nm)
+        elif p.get("cycle_priority", 0) >= 4:
+            a_horses.append(nm)
+        elif p.get("cycle_priority", 0) >= 2:
+            b_horses.append(nm)
+        if len(a_horses) + len(b_horses) >= 6:
+            break
+
+    return {
+        "grade": grade,
+        "grade_reasons": reasons,
+        "ranked": ranked,
+        "probs": probs,
+        "has_single": has_single,
+        "chaos_index": round(chaos, 2),
+        "top": top,
+        "top_conf": top_conf,
+        "top_cycle": top.get("projection_type", "NEUTRAL"),
+        "gap_1_2": gap_1_2,
+        "a_horses": a_horses,
+        "b_horses": b_horses,
+        "odds_coverage": odds_coverage,
+        "field_size": len(projs),
+        "quality": q,
+    }
+
+
+def _exotic_reason_badges(analysis: Dict[str, Any]) -> List[str]:
+    """Collect reason badges for an exotic play."""
+    badges: List[str] = []
+    if analysis["has_single"]:
+        badges.append("TRUE_SINGLE")
+    top_cycle = analysis["top_cycle"]
+    if top_cycle in ("PAIRED", "PAIRED_TOP"):
+        badges.append("PAIRED_TOP")
+    elif top_cycle == "REBOUND":
+        badges.append("REBOUND")
+    if (analysis["probs"]
+            and analysis["probs"][0].get("overlay")
+            and analysis["probs"][0]["overlay"] > 1.0):
+        badges.append("OVERLAY")
+    if analysis["chaos_index"] <= 0.25:
+        badges.append("LOW_CHAOS")
+    if not analysis["top"].get("bounce_risk", False):
+        badges.append("NO_BOUNCE")
+    if analysis["gap_1_2"] >= 3.0:
+        badges.append("LARGE_GAP")
+    return badges
+
+
+def _exotic_risk_flags(analysis: Dict[str, Any]) -> List[str]:
+    """Collect risk flags for an exotic play."""
+    flags: List[str] = []
+    if analysis["top"].get("bounce_risk", False):
+        flags.append("NEW_TOP_BOUNCE")
+    if analysis["top"].get("surface_unknown", False):
+        flags.append("SURFACE_UNKNOWN")
+    if analysis["odds_coverage"] < 0.5:
+        flags.append("LOW_ODDS_COVERAGE")
+    return flags
+
+
+def _inject_odds_for_race(
+    projs: List[Dict[str, Any]],
+    track: str,
+    rn: int,
+    odds_by_key: Dict[tuple, dict],
+) -> None:
+    """Inject odds into projection dicts from odds_by_key (in place)."""
+    for p in projs:
+        if p.get("odds") is None:
+            key = (track, rn, p.get("normalized_name", ""))
+            snap = odds_by_key.get(key)
+            if snap and snap.get("odds_decimal") is not None:
+                p["odds"] = snap["odds_decimal"]
+                p["odds_raw"] = snap.get("odds_raw", "")
+
+
+def _make_pass_play(
+    track: str, session_id: str, bet_type: str,
+    race_numbers: List[int], ana: Dict[str, Any], reason: str,
+) -> ExoticPlay:
+    """Create a PASS ExoticPlay entry."""
+    return ExoticPlay(
+        track=track, session_id=session_id,
+        bet_type=bet_type, race_numbers=race_numbers,
+        ticket_desc="PASS", legs=[], confidence=0,
+        reason_badges=[], risk_flags=[],
+        cost=0, top_horse=_horse_name(ana["top"]),
+        top_cycle=ana["top_cycle"], top_confidence=ana["top_conf"],
+        grade=ana["grade"], passed=True, pass_reason=reason,
+    )
+
+
+def best_exactas(
+    predictions_by_track: Dict[str, List[Dict[str, Any]]],
+    odds_by_key: Dict[tuple, dict],
+    settings: BetSettings,
+    max_plays: int = 5,
+    race_quality: Optional[Dict[tuple, float]] = None,
+) -> List[ExoticPlay]:
+    """Build cross-track best exacta plays.
+
+    Eligibility: grade A/B, chaos <= 0.55, top2 model_prob >= 0.35, field >= 4.
+    Returns active plays sorted by confidence desc, then PASS entries.
+    """
+    plays: List[ExoticPlay] = []
+
+    for track, preds in predictions_by_track.items():
+        by_race: Dict[int, List[Dict[str, Any]]] = {}
+        for p in preds:
+            rn = p.get("race_number", 0)
+            by_race.setdefault(rn, []).append(p)
+
+        for rn, projs in by_race.items():
+            _inject_odds_for_race(projs, track, rn, odds_by_key)
+
+            quality = (race_quality or {}).get((track, rn))
+            ana = _exotic_race_analysis(projs, settings, quality)
+            sid = projs[0].get("session_id", "")
+
+            # --- Eligibility gates ---
+            if ana["grade"] not in ("A", "B"):
+                plays.append(_make_pass_play(
+                    track, sid, "EXACTA", [rn], ana,
+                    f"grade {ana['grade']} (need A/B)"))
+                continue
+
+            if ana["chaos_index"] > 0.55:
+                plays.append(_make_pass_play(
+                    track, sid, "EXACTA", [rn], ana,
+                    f"chaos {ana['chaos_index']:.2f} > 0.55"))
+                continue
+
+            if ana["field_size"] < 4:
+                plays.append(_make_pass_play(
+                    track, sid, "EXACTA", [rn], ana,
+                    f"field {ana['field_size']} < 4"))
+                continue
+
+            probs = ana["probs"]
+            if len(probs) < 2:
+                continue
+
+            top2_prob = probs[0]["model_prob"] + probs[1]["model_prob"]
+            if top2_prob < 0.35:
+                plays.append(_make_pass_play(
+                    track, sid, "EXACTA", [rn], ana,
+                    f"top2 prob {top2_prob:.2f} < 0.35"))
+                continue
+
+            # --- Confidence ---
+            quality_factor = 1.0 if ana["quality"] >= 0.80 else 0.70
+            conf = top2_prob * 100
+            if ana["grade"] == "A":
+                conf += 10
+            if ana["chaos_index"] > 0.40:
+                conf -= 15
+            if ana["top"].get("bounce_risk", False):
+                conf -= 10
+            conf = max(0, min(int(conf * quality_factor), 100))
+
+            # --- Ticket structure ---
+            ranked = ana["ranked"]
+            a_names = ana["a_horses"]
+            b_names = ana["b_horses"]
+            top_name = _horse_name(ranked[0])
+
+            if ana["has_single"] or ana["gap_1_2"] >= 3.0:
+                # KEY: A1 over (A2+B1+B2)
+                with_horses = a_names[1:] + b_names[:2]
+                if not with_horses and len(ranked) >= 2:
+                    with_horses = [_horse_name(ranked[1])]
+                if len(ranked) >= 3 and _horse_name(ranked[2]) not in with_horses:
+                    with_horses.append(_horse_name(ranked[2]))
+                with_horses = with_horses[:3]
+                legs = [[top_name], with_horses]
+                combos = len(with_horses)
+                ticket_desc = f"KEY {top_name} over {','.join(with_horses)}"
+            else:
+                # BOX A1/A2
+                second_name = _horse_name(ranked[1]) if len(ranked) >= 2 else top_name
+                legs = [[top_name, second_name]]
+                combos = 2  # 2 permutations
+                ticket_desc = f"BOX {top_name}/{second_name}"
+
+            cost = combos * 2.0
+            badges = _exotic_reason_badges(ana)
+            flags = _exotic_risk_flags(ana)
+
+            plays.append(ExoticPlay(
+                track=track, session_id=sid,
+                bet_type="EXACTA", race_numbers=[rn],
+                ticket_desc=ticket_desc, legs=legs,
+                confidence=conf, reason_badges=badges,
+                risk_flags=flags, cost=cost,
+                top_horse=top_name, top_cycle=ana["top_cycle"],
+                top_confidence=ana["top_conf"], grade=ana["grade"],
+            ))
+
+    active = [p for p in plays if not p.passed]
+    passed = [p for p in plays if p.passed]
+    active.sort(key=lambda p: p.confidence, reverse=True)
+    return active[:max_plays] + passed
+
+
+def best_trifectas(
+    predictions_by_track: Dict[str, List[Dict[str, Any]]],
+    odds_by_key: Dict[tuple, dict],
+    settings: BetSettings,
+    max_plays: int = 5,
+    race_quality: Optional[Dict[tuple, float]] = None,
+) -> List[ExoticPlay]:
+    """Build cross-track best trifecta plays.
+
+    Eligibility: grade A/B, chaos <= 0.45, field >= 6, top3 prob >= 0.45.
+    Returns active plays sorted by confidence desc, then PASS entries.
+    """
+    plays: List[ExoticPlay] = []
+
+    for track, preds in predictions_by_track.items():
+        by_race: Dict[int, List[Dict[str, Any]]] = {}
+        for p in preds:
+            rn = p.get("race_number", 0)
+            by_race.setdefault(rn, []).append(p)
+
+        for rn, projs in by_race.items():
+            _inject_odds_for_race(projs, track, rn, odds_by_key)
+
+            quality = (race_quality or {}).get((track, rn))
+            ana = _exotic_race_analysis(projs, settings, quality)
+            sid = projs[0].get("session_id", "")
+
+            # --- Eligibility gates ---
+            if ana["grade"] not in ("A", "B"):
+                plays.append(_make_pass_play(
+                    track, sid, "TRIFECTA", [rn], ana,
+                    f"grade {ana['grade']} (need A/B)"))
+                continue
+
+            if ana["chaos_index"] > 0.45:
+                plays.append(_make_pass_play(
+                    track, sid, "TRIFECTA", [rn], ana,
+                    f"chaos {ana['chaos_index']:.2f} > 0.45"))
+                continue
+
+            if ana["field_size"] < 6:
+                plays.append(_make_pass_play(
+                    track, sid, "TRIFECTA", [rn], ana,
+                    f"field {ana['field_size']} < 6"))
+                continue
+
+            probs = ana["probs"]
+            if len(probs) < 3:
+                continue
+
+            top3_prob = probs[0]["model_prob"] + probs[1]["model_prob"] + probs[2]["model_prob"]
+            if top3_prob < 0.45:
+                plays.append(_make_pass_play(
+                    track, sid, "TRIFECTA", [rn], ana,
+                    f"top3 prob {top3_prob:.2f} < 0.45"))
+                continue
+
+            # --- Confidence ---
+            quality_factor = 1.0 if ana["quality"] >= 0.80 else 0.70
+            conf = top3_prob * 100
+            if ana["grade"] == "A":
+                conf += 10
+            if ana["chaos_index"] > 0.35:
+                conf -= 20
+            for idx in range(min(3, len(ana["ranked"]))):
+                if ana["ranked"][idx].get("bounce_risk", False):
+                    conf -= 10
+                    break
+            conf = max(0, min(int(conf * quality_factor), 100))
+
+            # --- Ticket: KEY TRI  A1 / (A2+B1) / (A2+B1+B2) ---
+            ranked = ana["ranked"]
+            a_names = ana["a_horses"]
+            b_names = ana["b_horses"]
+            first_name = _horse_name(ranked[0])
+
+            # second pool: A2 + first B
+            second_pool: List[str] = []
+            if len(a_names) > 1:
+                second_pool.append(a_names[1])
+            if b_names:
+                second_pool.append(b_names[0])
+            for r in ranked[1:]:
+                nm = _horse_name(r)
+                if nm not in second_pool and len(second_pool) < 2:
+                    second_pool.append(nm)
+
+            # third pool: second_pool + next B
+            third_pool = list(second_pool)
+            if len(b_names) >= 2 and b_names[1] not in third_pool:
+                third_pool.append(b_names[1])
+            elif len(b_names) >= 1 and b_names[0] not in third_pool:
+                third_pool.append(b_names[0])
+            for r in ranked[1:]:
+                nm = _horse_name(r)
+                if nm not in third_pool and nm != first_name and len(third_pool) < 3:
+                    third_pool.append(nm)
+
+            # Compute combos (no horse in two positions)
+            combos = 0
+            for s in second_pool:
+                for t in third_pool:
+                    if t != first_name and t != s:
+                        combos += 1
+            cost = combos * 2.0
+
+            legs = [[first_name], second_pool, third_pool]
+            ticket_desc = f"KEY {first_name} / {','.join(second_pool)} / {','.join(third_pool)}"
+
+            badges = _exotic_reason_badges(ana)
+            if len(ranked) >= 4:
+                gap_3_4 = abs(ranked[2].get("bias_score", 0) - ranked[3].get("bias_score", 0))
+                if gap_3_4 >= 1.5:
+                    badges.append("TOP3_SEPARATION")
+
+            flags = _exotic_risk_flags(ana)
+            top_spread = ranked[0].get("projected_high", 0) - ranked[0].get("projected_low", 0)
+            if top_spread > 5.0:
+                flags.append("HIGH_SPREAD")
+
+            plays.append(ExoticPlay(
+                track=track, session_id=sid,
+                bet_type="TRIFECTA", race_numbers=[rn],
+                ticket_desc=ticket_desc, legs=legs,
+                confidence=conf, reason_badges=badges,
+                risk_flags=flags, cost=cost,
+                top_horse=first_name, top_cycle=ana["top_cycle"],
+                top_confidence=ana["top_conf"], grade=ana["grade"],
+            ))
+
+    active = [p for p in plays if not p.passed]
+    passed = [p for p in plays if p.passed]
+    active.sort(key=lambda p: p.confidence, reverse=True)
+    return active[:max_plays] + passed
+
+
+def best_daily_doubles(
+    predictions_by_track: Dict[str, List[Dict[str, Any]]],
+    odds_by_key: Dict[tuple, dict],
+    settings: BetSettings,
+    max_plays: int = 5,
+    race_quality: Optional[Dict[tuple, float]] = None,
+) -> List[ExoticPlay]:
+    """Build cross-track best daily double plays.
+
+    Finds adjacent race pairs at each track. Both legs must have predictions.
+    At least one leg must not be chaotic.
+    Returns active plays sorted by confidence desc, then PASS entries.
+    """
+    plays: List[ExoticPlay] = []
+
+    for track, preds in predictions_by_track.items():
+        by_race: Dict[int, List[Dict[str, Any]]] = {}
+        for p in preds:
+            rn = p.get("race_number", 0)
+            by_race.setdefault(rn, []).append(p)
+
+        race_nums = sorted(by_race.keys())
+
+        for i in range(len(race_nums) - 1):
+            rn1, rn2 = race_nums[i], race_nums[i + 1]
+            if rn2 - rn1 != 1:
+                continue  # not adjacent
+
+            projs1, projs2 = by_race[rn1], by_race[rn2]
+            _inject_odds_for_race(projs1, track, rn1, odds_by_key)
+            _inject_odds_for_race(projs2, track, rn2, odds_by_key)
+
+            q1 = (race_quality or {}).get((track, rn1))
+            q2 = (race_quality or {}).get((track, rn2))
+            ana1 = _exotic_race_analysis(projs1, settings, q1)
+            ana2 = _exotic_race_analysis(projs2, settings, q2)
+
+            sid = projs1[0].get("session_id", "")
+            top1_name = _horse_name(ana1["top"])
+            top2_name = _horse_name(ana2["top"])
+
+            # --- PASS gates ---
+            if ana1["chaos_index"] > 0.55 and ana2["chaos_index"] > 0.55:
+                plays.append(_make_pass_play(
+                    track, sid, "DD", [rn1, rn2], ana1, "both legs chaos"))
+                continue
+
+            if ana1["quality"] < 0.60 and ana2["quality"] < 0.60:
+                plays.append(_make_pass_play(
+                    track, sid, "DD", [rn1, rn2], ana1, "both legs low quality"))
+                continue
+
+            if ana1["top"].get("bounce_risk") and ana2["top"].get("bounce_risk"):
+                plays.append(_make_pass_play(
+                    track, sid, "DD", [rn1, rn2], ana1, "both legs bounce risk"))
+                continue
+
+            # --- Confidence ---
+            qf1 = 1.0 if ana1["quality"] >= 0.80 else 0.70
+            qf2 = 1.0 if ana2["quality"] >= 0.80 else 0.70
+            bounce_pen1 = 0.7 if ana1["top"].get("bounce_risk") else 1.0
+            bounce_pen2 = 0.7 if ana2["top"].get("bounce_risk") else 1.0
+            leg1_str = ana1["top_conf"] * qf1 * bounce_pen1
+            leg2_str = ana2["top_conf"] * qf2 * bounce_pen2
+
+            conf = math.sqrt(max(leg1_str * leg2_str, 0)) * 100
+            if ana1["has_single"] or ana2["has_single"]:
+                conf += 15
+            if not ana1["b_horses"] and not ana2["b_horses"]:
+                conf -= 15
+            if ana1["chaos_index"] > 0.55 or ana2["chaos_index"] > 0.55:
+                conf -= 10
+            conf = max(0, min(int(conf), 100))
+
+            # --- Ticket structure ---
+            if ana1["has_single"]:
+                leg1_picks = [top1_name]
+                leg2_picks = ana2["a_horses"][:1] + ana2["b_horses"][:1]
+                if not leg2_picks:
+                    leg2_picks = [top2_name]
+                ticket_desc = f"SINGLE({top1_name}) × {'+'.join(leg2_picks)}"
+            elif ana2["has_single"]:
+                leg1_picks = ana1["a_horses"][:1] + ana1["b_horses"][:1]
+                if not leg1_picks:
+                    leg1_picks = [top1_name]
+                leg2_picks = [top2_name]
+                ticket_desc = f"{'+'.join(leg1_picks)} × SINGLE({top2_name})"
+            else:
+                leg1_picks = ana1["a_horses"][:1]
+                if not leg1_picks:
+                    leg1_picks = [top1_name]
+                leg2_a = ana2["a_horses"][:1]
+                leg2_b = ana2["b_horses"][:1]
+                leg2_picks = leg2_a + leg2_b
+                if not leg2_picks:
+                    leg2_picks = [top2_name]
+                ticket_desc = f"{'+'.join(leg1_picks)} × {'+'.join(leg2_picks)}"
+
+            combos = len(leg1_picks) * len(leg2_picks)
+            cost = combos * 2.0
+
+            stronger = ana1 if ana1["top_conf"] >= ana2["top_conf"] else ana2
+            badges = _exotic_reason_badges(stronger)
+
+            flags: List[str] = []
+            if ana1["top"].get("bounce_risk") or ana2["top"].get("bounce_risk"):
+                flags.append("NEW_TOP_BOUNCE")
+            if ana1["odds_coverage"] < 0.5 or ana2["odds_coverage"] < 0.5:
+                flags.append("LOW_ODDS_COVERAGE")
+
+            plays.append(ExoticPlay(
+                track=track, session_id=sid,
+                bet_type="DD", race_numbers=[rn1, rn2],
+                ticket_desc=ticket_desc, legs=[leg1_picks, leg2_picks],
+                confidence=conf, reason_badges=badges,
+                risk_flags=flags, cost=cost,
+                top_horse=top1_name, top_cycle=ana1["top_cycle"],
+                top_confidence=ana1["top_conf"], grade=stronger["grade"],
+            ))
+
+    active = [p for p in plays if not p.passed]
+    passed = [p for p in plays if p.passed]
+    active.sort(key=lambda p: p.confidence, reverse=True)
+    return active[:max_plays] + passed
 
 
 # ---------------------------------------------------------------------------
