@@ -1,6 +1,6 @@
-from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks
+from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 import uvicorn
 import os
 import json
@@ -62,6 +62,69 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Session middleware (required by authlib for OAuth state)
+from starlette.middleware.sessions import SessionMiddleware
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=os.environ.get("JWT_SECRET", "dev-insecure-secret"),
+)
+
+# ---------------------------------------------------------------------------
+# Auth: Google OAuth routes + token middleware
+# ---------------------------------------------------------------------------
+from auth import AUTH_ENABLED, decode_token
+
+if AUTH_ENABLED:
+    from auth import get_oauth, create_token, is_email_allowed, APP_URL
+
+    @app.get("/auth/google")
+    async def auth_google(request: Request):
+        """Redirect to Google OAuth consent screen."""
+        oauth = get_oauth()
+        redirect_uri = str(request.url_for("auth_callback"))
+        return await oauth.google.authorize_redirect(request, redirect_uri)
+
+    @app.get("/auth/callback")
+    async def auth_callback(request: Request):
+        """Handle Google OAuth callback, mint JWT, redirect to frontend."""
+        oauth = get_oauth()
+        token = await oauth.google.authorize_access_token(request)
+        user_info = token.get("userinfo", {})
+        email = (user_info.get("email") or "").lower()
+        if not is_email_allowed(email):
+            return RedirectResponse(f"{APP_URL}?error=unauthorized")
+        jwt_token = create_token(email, user_info.get("name", ""))
+        return RedirectResponse(f"{APP_URL}?token={jwt_token}")
+
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    """Protect API endpoints with Bearer token when auth is enabled."""
+    path = request.url.path
+    # Always allow health, root, docs, and auth routes
+    if (
+        path in ("/", "/health", "/docs", "/openapi.json", "/redoc")
+        or path.startswith("/auth/")
+    ):
+        return await call_next(request)
+    # Skip auth when not configured (local dev)
+    if not AUTH_ENABLED:
+        return await call_next(request)
+    # Check Bearer token
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        return JSONResponse(
+            status_code=401, content={"detail": "Not authenticated"}
+        )
+    try:
+        decode_token(auth_header.split(" ", 1)[1])
+    except Exception:
+        return JSONResponse(
+            status_code=401, content={"detail": "Invalid or expired token"}
+        )
+    return await call_next(request)
+
 
 # Initialize parsers
 parser = RagozinParser()

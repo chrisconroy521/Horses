@@ -23,6 +23,38 @@ st.set_page_config(
 
 # API configuration
 API_BASE_URL = os.environ.get("API_BASE_URL", "http://localhost:8000")
+_AUTH_ENABLED = os.environ.get("AUTH_ENABLED", "false").lower() == "true"
+
+
+# ---------------------------------------------------------------------------
+# Auth-aware API helpers
+# ---------------------------------------------------------------------------
+
+def _auth_headers() -> dict:
+    """Return Authorization header if token is present in session state."""
+    token = st.session_state.get("auth_token")
+    if token:
+        return {"Authorization": f"Bearer {token}"}
+    return {}
+
+
+def api_get(path: str, **kwargs):
+    """GET request to the API with auth header injected."""
+    headers = {**_auth_headers(), **kwargs.pop("headers", {})}
+    return requests.get(f"{API_BASE_URL}{path}", headers=headers, **kwargs)
+
+
+def api_post(path: str, **kwargs):
+    """POST request to the API with auth header injected."""
+    headers = {**_auth_headers(), **kwargs.pop("headers", {})}
+    return requests.post(f"{API_BASE_URL}{path}", headers=headers, **kwargs)
+
+
+def api_delete(path: str, **kwargs):
+    """DELETE request to the API with auth header injected."""
+    headers = {**_auth_headers(), **kwargs.pop("headers", {})}
+    return requests.delete(f"{API_BASE_URL}{path}", headers=headers, **kwargs)
+
 
 # --- Minimal CSS for layout consistency ---
 st.markdown("""<style>
@@ -31,6 +63,22 @@ div[data-testid="stExpander"] { margin-bottom: 0.75rem; }
 </style>""", unsafe_allow_html=True)
 
 def main():
+    # --- Auth gate ---
+    if _AUTH_ENABLED:
+        params = st.query_params
+        if "token" in params:
+            st.session_state["auth_token"] = params["token"]
+            st.query_params.clear()
+            st.rerun()
+        if "error" in params and params.get("error") == "unauthorized":
+            st.error("Your email is not on the authorized access list.")
+            st.stop()
+        if "auth_token" not in st.session_state:
+            st.title("Racing Sheets Parser")
+            st.markdown("Sign in with your Google account to continue.")
+            st.link_button("Sign in with Google", f"{API_BASE_URL}/auth/google", type="primary")
+            st.stop()
+
     st.title("Racing Sheets Parser")
     st.markdown("Sheets-first handicapping: upload Ragozin Sheets for figure cycles, then add Racing Form/BRISNET for program numbers, pace/runstyle, and track bias.")
     
@@ -264,7 +312,7 @@ def _persist_predictions(session_id, track, race_date, race_number, projections)
                 for p in projections
             ],
         }
-        requests.post(f"{API_BASE_URL}/predictions/save", json=payload, timeout=10)
+        api_post(f"/predictions/save", json=payload, timeout=10)
     except Exception:
         pass  # best-effort; don't block the UI
 
@@ -580,7 +628,7 @@ def _render_big_race_mode(key_prefix: str):
     """Render Pick 3/Pick 6 builder UI."""
     # Session selector
     try:
-        sess_resp = requests.get(f"{API_BASE_URL}/races", timeout=15)
+        sess_resp = api_get(f"/races", timeout=15)
         races = sess_resp.json().get("races", []) if sess_resp.ok else []
     except Exception:
         races = []
@@ -636,7 +684,7 @@ def _render_big_race_mode(key_prefix: str):
             "save": True,
         }
         try:
-            resp = requests.post(f"{API_BASE_URL}/bets/multi-race", json=payload, timeout=30)
+            resp = api_post(f"/bets/multi-race", json=payload, timeout=30)
             if resp.ok:
                 st.session_state[f"mr_plan_{key_prefix}"] = resp.json()
             elif resp.status_code == 404:
@@ -749,7 +797,7 @@ def dashboard_page():
                 with st.spinner("Uploading primary..."):
                     try:
                         files = {"file": (primary_file.name, primary_file.getvalue(), "application/pdf")}
-                        resp = requests.post(f"{API_BASE_URL}/upload_primary", files=files, timeout=60)
+                        resp = api_post(f"/upload_primary", files=files, timeout=60)
                         if resp.ok:
                             data = resp.json()
                             sid = data.get("session_id", "")
@@ -823,7 +871,7 @@ def dashboard_page():
                         "save": True,
                     }
                     try:
-                        resp = requests.post(f"{API_BASE_URL}/bets/daily-wins", json=payload, timeout=30)
+                        resp = api_post(f"/bets/daily-wins", json=payload, timeout=30)
                         if resp.ok:
                             st.session_state["dash_dw_result"] = resp.json()
                         elif resp.status_code == 404:
@@ -876,7 +924,7 @@ def dashboard_page():
 
         # Session selector
         try:
-            sess_resp = requests.get(f"{API_BASE_URL}/races", timeout=15)
+            sess_resp = api_get(f"/races", timeout=15)
             races = sess_resp.json().get("races", []) if sess_resp.ok else []
         except Exception:
             races = []
@@ -904,7 +952,7 @@ def dashboard_page():
                             params={"source": "merged"}, timeout=30)
                         dash_horses = h_resp.json().get("race_data", {}).get("horses", []) if h_resp.ok else []
                     else:
-                        h_resp = requests.get(f"{API_BASE_URL}/races/{dash_sid}/horses", timeout=30)
+                        h_resp = api_get(f"/races/{dash_sid}/horses", timeout=30)
                         dash_horses = h_resp.json().get("horses", []) if h_resp.ok else []
                 except Exception:
                     dash_horses = []
@@ -918,7 +966,7 @@ def dashboard_page():
                         _d_odds = {}
                         _d_odds_by_post = {}
                         try:
-                            _o_resp = requests.get(f"{API_BASE_URL}/odds/snapshots/{dash_sid}", timeout=10)
+                            _o_resp = api_get(f"/odds/snapshots/{dash_sid}", timeout=10)
                             if _o_resp.ok:
                                 for snap in _o_resp.json().get("snapshots", []):
                                     entry = {"odds_raw": snap.get("odds_raw", ""), "odds_decimal": snap.get("odds_decimal")}
@@ -1028,7 +1076,7 @@ def dashboard_page():
     with st.expander("Bet Builder", expanded=False):
         # Need a session with best bets
         try:
-            sess_resp2 = requests.get(f"{API_BASE_URL}/races", timeout=15)
+            sess_resp2 = api_get(f"/races", timeout=15)
             races2 = sess_resp2.json().get("races", []) if sess_resp2.ok else []
         except Exception:
             races2 = []
@@ -1067,7 +1115,7 @@ def dashboard_page():
                         "save": True,
                     }
                     try:
-                        resp = requests.post(f"{API_BASE_URL}/bets/build", json=payload, timeout=30)
+                        resp = api_post(f"/bets/build", json=payload, timeout=30)
                         if resp.ok:
                             st.session_state["dash_bb_plan"] = resp.json()
                         else:
@@ -1116,7 +1164,7 @@ def dashboard_page():
             with st.spinner("Uploading results..."):
                 try:
                     files = {"file": (res_file.name, res_file.getvalue(), "application/pdf")}
-                    resp = requests.post(f"{API_BASE_URL}/results/upload", files=files, timeout=60)
+                    resp = api_post(f"/results/upload", files=files, timeout=60)
                     if resp.ok:
                         st.success("Results uploaded.")
                     else:
@@ -1126,7 +1174,7 @@ def dashboard_page():
 
         # ROI summary
         try:
-            roi_resp = requests.get(f"{API_BASE_URL}/predictions/roi-detailed",
+            roi_resp = api_get(f"/predictions/roi-detailed",
                                      params={"min_n": 3}, timeout=15)
             if roi_resp.ok:
                 roi = roi_resp.json()
@@ -1148,7 +1196,7 @@ def dashboard_page():
     # ===== Section F: Database =====
     with st.expander("Database", expanded=False):
         try:
-            db_resp = requests.get(f"{API_BASE_URL}/db/stats", timeout=10)
+            db_resp = api_get(f"/db/stats", timeout=10)
             if db_resp.ok:
                 stats = db_resp.json()
                 d1, d2, d3, d4 = st.columns(4)
@@ -1171,7 +1219,7 @@ def engine_page():
     # --- Load last parsed session button ---
     if st.button("Load last parsed session"):
         try:
-            resp = requests.get(f"{API_BASE_URL}/races", timeout=15)
+            resp = api_get(f"/races", timeout=15)
             if resp.status_code == 200:
                 races = resp.json().get("races", [])
                 if races:
@@ -1189,7 +1237,7 @@ def engine_page():
 
     # --- Session selector ---
     try:
-        resp = requests.get(f"{API_BASE_URL}/races", timeout=15)
+        resp = api_get(f"/races", timeout=15)
         if resp.status_code != 200:
             st.error("Could not fetch sessions from API.")
             return
@@ -1247,7 +1295,7 @@ def engine_page():
             else:
                 all_horses = []
         else:
-            h_resp = requests.get(f"{API_BASE_URL}/races/{sel_id}/horses", timeout=30)
+            h_resp = api_get(f"/races/{sel_id}/horses", timeout=30)
             if h_resp.status_code != 200:
                 st.error("Could not load horse data for this session.")
                 return
@@ -1269,7 +1317,7 @@ def engine_page():
         _odds_data = {}
         _odds_by_post = {}
         try:
-            _o_resp = requests.get(f"{API_BASE_URL}/odds/snapshots/{sel_id}", timeout=10)
+            _o_resp = api_get(f"/odds/snapshots/{sel_id}", timeout=10)
             if _o_resp.ok:
                 for snap in _o_resp.json().get("snapshots", []):
                     entry = {"odds_raw": snap.get("odds_raw", ""), "odds_decimal": snap.get("odds_decimal")}
@@ -1292,10 +1340,10 @@ def engine_page():
 
     # --- Session DB Stats ---
     try:
-        ss_resp = requests.get(f"{API_BASE_URL}/sessions/{sel_id}/stats", timeout=10)
+        ss_resp = api_get(f"/sessions/{sel_id}/stats", timeout=10)
         if ss_resp.status_code == 200:
             ss = ss_resp.json()
-            db_resp = requests.get(f"{API_BASE_URL}/db/stats", timeout=10)
+            db_resp = api_get(f"/db/stats", timeout=10)
             gs = db_resp.json() if db_resp.status_code == 200 else {}
             with st.expander("DB Coverage (this session / global)", expanded=False):
                 s1, s2, s3, s4 = st.columns(4)
@@ -1942,7 +1990,7 @@ def upload_page():
     # ===== Tab 2: Add Secondary to Existing Session =====
     with tab_secondary:
         try:
-            resp = requests.get(f"{API_BASE_URL}/sessions", timeout=15)
+            resp = api_get(f"/sessions", timeout=15)
             if resp.status_code != 200:
                 st.error("Could not fetch sessions.")
                 return
@@ -1999,7 +2047,7 @@ def horses_overview_page():
     st.header("🐎 Horses Overview with AI Analysis")
 
     try:
-        response = requests.get(f"{API_BASE_URL}/races", timeout=15)
+        response = api_get(f"/races", timeout=15)
         
         if response.status_code == 200:
             data = response.json()
@@ -2085,7 +2133,7 @@ def display_enhanced_horses_details(race):
     
     # Fetch detailed horse data
     try:
-        response = requests.get(f"{API_BASE_URL}/races/{race['id']}/horses")
+        response = api_get(f"/races/{race['id']}/horses")
         
         if response.status_code == 200:
             horse_data = response.json()
@@ -2622,7 +2670,7 @@ def database_page():
     st.caption("Every uploaded PDF adds to this persistent store. Studies draw from the full history.")
 
     try:
-        resp = requests.get(f"{API_BASE_URL}/db/stats")
+        resp = api_get(f"/db/stats")
         if resp.status_code != 200:
             st.error("Could not fetch database stats.")
             return
@@ -2710,7 +2758,7 @@ def database_page():
 
         # Fetch unmatched with suggestions
         try:
-            um_resp = requests.get(f"{API_BASE_URL}/db/unmatched", timeout=15)
+            um_resp = api_get(f"/db/unmatched", timeout=15)
             unmatched_data = um_resp.json() if um_resp.status_code == 200 else []
         except Exception:
             unmatched_data = []
@@ -3017,7 +3065,7 @@ def results_page():
     # --- Fetch sessions for dropdown ---
     session_options = {"(none)": ""}
     try:
-        sr = requests.get(f"{API_BASE_URL}/sessions", timeout=10)
+        sr = api_get(f"/sessions", timeout=10)
         if sr.status_code == 200:
             for s in sr.json().get("sessions", []):
                 label = f"{s['track']} {s['date']} ({s['session_id'][:8]}...)"
@@ -3172,7 +3220,7 @@ def results_page():
         params = {}
         if r_track:
             params["track"] = r_track
-        resp = requests.get(f"{API_BASE_URL}/results/stats", params=params, timeout=15)
+        resp = api_get(f"/results/stats", params=params, timeout=15)
         if resp.status_code != 200:
             st.info("No results data yet. Upload a results CSV above.")
             return
@@ -3382,7 +3430,7 @@ def calibration_page():
                 params = {"min_n": cal_min_n}
                 if cal_track:
                     params["track"] = cal_track
-                resp = requests.get(f"{API_BASE_URL}/calibration/roi", params=params, timeout=30)
+                resp = api_get(f"/calibration/roi", params=params, timeout=30)
                 if resp.status_code == 200:
                     st.session_state["cal_data"] = resp.json()
                 else:
@@ -3490,7 +3538,7 @@ def results_inbox_page():
     st.caption("Unattached race results awaiting session linkage. One-click attach to matching sessions.")
 
     try:
-        resp = requests.get(f"{API_BASE_URL}/results/inbox", timeout=15)
+        resp = api_get(f"/results/inbox", timeout=15)
         if resp.status_code != 200:
             st.error(f"Error: {resp.text}")
             return
@@ -3646,7 +3694,7 @@ def daily_wins_page():
                     "save": True,
                 }
                 try:
-                    resp = requests.post(f"{API_BASE_URL}/bets/daily-wins", json=payload, timeout=30)
+                    resp = api_post(f"/bets/daily-wins", json=payload, timeout=30)
                     if resp.status_code == 200:
                         st.session_state["dw_last_result"] = resp.json()
                         st.session_state["dw_last_date"] = dw_date_str
@@ -3792,7 +3840,7 @@ def bet_builder_page():
     # --- Session selector ---
     session_options = {"(none)": ""}
     try:
-        sr = requests.get(f"{API_BASE_URL}/sessions", timeout=10)
+        sr = api_get(f"/sessions", timeout=10)
         if sr.status_code == 200:
             for s in sr.json().get("sessions", []):
                 label = f"{s['track']} {s['date']} ({s['session_id'][:8]}...)"
@@ -3849,7 +3897,7 @@ def bet_builder_page():
                         "paper_mode": paper_mode,
                         "save": True,
                     }
-                    resp = requests.post(f"{API_BASE_URL}/bets/build", json=payload, timeout=30)
+                    resp = api_post(f"/bets/build", json=payload, timeout=30)
                     if resp.status_code == 200:
                         data = resp.json()
                         st.session_state["bb_last_plan"] = data
@@ -3976,7 +4024,7 @@ def bet_builder_page():
             params["track"] = bb_track
         if bb_date:
             params["date"] = bb_date
-        plans_resp = requests.get(f"{API_BASE_URL}/bets/plans", params=params, timeout=10)
+        plans_resp = api_get(f"/bets/plans", params=params, timeout=10)
         plans = plans_resp.json() if plans_resp.status_code == 200 else []
     except Exception:
         plans = []
@@ -3997,7 +4045,7 @@ def bet_builder_page():
         eval_id = st.number_input("Plan ID to evaluate", min_value=1, step=1, key="bb_eval_id")
         if st.button("Evaluate vs Results", key="btn_eval_plan"):
             try:
-                er = requests.get(f"{API_BASE_URL}/bets/evaluate/{int(eval_id)}", timeout=15)
+                er = api_get(f"/bets/evaluate/{int(eval_id)}", timeout=15)
                 if er.status_code == 200:
                     ev = er.json()
 
@@ -4057,7 +4105,7 @@ def statistics_page():
     st.header("📊 Statistics")
     
     try:
-        response = requests.get(f"{API_BASE_URL}/stats")
+        response = api_get(f"/stats")
         
         if response.status_code == 200:
             stats = response.json()
@@ -4114,7 +4162,7 @@ def api_status_page():
     
     try:
         # Health check
-        response = requests.get(f"{API_BASE_URL}/health")
+        response = api_get(f"/health")
         
         if response.status_code == 200:
             health = response.json()
@@ -4126,7 +4174,7 @@ def api_status_page():
         # Parser status
         st.subheader("🤖 Parser Status")
         try:
-            parser_response = requests.get(f"{API_BASE_URL}/parser-status")
+            parser_response = api_get(f"/parser-status")
             if parser_response.status_code == 200:
                 parser_status = parser_response.json()
                 
@@ -4170,7 +4218,7 @@ def manage_sheets_page():
     st.header("Manage Sheets")
 
     try:
-        resp = requests.get(f"{API_BASE_URL}/races", timeout=15)
+        resp = api_get(f"/races", timeout=15)
         if resp.status_code != 200:
             st.error("Could not fetch sessions from API.")
             return
@@ -4224,7 +4272,7 @@ def manage_sheets_page():
             errors = []
             for i, rid in enumerate(ids_to_delete):
                 try:
-                    del_resp = requests.delete(f"{API_BASE_URL}/races/{rid}", timeout=15)
+                    del_resp = api_delete(f"/races/{rid}", timeout=15)
                     if del_resp.status_code != 200:
                         errors.append(f"{rid}: {del_resp.text}")
                 except Exception as e:
