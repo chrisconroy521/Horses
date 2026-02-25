@@ -273,15 +273,16 @@ class Persistence:
             CREATE INDEX IF NOT EXISTS idx_rp_key ON result_predictions(track, race_date, race_number, normalized_name);
 
             CREATE TABLE IF NOT EXISTS bet_plans (
-                plan_id      INTEGER PRIMARY KEY AUTOINCREMENT,
-                session_id   TEXT NOT NULL,
-                track        TEXT NOT NULL,
-                race_date    TEXT NOT NULL,
-                settings_json TEXT NOT NULL,
-                plan_json    TEXT NOT NULL,
-                total_risk   REAL NOT NULL DEFAULT 0,
-                paper_mode   INTEGER NOT NULL DEFAULT 1,
-                created_at   TEXT NOT NULL
+                plan_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id     TEXT NOT NULL,
+                track          TEXT NOT NULL,
+                race_date      TEXT NOT NULL,
+                settings_json  TEXT NOT NULL,
+                plan_json      TEXT NOT NULL,
+                total_risk     REAL NOT NULL DEFAULT 0,
+                paper_mode     INTEGER NOT NULL DEFAULT 1,
+                engine_version TEXT NOT NULL DEFAULT '',
+                created_at     TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_bp_session ON bet_plans(session_id);
             CREATE INDEX IF NOT EXISTS idx_bp_track_date ON bet_plans(track, race_date);
@@ -308,6 +309,11 @@ class Persistence:
         re_cols = {row[1] for row in cur2.fetchall()}
         if re_cols and "session_id" not in re_cols:
             self.conn.execute("ALTER TABLE result_entries ADD COLUMN session_id TEXT")
+        # bet_plans table — add engine_version if missing
+        cur3 = self.conn.execute("PRAGMA table_info(bet_plans)")
+        bp_cols = {row[1] for row in cur3.fetchall()}
+        if bp_cols and "engine_version" not in bp_cols:
+            self.conn.execute("ALTER TABLE bet_plans ADD COLUMN engine_version TEXT DEFAULT ''")
         self.conn.commit()
         self._renormalize_names()
 
@@ -2270,7 +2276,7 @@ class Persistence:
     def save_bet_plan(
         self, session_id: str, track: str, race_date: str,
         settings_dict: Dict[str, Any], plan_dict: Dict[str, Any],
-        total_risk: float, paper_mode: bool,
+        total_risk: float, paper_mode: bool, engine_version: str = "",
     ) -> int:
         """Persist a generated bet plan. Returns the plan_id."""
         track = self._normalize_track(track)
@@ -2280,13 +2286,13 @@ class Persistence:
             """
             INSERT INTO bet_plans(
                 session_id, track, race_date, settings_json, plan_json,
-                total_risk, paper_mode, created_at
-            ) VALUES(?,?,?,?,?,?,?,?)
+                total_risk, paper_mode, engine_version, created_at
+            ) VALUES(?,?,?,?,?,?,?,?,?)
             """,
             (
                 session_id, track, race_date,
                 json.dumps(settings_dict), json.dumps(plan_dict),
-                total_risk, int(paper_mode), now,
+                total_risk, int(paper_mode), engine_version, now,
             ),
         )
         self.conn.commit()
@@ -2312,7 +2318,7 @@ class Persistence:
         rows = self.conn.execute(
             f"""SELECT plan_id, session_id, track, race_date,
                        settings_json, plan_json, total_risk,
-                       paper_mode, created_at
+                       paper_mode, engine_version, created_at
                 FROM bet_plans WHERE {where}
                 ORDER BY created_at DESC""",
             params,

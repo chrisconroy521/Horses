@@ -22,11 +22,26 @@ from bet_builder import (
     BetSettings, build_day_plan, day_plan_to_dict, day_plan_to_text, day_plan_to_csv,
 )
 import hashlib
+import subprocess as _subprocess
 import dotenv
 dotenv.load_dotenv()
 
 # Cumulative horse database
 _db = Persistence(Path("horses.db"))
+
+# Engine version — git short hash at startup
+def _get_engine_version() -> str:
+    try:
+        h = _subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=str(Path(__file__).parent),
+            stderr=_subprocess.DEVNULL,
+        ).decode().strip()
+        return h
+    except Exception:
+        return "unknown"
+
+_ENGINE_VERSION = _get_engine_version()
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -1238,6 +1253,7 @@ async def build_bets(payload: dict):
             session_id=sid, track=track, race_date=race_date,
             settings_dict=_asdict(settings), plan_dict=plan_dict,
             total_risk=plan.total_risk, paper_mode=settings.paper_mode,
+            engine_version=_ENGINE_VERSION,
         )
         result["plan_id"] = plan_id
 

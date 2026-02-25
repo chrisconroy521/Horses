@@ -2359,6 +2359,9 @@ def bet_builder_page():
 
     paper_mode = st.checkbox("Paper mode", value=True, key="bb_paper",
                              help="Mark plan as paper (no real money). Always on by default.")
+    if not paper_mode:
+        st.warning("LIVE mode: plans generated will be marked as live bets. "
+                   "Ensure bankroll and caps are set correctly before proceeding.")
 
     if st.button("Generate Bet Plan", type="primary", key="btn_build_bets"):
         if not chosen_sid or not bb_track or not bb_date:
