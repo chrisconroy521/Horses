@@ -32,6 +32,12 @@ REBOUND_WINDOW = 3      # max starts to look back for rebound pattern
 LAYOFF_LONG = 60        # days — long layoff threshold
 FIRST_TIME_SURFACE_PENALTY = "medium"  # penalty tier for unknown surface
 
+# --- Age-based development pattern constants ---
+DEV_IDEAL_MAX_STEP = 2.0   # max improvement per year for "ideal" development
+DEV_BIG_JUMP = 3.0         # improvement threshold that triggers bounce risk flag
+DEV_UPGRADE_BONUS = 3.0    # raw_score bonus for strong development
+DEV_DOWNGRADE_PENALTY = 2.0  # raw_score penalty for stalled/declining development
+
 
 @dataclass
 class FigureEntry:
@@ -69,6 +75,7 @@ class HorseInput:
     scratched: bool = False
     figure_source: str = "ragozin"  # "ragozin" (lower=better) or "brisnet" (higher=better)
     age: int = 0
+    seasonal_bests: Dict[int, float] = field(default_factory=dict)  # {age: best_figure}
 
 
 @dataclass
@@ -91,6 +98,8 @@ class HorseProjection:
     bounce_risk: bool = False
     tossed: bool = False
     toss_reasons: List[str] = field(default_factory=list)
+    dev_pattern: str = ""           # STRONG_DEV, STALLED, DECLINING, BIG_JUMP, ""
+    dev_explanation: str = ""
 
 
 @dataclass
@@ -413,9 +422,18 @@ class HandicappingEngine:
         projected_low = max(0.0, projected_low)
 
         # ==============================================================
-        # 4. Scoring (higher raw_score = better horse, always)
+        # 4. Age-based development pattern
+        # ==============================================================
+        dev_pattern, dev_tags, dev_adj, dev_expl = self._classify_development(
+            horse.seasonal_bests, horse.age, is_brisnet,
+        )
+        tags.extend(dev_tags)
+
+        # ==============================================================
+        # 5. Scoring (higher raw_score = better horse, always)
         # ==============================================================
         raw_score = mid if is_brisnet else (100.0 - mid)
+        raw_score += dev_adj  # development upgrade/downgrade
 
         style_key = self._base_style(horse.style)
         bias_bonus = bias_weights.get(style_key, 0.0) * 10.0
@@ -449,6 +467,8 @@ class HandicappingEngine:
             summary_parts.append(f"{stars} NEW_TOP({setup_type} {setup_conf}%)")
         if bounce_risk and not is_setup:
             summary_parts.append("\u26a0\ufe0f BOUNCE_RISK")
+        if dev_pattern:
+            summary_parts.append(f"DEV:{dev_pattern}")
         summary = " | ".join(summary_parts)
 
         return HorseProjection(
@@ -468,6 +488,8 @@ class HandicappingEngine:
             new_top_confidence=setup_conf,
             new_top_explanation=setup_expl,
             bounce_risk=bounce_risk,
+            dev_pattern=dev_pattern,
+            dev_explanation=dev_expl,
         )
 
     # ------------------------------------------------------------------
@@ -830,6 +852,107 @@ class HandicappingEngine:
                         conf = 70
                     return (True, "NEAR_TOP_POP", conf,
                             f"Within {gap_to_best:.0f} of best ({prior_best:.0f}): {fig_str}")
+
+        return _NONE
+
+    # ------------------------------------------------------------------
+    # Age-based development pattern classifier
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _classify_development(
+        seasonal_bests: Dict[int, float],
+        age: int,
+        is_brisnet: bool,
+    ) -> tuple:
+        """Evaluate year-over-year development from seasonal best figures.
+
+        Core philosophy: horses should improve with age. Small, incremental
+        forward moves (1-2 points/year) = elite pattern. Stalled or declining
+        year-over-year = weak. Big jumps (>3-4 points) = bounce risk.
+
+        Args:
+            seasonal_bests: {age: best_figure} e.g. {2: 12.0, 3: 10.5, 4: 9.0}
+            age: current age
+            is_brisnet: True if higher=better
+
+        Returns:
+            (pattern, tags, score_adj, explanation) where pattern is one of:
+            STRONG_DEV, STALLED, DECLINING, BIG_JUMP, or ""
+        """
+        _NONE = ("", [], 0.0, "")
+
+        if not seasonal_bests or age < 3:
+            return _NONE
+
+        # Build sorted sequence of (age, best) pairs
+        ages_sorted = sorted(seasonal_bests.keys())
+        if len(ages_sorted) < 2:
+            return _NONE
+
+        # Calculate year-over-year changes
+        transitions = []
+        for i in range(len(ages_sorted) - 1):
+            a1, a2 = ages_sorted[i], ages_sorted[i + 1]
+            f1, f2 = seasonal_bests[a1], seasonal_bests[a2]
+            if is_brisnet:
+                delta = f2 - f1  # positive = improved
+            else:
+                delta = f1 - f2  # positive = improved (lower = better)
+            transitions.append((a1, a2, delta))
+
+        if not transitions:
+            return _NONE
+
+        tags = []
+        all_improved = all(d > 0 for _, _, d in transitions)
+        all_stalled = all(abs(d) < 0.5 for _, _, d in transitions)
+        any_declined = any(d < -0.5 for _, _, d in transitions)
+        any_big_jump = any(d > DEV_BIG_JUMP for _, _, d in transitions)
+        all_controlled = all(0 < d <= DEV_IDEAL_MAX_STEP for _, _, d in transitions)
+
+        # Format figures for explanation
+        fig_parts = [f"{a}yo:{seasonal_bests[a]:.0f}" for a in ages_sorted]
+        fig_str = " -> ".join(fig_parts)
+
+        # --- STRONG_DEV: all years improved, each step <= 2 points ---
+        if all_improved and all_controlled and len(transitions) >= 1:
+            tags.append("STRONG_DEV")
+            score_adj = DEV_UPGRADE_BONUS
+            if len(transitions) >= 2:
+                score_adj = DEV_UPGRADE_BONUS + 1.0  # extra for 3+ seasons
+            return ("STRONG_DEV", tags, score_adj,
+                    f"Ideal development: {fig_str}")
+
+        # --- BIG_JUMP: improved but too much at once (bounce risk) ---
+        if any_big_jump:
+            big = [(a1, a2, d) for a1, a2, d in transitions if d > DEV_BIG_JUMP]
+            tags.append("DEV_BIG_JUMP")
+            jump_desc = ", ".join(f"{a1}yo->{a2}yo: {d:.1f}pts" for a1, a2, d in big)
+            return ("BIG_JUMP", tags, -1.0,
+                    f"Big jump risk ({jump_desc}): {fig_str}")
+
+        # --- IMPROVED but large steps (>2, <=3): good but not ideal ---
+        if all_improved and not all_controlled:
+            tags.append("DEV_IMPROVED")
+            return ("STRONG_DEV", tags, DEV_UPGRADE_BONUS * 0.5,
+                    f"Improving but large steps: {fig_str}")
+
+        # --- STALLED: no meaningful change year-over-year ---
+        if all_stalled:
+            tags.append("DEV_STALLED")
+            return ("STALLED", tags, -DEV_DOWNGRADE_PENALTY,
+                    f"No forward development: {fig_str}")
+
+        # --- DECLINING: got worse year-over-year ---
+        if any_declined and not all_improved:
+            declined = [(a1, a2, d) for a1, a2, d in transitions if d < -0.5]
+            tags.append("DEV_DECLINING")
+            penalty = DEV_DOWNGRADE_PENALTY
+            if all(d < -0.5 for _, _, d in transitions):
+                penalty = DEV_DOWNGRADE_PENALTY + 1.0  # every year worse
+            return ("DECLINING", tags, -penalty,
+                    f"Year-over-year decline: {fig_str}")
 
         return _NONE
 
