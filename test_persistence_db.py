@@ -580,6 +580,53 @@ class TestResults:
         assert len(roi_cycle) == 1
         assert roi_cycle[0]["cycle"] == "PAIRED"
 
+    def test_session_scoped_linking_by_post(self, db):
+        """Session-scoped linking matches brisnet horses by (race_number, post)."""
+        sid = "sess-001"
+        db.record_upload(sid, "brisnet", "b.pdf", None, "GP", "02/26/2026")
+        db.ingest_brisnet_horse(sid, {
+            "horse_name": "Vino for the Queen", "post": 2,
+            "race_number": 1, "runstyle": "E", "lines": [],
+        }, {"race_number": 1, "track": "GP", "race_date": "02/26/2026"})
+
+        db.insert_entry_result("GP", "02/26/2026", 1, 2, "Vino for the Queen",
+                               finish_pos=1, odds=4.0, win_payoff=10.0,
+                               session_id=sid)
+
+        result = db.link_results_to_entries(
+            track="GP", race_date="02/26/2026", session_id=sid,
+        )
+        assert result["linked_brisnet"] >= 1
+        assert result["link_rate"] == 100.0
+
+        row = db.conn.execute(
+            "SELECT brisnet_horse_id FROM result_entries WHERE post = 2"
+        ).fetchone()
+        assert row["brisnet_horse_id"] is not None
+
+    def test_fallback_name_linking_with_alias(self, db):
+        """When post doesn't match, name fallback with alias resolves the link."""
+        db.record_upload("u1", "sheets", "s.pdf", None, "GP", "02/26/2026")
+        db.ingest_sheets_horse("u1", {
+            "horse_name": "ITS JUST A GAME", "race_number": 1, "post": "",
+            "age": 3, "lines": [],
+        }, "GP", "02/26/2026")
+
+        # Add alias: the results CSV has "It's Just a Game" -> ITS JUST A GAME
+        db.add_alias("ITS JUST A GAME", "ITS JUST A GAME")
+
+        # Entry with slightly different name (apostrophe normalized away)
+        db.insert_entry_result("GP", "02/26/2026", 1, 8, "It's Just a Game",
+                               finish_pos=3, odds=6.0)
+
+        result = db.link_results_to_entries(track="GP", race_date="02/26/2026")
+        assert result["linked_sheets"] >= 1
+
+        row = db.conn.execute(
+            "SELECT sheets_horse_id FROM result_entries WHERE post = 8"
+        ).fetchone()
+        assert row["sheets_horse_id"] is not None
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

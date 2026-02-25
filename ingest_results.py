@@ -17,7 +17,10 @@ from pathlib import Path
 from persistence import Persistence
 
 
-def ingest_csv(db: Persistence, csv_path: str, track: str = "", race_date: str = "") -> dict:
+def ingest_csv(
+    db: Persistence, csv_path: str, track: str = "", race_date: str = "",
+    session_id: str = "",
+) -> dict:
     """Parse a results CSV and insert into DB. Returns summary dict."""
     races_seen = set()
     entries_inserted = 0
@@ -65,7 +68,6 @@ def ingest_csv(db: Persistence, csv_path: str, track: str = "", race_date: str =
                     )
                     races_seen.add(race_key)
                 elif finish == 1:
-                    # Update winner info if we encounter the winner row later
                     db.insert_race_result(
                         track=r_track, race_date=r_date, race_number=rn,
                         surface=row.get("surface", ""),
@@ -78,6 +80,7 @@ def ingest_csv(db: Persistence, csv_path: str, track: str = "", race_date: str =
                     horse_name=name, finish_pos=finish,
                     beaten_lengths=beaten, odds=odds,
                     win_payoff=win_p, place_payoff=place_p, show_payoff=show_p,
+                    session_id=session_id,
                 )
                 entries_inserted += 1
             except Exception as e:
@@ -85,13 +88,17 @@ def ingest_csv(db: Persistence, csv_path: str, track: str = "", race_date: str =
                 errors += 1
 
     # Link to existing horses/projections
-    link_result = db.link_results_to_entries(track=track, race_date=race_date)
+    link_result = db.link_results_to_entries(
+        track=track, race_date=race_date, session_id=session_id,
+    )
 
     return {
         "races": len(races_seen),
         "entries": entries_inserted,
         "errors": errors,
         "linked": link_result["linked"],
+        "link_rate": link_result["link_rate"],
+        "unmatched": link_result["unmatched"],
     }
 
 
@@ -114,7 +121,12 @@ def main():
     print(f"  Races:   {result['races']}")
     print(f"  Entries: {result['entries']}")
     print(f"  Linked:  {result['linked']}")
+    print(f"  Link %%:  {result['link_rate']:.1f}%")
     print(f"  Errors:  {result['errors']}")
+    if result.get("unmatched"):
+        print(f"\nUnmatched entries ({len(result['unmatched'])}):")
+        for u in result["unmatched"][:10]:
+            print(f"  R{u['race']} P{u['post']} {u['name']}: {u['reason']}")
 
     # Show quick stats
     stats = db.get_results_stats(track=args.track)

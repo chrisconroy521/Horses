@@ -240,16 +240,19 @@ class Persistence:
                 brisnet_horse_id INTEGER,
                 projection_type  TEXT,
                 pick_rank        INTEGER,
+                session_id       TEXT,
                 UNIQUE(track, race_date, race_number, post)
             );
             CREATE INDEX IF NOT EXISTS idx_re_track_date ON result_entries(track, race_date);
             CREATE INDEX IF NOT EXISTS idx_re_name ON result_entries(normalized_name);
+            CREATE INDEX IF NOT EXISTS idx_re_key ON result_entries(track, race_date, race_number, post);
             """
         )
         self.conn.commit()
-        self._ensure_session_columns()
+        self._ensure_columns()
 
-    def _ensure_session_columns(self) -> None:
+    def _ensure_columns(self) -> None:
+        # sessions table
         cur = self.conn.execute("PRAGMA table_info(sessions)")
         existing = {row[1] for row in cur.fetchall()}
         desired = {
@@ -261,6 +264,11 @@ class Persistence:
         for column, col_type in desired.items():
             if column not in existing:
                 self.conn.execute(f"ALTER TABLE sessions ADD COLUMN {column} {col_type}")
+        # result_entries table — add session_id if missing
+        cur2 = self.conn.execute("PRAGMA table_info(result_entries)")
+        re_cols = {row[1] for row in cur2.fetchall()}
+        if re_cols and "session_id" not in re_cols:
+            self.conn.execute("ALTER TABLE result_entries ADD COLUMN session_id TEXT")
         self.conn.commit()
 
     # ------------------------------------------------------------------
@@ -1379,7 +1387,7 @@ class Persistence:
         horse_name: str = "", finish_pos: int = 0,
         beaten_lengths: float = None, odds: float = None,
         win_payoff: float = None, place_payoff: float = None,
-        show_payoff: float = None,
+        show_payoff: float = None, session_id: str = "",
     ) -> Optional[int]:
         """Insert or update an entry result row. Returns entry_result_id."""
         track = self._normalize_track(track)
@@ -1389,8 +1397,8 @@ class Persistence:
             """
             INSERT INTO result_entries(track, race_date, race_number, post,
                 horse_name, normalized_name, finish_pos, beaten_lengths,
-                odds, win_payoff, place_payoff, show_payoff)
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                odds, win_payoff, place_payoff, show_payoff, session_id)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(track, race_date, race_number, post) DO UPDATE SET
                 horse_name=excluded.horse_name,
                 normalized_name=excluded.normalized_name,
@@ -1399,88 +1407,189 @@ class Persistence:
                 odds=excluded.odds,
                 win_payoff=excluded.win_payoff,
                 place_payoff=excluded.place_payoff,
-                show_payoff=excluded.show_payoff
+                show_payoff=excluded.show_payoff,
+                session_id=COALESCE(excluded.session_id, result_entries.session_id)
             """,
             (track, race_date, race_number, post, horse_name, norm,
              finish_pos, beaten_lengths, odds,
-             win_payoff, place_payoff, show_payoff),
+             win_payoff, place_payoff, show_payoff, session_id or None),
         )
         self.conn.commit()
         return cur.lastrowid
 
-    def link_results_to_entries(self, track: str = "", race_date: str = "") -> Dict[str, int]:
-        """Link result_entries to sheets/brisnet horses and pick rankings.
+    def link_results_to_entries(
+        self, track: str = "", race_date: str = "",
+        session_id: str = "",
+    ) -> Dict[str, Any]:
+        """Link result_entries to brisnet/sheets horses.
 
-        Pass 1: (track, race_date, race_number, post) exact to sheets_horses
-        Pass 2: normalized_name fallback
+        Strategy (brisnet-first since they have post positions):
+          Pass 1: exact (track, date, race, post) → brisnet_horses
+          Pass 2: reconciliation → sheets_horses from brisnet link
+          Pass 3: name fallback (with aliases) → sheets_horses for unlinked
+          Pass 4: reconciliation → brisnet from sheets link (reverse)
+
+        When *session_id* is provided, scope matching to uploads from that
+        session (upload_id = session_id or session_id + '_sec').
         """
         track = self._normalize_track(track) if track else ""
         race_date = self._normalize_date(race_date) if race_date else ""
-        linked = 0
+        linked_brisnet = 0
+        linked_sheets = 0
+        unmatched: List[Dict[str, str]] = []
 
-        where = "WHERE er.sheets_horse_id IS NULL"
-        params: List[Any] = []
+        # Build WHERE clauses for result_entries scope
+        # er_where: aliased as "er" (for SELECT/JOIN)
+        # up_where: unaliased (for UPDATE ... WHERE on result_entries)
+        er_parts = ["1=1"]
+        up_parts = ["1=1"]
+        re_params: List[Any] = []
         if track:
-            where += " AND er.track = ?"
-            params.append(track)
+            er_parts.append("er.track = ?")
+            up_parts.append("track = ?")
+            re_params.append(track)
         if race_date:
-            where += " AND er.race_date = ?"
-            params.append(race_date)
+            er_parts.append("er.race_date = ?")
+            up_parts.append("race_date = ?")
+            re_params.append(race_date)
+        if session_id:
+            er_parts.append("er.session_id = ?")
+            up_parts.append("session_id = ?")
+            re_params.append(session_id)
+        re_where = " AND ".join(er_parts)
+        up_where = " AND ".join(up_parts)
 
-        # Pass 1: exact post match to sheets
-        rows = self.conn.execute(
-            f"""
-            SELECT er.entry_result_id, sh.horse_id
+        # Optional: scope brisnet source to session uploads
+        bh_session_filter = ""
+        bh_session_params: List[Any] = []
+        if session_id:
+            bh_session_filter = "AND bh.upload_id IN (?, ?)"
+            bh_session_params = [session_id, f"{session_id}_sec"]
+
+        # ---- Pass 1: exact post match → brisnet_horses ----
+        sql1 = f"""
+            SELECT er.entry_result_id, bh.brisnet_id
             FROM result_entries er
-            JOIN sheets_horses sh
-                ON er.track = sh.track
-                AND er.race_date = sh.race_date
-                AND er.race_number = sh.race_number
-                AND CAST(er.post AS TEXT) = CAST(sh.post AS TEXT)
-            {where}
-            """,
-            params,
-        ).fetchall()
+            JOIN brisnet_horses bh
+                ON er.track = bh.track
+                AND er.race_date = bh.race_date
+                AND er.race_number = bh.race_number
+                AND er.post = bh.post
+                {bh_session_filter}
+            WHERE er.brisnet_horse_id IS NULL AND {re_where}
+        """
+        rows = self.conn.execute(sql1, bh_session_params + re_params).fetchall()
         for r in rows:
             self.conn.execute(
-                "UPDATE result_entries SET sheets_horse_id = ? WHERE entry_result_id = ?",
-                (r["horse_id"], r["entry_result_id"]),
+                "UPDATE result_entries SET brisnet_horse_id = ? WHERE entry_result_id = ?",
+                (r["brisnet_id"], r["entry_result_id"]),
             )
-            linked += 1
+            linked_brisnet += 1
 
-        # Pass 2: name fallback for unlinked
-        rows2 = self.conn.execute(
-            f"""
-            SELECT er.entry_result_id, sh.horse_id
-            FROM result_entries er
-            JOIN sheets_horses sh
-                ON er.normalized_name = sh.normalized_name
-                AND er.track = sh.track
-                AND er.race_date = sh.race_date
-            WHERE er.sheets_horse_id IS NULL
-            """,
-        ).fetchall()
-        for r in rows2:
-            self.conn.execute(
-                "UPDATE result_entries SET sheets_horse_id = ? WHERE entry_result_id = ?",
-                (r["horse_id"], r["entry_result_id"]),
-            )
-            linked += 1
-
-        # Link brisnet via reconciliation
-        self.conn.execute(
-            """
-            UPDATE result_entries SET brisnet_horse_id = (
-                SELECT r.brisnet_id FROM reconciliation r
-                WHERE r.horse_id = result_entries.sheets_horse_id
+        # ---- Pass 2: reconciliation → sheets from brisnet ----
+        self.conn.execute(f"""
+            UPDATE result_entries SET sheets_horse_id = (
+                SELECT rc.horse_id FROM reconciliation rc
+                WHERE rc.brisnet_id = result_entries.brisnet_horse_id
                 LIMIT 1
             )
-            WHERE sheets_horse_id IS NOT NULL AND brisnet_horse_id IS NULL
-            """
-        )
+            WHERE brisnet_horse_id IS NOT NULL
+              AND sheets_horse_id IS NULL
+              AND {up_where}
+        """, re_params)
+        linked_sheets += self.conn.execute(
+            "SELECT changes()").fetchone()[0]
+
+        # ---- Pass 3: name fallback (with aliases) for still-unlinked ----
+        unlinked = self.conn.execute(f"""
+            SELECT er.entry_result_id, er.normalized_name, er.track, er.race_date,
+                   er.race_number, er.post
+            FROM result_entries er
+            WHERE er.sheets_horse_id IS NULL AND er.brisnet_horse_id IS NULL
+              AND {re_where}
+        """, re_params).fetchall()
+
+        for er in unlinked:
+            norm = er["normalized_name"]
+            resolved = self.resolve_alias(norm)
+            # Try sheets by name + track + date
+            sh = self.conn.execute("""
+                SELECT horse_id FROM sheets_horses
+                WHERE normalized_name = ? AND track = ? AND race_date = ?
+                LIMIT 1
+            """, (resolved, er["track"], er["race_date"])).fetchone()
+            if sh:
+                self.conn.execute(
+                    "UPDATE result_entries SET sheets_horse_id = ? WHERE entry_result_id = ?",
+                    (sh["horse_id"], er["entry_result_id"]),
+                )
+                linked_sheets += 1
+            else:
+                # Try brisnet by name + track + date
+                bh = self.conn.execute("""
+                    SELECT brisnet_id FROM brisnet_horses
+                    WHERE normalized_name = ? AND track = ? AND race_date = ?
+                    LIMIT 1
+                """, (resolved, er["track"], er["race_date"])).fetchone()
+                if bh:
+                    self.conn.execute(
+                        "UPDATE result_entries SET brisnet_horse_id = ? WHERE entry_result_id = ?",
+                        (bh["brisnet_id"], er["entry_result_id"]),
+                    )
+                    linked_brisnet += 1
+                else:
+                    reason = "no matching horse in DB"
+                    unmatched.append({
+                        "race": er["race_number"], "post": er["post"],
+                        "name": norm, "reason": reason,
+                    })
+
+        # ---- Pass 4: fill in missing cross-links via reconciliation ----
+        # brisnet → sheets
+        self.conn.execute(f"""
+            UPDATE result_entries SET sheets_horse_id = (
+                SELECT rc.horse_id FROM reconciliation rc
+                WHERE rc.brisnet_id = result_entries.brisnet_horse_id
+                LIMIT 1
+            )
+            WHERE brisnet_horse_id IS NOT NULL
+              AND sheets_horse_id IS NULL
+              AND {up_where}
+        """, re_params)
+        # sheets → brisnet
+        self.conn.execute(f"""
+            UPDATE result_entries SET brisnet_horse_id = (
+                SELECT rc.brisnet_id FROM reconciliation rc
+                WHERE rc.horse_id = result_entries.sheets_horse_id
+                LIMIT 1
+            )
+            WHERE sheets_horse_id IS NOT NULL
+              AND brisnet_horse_id IS NULL
+              AND {up_where}
+        """, re_params)
 
         self.conn.commit()
-        return {"linked": linked}
+
+        total_linked = linked_brisnet + linked_sheets
+        total_entries = self.conn.execute(
+            f"SELECT COUNT(*) FROM result_entries er WHERE {re_where}", re_params
+        ).fetchone()[0]
+        any_linked = self.conn.execute(
+            f"""SELECT COUNT(*) FROM result_entries er
+                WHERE (sheets_horse_id IS NOT NULL OR brisnet_horse_id IS NOT NULL)
+                  AND {re_where}""", re_params
+        ).fetchone()[0]
+        link_rate = round(any_linked / total_entries * 100, 1) if total_entries else 0.0
+
+        return {
+            "linked": total_linked,
+            "linked_brisnet": linked_brisnet,
+            "linked_sheets": linked_sheets,
+            "total_entries": total_entries,
+            "any_linked": any_linked,
+            "link_rate": link_rate,
+            "unmatched": unmatched[:20],
+        }
 
     def get_results_stats(
         self, track: str = "", date_from: str = "", date_to: str = "",

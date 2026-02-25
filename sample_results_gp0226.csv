@@ -1,52 +1,68 @@
 race_number,post,horse_name,finish_pos,odds,win_payoff,place_payoff,show_payoff
-1,1,Magical Twist,3,8.5,,,
-1,2,Bold Option,1,3.2,8.40,4.60,3.20
-1,3,Fast Tracker,5,12.0,,,
-1,4,Silver Lining,2,5.0,,5.80,3.60
-1,5,Night Runner,4,15.0,,,
-1,6,Storm Chaser,6,20.0,,,
-2,1,Morning Glory,2,6.0,,4.20,2.80
-2,2,Desert Wind,1,2.5,7.00,3.40,2.60
-2,3,Lucky Seven,4,9.0,,,
-2,4,Thunder Road,3,4.5,,,3.40
-2,5,River Stone,5,18.0,,,
-3,1,Crimson Tide,1,4.0,10.00,5.20,3.40
-3,2,Golden Eagle,3,7.5,,,
-3,3,Blue Diamond,2,3.0,,3.80,2.80
-3,4,Iron Will,5,25.0,,,
-3,5,Swift Justice,4,6.0,,,
-4,1,Alpha Strike,2,5.0,,4.40,3.00
-4,2,Wild Card,4,10.0,,,
-4,3,Brave Heart,1,2.0,6.00,3.60,2.40
-4,4,Cool Breeze,3,8.0,,,4.20
-4,5,Dark Horse,5,30.0,,,
-5,1,Royal Flush,3,7.0,,,
-5,2,Top Gun,1,1.5,5.00,2.80,2.20
-5,3,Midnight Sun,2,4.0,,3.60,2.60
-5,4,Flying Ace,5,12.0,,,
-5,5,Power Play,4,9.0,,,
-6,1,Sea Breeze,1,6.0,14.00,6.40,4.00
-6,2,Highland Mist,4,8.0,,,
-6,3,Prairie Wind,2,3.5,,4.00,3.00
-6,4,Canyon Run,3,5.0,,,3.60
-6,5,Coast Guard,5,15.0,,,
-7,1,Grand Slam,2,4.0,,4.60,3.20
-7,2,Hat Trick,3,6.0,,,
-7,3,Marathon Man,1,3.0,8.00,4.20,3.00
-7,4,Sprint King,4,10.0,,,
-7,5,Legend,5,20.0,,,
-8,1,Sunrise,3,8.0,,,
-8,2,Twilight,1,5.0,12.00,5.40,3.60
-8,3,Stardust,2,3.5,,4.00,2.80
-8,4,Moonlight,4,7.0,,,
-8,5,Eclipse,5,25.0,,,
-9,1,Champion,1,2.0,6.00,3.20,2.40
-9,2,Contender,2,4.5,,4.40,3.00
-9,3,Challenger,3,6.0,,,
-9,4,Underdog,4,15.0,,,
-9,5,Longshot,5,35.0,,,
-10,1,Fury Road,2,5.0,,5.00,3.40
-10,2,Iron Horse,3,7.0,,,
-10,3,Steel Resolve,4,9.0,,,
-10,4,Diamond Cutter,1,3.0,8.00,4.00,2.80
-10,5,Rocket Man,5,12.0,,,
+1,2,Vino for the Queen,4,7.3,,,
+1,4,Hope Diamond,2,4.8,,2.79,4.22
+1,5,Starlight Luna,3,14.3,,,3.77
+1,6,Spirit of Jamaica,5,2.2,,,
+1,8,It's Just a Game,1,3.7,7.87,5.69,3.68
+1,9,Dream Diamond,6,18.3,,,
+2,1,Too Loose La Trek,3,15.3,,,4.43
+2,2,Sister Slew,2,1.7,,6.87,4.09
+2,3,Max,1,9.5,19.31,7.75,3.01
+2,6,Resort,4,3.7,,,
+2,8,Role Play,5,3.8,,,
+3,1,Beautiful Crazy,4,14.1,,,
+3,2,Stubold,2,24.4,,4.4,3.66
+3,3,Windrush,1,21.0,43.24,7.2,3.73
+3,4,Slender Slipper,6,18.1,,,
+3,5,Mario's Sweet Girl,5,2.6,,,
+3,6,Ellagio,3,6.9,,,2.87
+3,7,Maerdama,7,3.4,,,
+4,3,Win Runner,2,21.9,,4.4,3.36
+4,7,Valen Time,1,21.1,42.53,4.26,4.01
+5,1,The Brigade,7,17.6,,,
+5,2,Hall Monitor,1,21.3,44.15,3.53,2.1
+5,3,Palace View,5,8.9,,,
+5,4,Two Beers by Ten,9,7.8,,,
+5,5,Fly Erik Fly,6,6.5,,,
+5,6,Cognoscenti,8,23.7,,,
+5,7,Genuine Gomo,10,22.1,,,
+5,8,Berlone,4,8.9,,,
+5,9,Replevin,3,16.9,,,3.19
+5,10,Back in the Saddle,2,23.0,,4.86,2.79
+5,11,War Officer,11,7.3,,,
+6,1,Brick City,1,22.6,46.0,3.47,4.99
+6,2,Redhotnotbothered,2,13.5,,2.73,2.14
+6,3,Holy Dancer,4,4.1,,,
+6,4,Step Slow,3,16.2,,,4.38
+6,5,Commendatore,6,11.4,,,
+6,6,Skyrush,5,3.0,,,
+7,1,Heaven's Promise,2,17.5,,2.86,4.65
+7,2,Show Off,1,19.1,39.74,4.17,2.88
+7,3,Ashima,6,5.2,,,
+7,4,Puckered,3,1.6,,,4.17
+7,5,Galley Head,7,18.4,,,
+7,6,I Love Venezuela,5,24.3,,,
+7,7,Storm West,4,19.4,,,
+8,1,Brown Diamond,7,19.4,,,
+8,2,Josie Joe,4,14.2,,,
+8,3,Munnings Talks,6,19.8,,,
+8,4,Amended Dreamer,2,14.0,,2.2,2.97
+8,5,Beside You,3,2.0,,,4.79
+8,8,Mia Familia,1,22.1,45.86,3.98,2.17
+8,10,Paradise Street,5,22.1,,,
+9,1,Muffin Music,2,4.5,,4.96,3.65
+9,2,Sweet Ember,5,7.7,,,
+9,3,Winplaceandshow,3,22.0,,,3.27
+9,4,Jestina,6,6.5,,,
+9,5,Duchess Eleanor,4,14.2,,,
+9,6,Samaritan's Joy,7,18.7,,,
+9,7,Drama,1,6.2,13.02,7.97,3.95
+10,1,Viable Asset,3,15.3,,,2.69
+10,2,Gigi Cake's,4,6.7,,,
+10,3,Dolce Vino,5,3.2,,,
+10,4,Chucky's Ride,7,16.3,,,
+10,5,Kate the Smate,6,6.9,,,
+10,6,Divinely Inspired,2,22.8,,7.19,2.21
+10,7,Fermi,1,7.1,15.54,3.44,2.4
+10,8,Rogue Runner,9,23.5,,,
+10,9,Practically Famous,8,14.9,,,

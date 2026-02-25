@@ -1642,9 +1642,28 @@ def results_page():
     st.header("Race Results & ROI")
     st.caption("Upload race results CSVs to track ROI by pick rank and cycle pattern.")
 
+    # --- Fetch sessions for dropdown ---
+    session_options = {"(none)": ""}
+    try:
+        sr = requests.get(f"{API_BASE_URL}/sessions", timeout=10)
+        if sr.status_code == 200:
+            for s in sr.json().get("sessions", []):
+                label = f"{s['track']} {s['date']} ({s['session_id'][:8]}...)"
+                session_options[label] = s["session_id"]
+    except Exception:
+        pass
+
     # --- Upload CSV ---
     st.subheader("Import Results")
     csv_file = st.file_uploader("Upload results CSV", type=["csv"], key="results_csv_uploader")
+
+    sel_session = st.selectbox(
+        "Attach to session (links results to picks)",
+        options=list(session_options.keys()),
+        key="results_session_select",
+    )
+    chosen_sid = session_options.get(sel_session, "")
+
     col_t, col_d = st.columns(2)
     with col_t:
         r_track = st.text_input("Track (e.g. GP)", key="results_track")
@@ -1660,14 +1679,25 @@ def results_page():
                     params["track"] = r_track
                 if r_date:
                     params["date"] = r_date
+                if chosen_sid:
+                    params["session_id"] = chosen_sid
                 resp = requests.post(
                     f"{API_BASE_URL}/results/upload",
                     files=files, params=params, timeout=60,
                 )
                 if resp.status_code == 200:
                     res = resp.json()
-                    st.success(f"Imported {res['races']} races, {res['entries']} entries, "
-                               f"{res['linked']} linked to horses")
+                    link_rate = res.get("link_rate", 0)
+                    st.success(
+                        f"Imported {res['races']} races, {res['entries']} entries, "
+                        f"{res['linked']} linked ({link_rate:.1f}%)"
+                    )
+                    # Show unmatched
+                    unmatched = res.get("unmatched", [])
+                    if unmatched:
+                        with st.expander(f"Unmatched entries ({len(unmatched)})", expanded=False):
+                            for u in unmatched:
+                                st.text(f"R{u['race']} P{u['post']} {u['name']}: {u['reason']}")
                 else:
                     st.error(f"Error: {resp.text}")
             except requests.exceptions.ConnectionError:
@@ -1730,7 +1760,7 @@ def results_page():
 
     if not roi_rank and not roi_cycle:
         st.info("Results imported but no entries linked to picks yet. "
-                "Run the engine on matching sessions first, then re-link.")
+                "Attach results to a session or ensure BRISNET data is uploaded for the same card.")
 
 
 def statistics_page():

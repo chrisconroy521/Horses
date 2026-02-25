@@ -746,10 +746,26 @@ async def results_stats(track: str = "", date_from: str = "", date_to: str = "")
 
 
 @app.post("/results/upload")
-async def upload_results(file: UploadFile = File(...), track: str = "", date: str = ""):
-    """Upload a results CSV and ingest into DB."""
+async def upload_results(
+    file: UploadFile = File(...), track: str = "", date: str = "",
+    session_id: str = "",
+):
+    """Upload a results CSV and ingest into DB.
+
+    If *session_id* is provided, results are scoped to that session and
+    linking uses the session's uploads for matching.  Track/date are pulled
+    from the session metadata when not explicitly provided.
+    """
     if not file.filename.lower().endswith('.csv'):
         raise HTTPException(status_code=400, detail="Only CSV files are allowed")
+
+    # Pull track/date from session when available
+    if session_id and session_id in sessions:
+        s = sessions[session_id]
+        if not track:
+            track = s.get("track", "")
+        if not date:
+            date = s.get("date", "")
 
     content = await file.read()
     import tempfile
@@ -758,7 +774,10 @@ async def upload_results(file: UploadFile = File(...), track: str = "", date: st
 
     try:
         from ingest_results import ingest_csv
-        result = ingest_csv(_db, str(tmp), track=track, race_date=date)
+        result = ingest_csv(
+            _db, str(tmp), track=track, race_date=date,
+            session_id=session_id,
+        )
         return {"success": True, **result}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
