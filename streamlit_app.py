@@ -690,19 +690,110 @@ def _compute_workout_grades(race_horses):
     return grades
 
 
+def _compute_signal_score(p, intent, wg):
+    """Compute display-only signal score (0-100). Does NOT affect ranking."""
+    base = p.confidence * 100
+
+    components = {}
+    # Trainer
+    if intent.get("badge") == "TRAINER_EDGE":
+        components["trainer"] = +6
+    elif intent.get("badge") == "OVERBET_WARNING":
+        components["trainer"] = -4
+
+    # Workout
+    grade = (wg or {}).get("grade", "")
+    if grade:
+        components["workout"] = {"A": 6, "B": 3, "C": 0, "D": -4}.get(grade, 0)
+    else:
+        components["workout"] = -6  # no works
+
+    # Bounce
+    if p.bounce_risk:
+        components["bounce"] = -8
+
+    # New top setup bonus
+    if p.new_top_setup and not p.bounce_risk:
+        components["setup"] = +4
+
+    score = int(max(0, min(100, round(base + sum(components.values())))))
+    return {"score": score, "components": components, "base": round(base)}
+
+
+def _render_race_snapshot(display_projections, odds_data, odds_by_post, race_num, bias):
+    """Render compact Race Snapshot header for quick go/no-go decisions."""
+    field_size = len(display_projections)
+    non_tossed = [p for p in display_projections if not p.tossed]
+    with_figs = sum(1 for p in non_tossed if p.bias_score != 0)
+    quality_pct = (with_figs / len(non_tossed) * 100) if non_tossed else 0
+
+    # Simplified chaos (mirrors bet_builder formula)
+    ranked = sorted(display_projections, key=lambda p: p.bias_score, reverse=True)
+    chaos = 0.0
+    if quality_pct < 80:
+        chaos += 0.25
+    if ranked and ranked[0].confidence < 0.50:
+        chaos += 0.20
+    if len(ranked) >= 2:
+        gap = abs(ranked[0].bias_score - ranked[1].bias_score)
+        if gap < 1.0:
+            chaos += 0.15
+    top_mid = ranked[0].proj_mid if ranked and hasattr(ranked[0], 'proj_mid') else 0
+    cluster = sum(1 for p in ranked[1:] if hasattr(p, 'proj_mid') and abs(p.proj_mid - top_mid) <= 2.0)
+    if cluster > 3:
+        chaos += 0.15
+    if ranked and ranked[0].bounce_risk:
+        chaos += 0.10
+    if field_size >= 12:
+        chaos += 0.05
+    chaos = min(chaos, 1.0)
+    chaos_label = "Low" if chaos <= 0.30 else "Med" if chaos <= 0.55 else "High"
+
+    # Odds coverage
+    odds_count = 0
+    if odds_data or odds_by_post:
+        odds_count = sum(
+            1 for p in display_projections
+            if _lookup_odds(race_num, p.name, p.post, odds_data, odds_by_post)
+            and _lookup_odds(race_num, p.name, p.post, odds_data, odds_by_post).get("odds_decimal") is not None
+        )
+
+    # Bias weights
+    weights = bias.normalized_weights()
+    dominant = max(weights, key=weights.get)
+    dominant_pct = weights[dominant] * 100
+    bias_str = f"{dominant} {dominant_pct:.0f}%" if dominant_pct > 30 else "Neutral"
+
+    # Bounce count
+    bounce_count = sum(1 for p in display_projections if p.bounce_risk)
+
+    st.markdown("**Race Snapshot**")
+    c1, c2, c3, c4, c5 = st.columns(5)
+    with c1:
+        st.metric("Quality", f"{quality_pct:.0f}%")
+    with c2:
+        st.metric("Chaos", chaos_label)
+    with c3:
+        st.metric("Odds", f"{odds_count}/{field_size}")
+    with c4:
+        st.metric("Bias", bias_str)
+    with c5:
+        st.metric("Bounce", f"{bounce_count}")
+
+
 def _render_top_picks(display_projections, race_number, race_horses=None,
                       trainer_intents=None, workout_grades=None, key_prefix="eng"):
-    """Render top 3 pick cards for a race."""
+    """Render top 3 pick cards with structured Signal Summary."""
     top3 = display_projections[:3]
     trainer_intents = trainer_intents or {}
+    workout_grades = workout_grades or {}
     st.subheader(f"Top 3 Picks \u2014 Race {race_number}")
     for rank, p in enumerate(top3, 1):
+        intent = trainer_intents.get(p.name, {})
+        wg = workout_grades.get(p.name, {})
+        sig = _compute_signal_score(p, intent, wg)
+
         col1, col2, col3 = st.columns([1, 2, 3])
-        badge = ""
-        if p.new_top_setup:
-            badge = " \u2b50\u2b50" if p.new_top_confidence >= 75 else " \u2b50"
-        if p.bounce_risk:
-            badge += " \u26a0\ufe0f"
         with col1:
             st.metric(label=f"#{rank}", value=p.name)
         with col2:
@@ -711,25 +802,46 @@ def _render_top_picks(display_projections, race_number, race_horses=None,
                 f"Fig {p.projected_low:.1f}\u2013{p.projected_high:.1f} | "
                 f"Conf {p.confidence:.0%}"
             )
+            score_color = "green" if sig["score"] >= 75 else "blue" if sig["score"] >= 60 else "orange" if sig["score"] >= 45 else "red"
+            st.markdown(f"Signal: :{score_color}[**{sig['score']}**] / 100")
         with col3:
-            if badge:
-                st.markdown(f"**Tags:** {badge.strip()}")
-            intent = trainer_intents.get(p.name, {})
-            if intent.get("badge"):
-                color = "green" if intent["badge"] == "TRAINER_EDGE" else "orange"
-                st.markdown(f":{color}[{intent['badge']}]")
-            wg = (workout_grades or {}).get(p.name, {})
+            # --- Positives ---
+            positives = []
+            if p.projection_type in ("PAIRED", "REBOUND", "IMPROVING"):
+                positives.append(f"{p.projection_type} cycle")
+            if intent.get("badge") == "TRAINER_EDGE":
+                label = intent.get("label", "edge")
+                positives.append(f"Trainer edge: {label}")
             if wg.get("grade") in ("A", "B"):
-                wg_color = "green" if wg["grade"] == "A" else "blue"
-                st.markdown(f":{wg_color}[WORK_{wg['grade']}]")
-            elif wg.get("grade") == "D":
-                st.markdown(":red[WORK_D]")
-            st.caption(p.summary)
+                positives.append(f"Workout {wg['grade']}: {wg.get('detail', '')}")
             if p.new_top_setup:
-                st.caption(
-                    f"New Top Setup: {p.new_top_setup_type} "
-                    f"({p.new_top_confidence}%) \u2014 {p.new_top_explanation}"
-                )
+                positives.append(f"New Top: {p.new_top_setup_type} ({p.new_top_confidence}%)")
+
+            # --- Negatives ---
+            negatives = []
+            if p.bounce_risk:
+                negatives.append("Bounce risk")
+            if intent.get("badge") == "OVERBET_WARNING":
+                negatives.append("Overbet trainer warning")
+            if wg.get("grade") == "D":
+                negatives.append(f"Stale workout ({wg.get('detail', '')})")
+            elif not wg.get("grade"):
+                negatives.append("No works")
+            if p.projection_type == "TAIL_OFF":
+                negatives.append("Declining form")
+
+            if positives:
+                pos_lines = "  \n".join(f":green[+] {s}" for s in positives)
+                st.markdown(pos_lines)
+            if negatives:
+                neg_lines = "  \n".join(f":red[-] {s}" for s in negatives)
+                st.markdown(neg_lines)
+            if not positives and not negatives:
+                st.caption("No strong signals")
+
+            with st.expander("Raw Tags", expanded=False):
+                st.caption(", ".join(p.tags) if p.tags else "none")
+                st.caption(p.summary)
 
 
 def _render_ranked_table(display_projections, race_horses, show_odds,
@@ -792,7 +904,7 @@ def _render_ranked_table(display_projections, race_horses, show_odds,
         # Workout grade column
         wg = workout_grades.get(p.name, {})
         if wg.get("grade"):
-            row['Workout Grade'] = f"{wg['grade']} \u2014 {wg.get('detail', '')}"
+            row['Workout Grade'] = wg['grade']
         else:
             row['Workout Grade'] = "\u2014"
         if is_brisnet_data:
@@ -808,6 +920,28 @@ def _render_ranked_table(display_projections, race_horses, show_odds,
         rows.append(row)
 
     render_styled_table(pd.DataFrame(rows))
+
+    # --- Workout & Trainer Details expander ---
+    has_detail = any(
+        workout_grades.get(p.name, {}).get("grade") or trainer_intents.get(p.name, {}).get("pattern")
+        for p in display_projections
+    )
+    if has_detail:
+        with st.expander("Workout & Trainer Details", expanded=False):
+            for p in display_projections:
+                wg = workout_grades.get(p.name, {})
+                intent = trainer_intents.get(p.name, {})
+                if wg.get("grade") or intent.get("pattern"):
+                    parts = [f"**{p.name}**"]
+                    if wg.get("grade"):
+                        parts.append(f"Workout {wg['grade']}: {wg.get('detail', '')}")
+                    if intent.get("label"):
+                        win_pct = intent.get("win_pct")
+                        pct_str = ""
+                        if win_pct is not None:
+                            pct_str = f" ({win_pct}%)" if isinstance(win_pct, (int, float)) and win_pct > 1 else f" ({win_pct:.0%})"
+                        parts.append(f"Trainer: {intent['label']}{pct_str}")
+                    st.markdown(" | ".join(parts))
 
 
 def _render_analysis_expanders(sorted_by_bias, audit, race_horses, key_prefix="eng"):
@@ -1883,6 +2017,8 @@ def dashboard_page():
                         sorted_by_bias = sorted(d_projs, key=lambda p: p.bias_score, reverse=True)
                         _dash_trainer_intents = _compute_trainer_intents(race_horses)
                         _dash_workout_grades = _compute_workout_grades(race_horses)
+                        _render_race_snapshot(sorted_by_bias,
+                                              _d_odds_data, _d_odds_by_post, dash_race, dash_bias)
                         _render_top_picks(sorted_by_bias, dash_race,
                                           race_horses=race_horses,
                                           trainer_intents=_dash_trainer_intents,
@@ -2303,6 +2439,10 @@ def engine_page():
         # --- Trainer intent (batch fetch) ---
         _trainer_intents = _compute_trainer_intents(race_horses)
         _workout_grades = _compute_workout_grades(race_horses)
+
+        # --- Race Snapshot ---
+        _render_race_snapshot(display_projections,
+                              _odds_data, _odds_by_post, selected_race, bias)
 
         # --- Top 3 Picks ---
         _render_top_picks(display_projections, selected_race,
