@@ -102,7 +102,7 @@ def main():
     # Sidebar
     st.sidebar.header("Navigation")
     pages = [
-        "Daily Best WIN Bets", "Dashboard", "Upload PDF", "Engine",
+        "Daily Best WIN Bets", "Dual Mode Betting", "Dashboard", "Upload PDF", "Engine",
         "Results", "Results Inbox", "Bet Builder", "Calibration",
         "Database", "Horse Past Performance", "Horses Overview",
         "Individual Horse Analysis", "Race Analysis", "Statistics",
@@ -140,6 +140,8 @@ def main():
         results_inbox_page()
     elif page == "Daily Best WIN Bets":
         daily_wins_page()
+    elif page == "Dual Mode Betting":
+        dual_mode_page()
     elif page == "Calibration":
         calibration_page()
     elif page == "Statistics":
@@ -3929,6 +3931,265 @@ def daily_wins_page():
                     st.info("No daily plans found for this date.")
         except Exception:
             pass
+
+
+def dual_mode_page():
+    st.header("Dual Mode Betting")
+    st.caption("Profit Mode (WIN + DD) and Score Mode (Pick3 + Pick6) under separate budgets.")
+
+    # --- Session selector ---
+    try:
+        sr = api_get("/sessions", timeout=10)
+        races = sr.json().get("sessions", []) if sr.ok else []
+    except Exception:
+        races = []
+
+    if not races:
+        st.info("No sessions found. Upload and run the engine first.")
+        return
+
+    def _dm_label(x):
+        name = x.get('primary_pdf_filename') or x.get('original_filename', 'unknown')
+        trk = x.get('track') or x.get('track_name', '')
+        dt = x.get('date') or x.get('race_date', '')
+        return f"{name} | {trk} | {dt}"
+
+    dm_sel = st.selectbox("Session:", options=races, format_func=_dm_label, key="dm_session")
+    if not dm_sel:
+        return
+
+    dm_sid = dm_sel.get('session_id') or dm_sel.get('id')
+    dm_track = dm_sel.get('track') or dm_sel.get('track_name', '')
+    dm_date = dm_sel.get('date') or dm_sel.get('race_date', '')
+
+    # --- Mode toggle ---
+    mode = st.radio("Mode", ["Profit", "Score", "Both"], horizontal=True, index=2, key="dm_mode")
+    mode_val = mode.lower()
+
+    # --- Settings ---
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.markdown("**Shared**")
+        bankroll = st.number_input("Bankroll ($)", min_value=50, max_value=50000,
+                                   value=1000, step=50, key="dm_bankroll")
+        score_pct = st.slider("Score budget %", 5, 50, 20, key="dm_score_pct") / 100.0
+        risk_profile = st.selectbox("Risk profile",
+                                    ["conservative", "standard", "aggressive"],
+                                    index=1, key="dm_risk_profile")
+    with c2:
+        st.markdown("**Profit Mode**")
+        profit_overlay = st.number_input("Min overlay", min_value=1.0, max_value=3.0,
+                                         value=1.25, step=0.05, key="dm_profit_overlay")
+        profit_odds_a = st.number_input("Min odds (A)", min_value=1.0, max_value=20.0,
+                                         value=2.0, step=0.5, key="dm_profit_odds_a")
+        profit_odds_b = st.number_input("Min odds (B)", min_value=1.0, max_value=20.0,
+                                         value=4.0, step=0.5, key="dm_profit_odds_b")
+    with c3:
+        st.markdown("**Score Mode**")
+        score_odds = st.number_input("Min odds", min_value=3.0, max_value=30.0,
+                                      value=8.0, step=1.0, key="dm_score_odds")
+        score_overlay = st.number_input("Min overlay", min_value=1.0, max_value=4.0,
+                                         value=1.60, step=0.1, key="dm_score_overlay")
+        mandatory = st.checkbox("Mandatory payout / big carryover day", key="dm_mandatory")
+
+    # Budget preview
+    profit_bud = bankroll * (1.0 - score_pct)
+    score_bud = bankroll * score_pct
+    bc1, bc2 = st.columns(2)
+    bc1.caption(f"Profit budget: ${profit_bud:.0f}")
+    bc2.caption(f"Score budget: ${score_bud:.0f}")
+
+    # --- Generate ---
+    if st.button("Generate Plan", type="primary", key="dm_generate"):
+        payload = {
+            "session_id": dm_sid,
+            "track": dm_track,
+            "race_date": dm_date,
+            "mode": mode_val,
+            "bankroll": bankroll,
+            "risk_profile": risk_profile,
+            "score_budget_pct": score_pct,
+            "profit_min_overlay": profit_overlay,
+            "profit_min_odds_a": profit_odds_a,
+            "profit_min_odds_b": profit_odds_b,
+            "score_min_odds": score_odds,
+            "score_min_overlay": score_overlay,
+            "mandatory_payout": mandatory,
+            "save": True,
+        }
+        try:
+            resp = api_post("/bets/dual-mode", json=payload, timeout=30)
+            if resp.ok:
+                st.session_state["dm_result"] = resp.json()
+            elif resp.status_code == 404:
+                st.warning("No predictions found. Run the engine on this session first.")
+            else:
+                st.error(f"Error: {resp.text}")
+        except Exception as e:
+            st.error(f"Error: {e}")
+
+    # --- Display ---
+    result = st.session_state.get("dm_result")
+    if not result:
+        return
+
+    plan = result.get("plan", {})
+    if result.get("plan_id"):
+        st.caption(f"Plan saved (ID {result['plan_id']})")
+
+    # Budget summary
+    m1, m2, m3 = st.columns(3)
+    profit_data = plan.get("profit")
+    score_data = plan.get("score")
+    p_risk = profit_data["total_risk"] if profit_data else 0
+    s_risk = score_data["total_risk"] if score_data else 0
+    p_bud = plan.get("profit_budget", 0)
+    s_bud = plan.get("score_budget", 0)
+
+    m1.metric("Profit", f"${p_risk:.0f} / ${p_bud:.0f}")
+    m2.metric("Score", f"${s_risk:.0f} / ${s_bud:.0f}")
+    m3.metric("Total", f"${plan.get('total_risk', 0):.0f} / ${plan.get('settings', {}).get('bankroll', 0):.0f}")
+
+    # Progress bars
+    pb1, pb2 = st.columns(2)
+    with pb1:
+        st.progress(min(p_risk / p_bud, 1.0) if p_bud > 0 else 0.0, text="Profit budget used")
+    with pb2:
+        st.progress(min(s_risk / s_bud, 1.0) if s_bud > 0 else 0.0, text="Score budget used")
+
+    # Top warnings
+    for w in plan.get("warnings", []):
+        st.warning(w)
+
+    # --- Profit Mode ---
+    if profit_data:
+        with st.expander("Profit Mode — WIN + Daily Double", expanded=(mode_val in ("profit", "both"))):
+            wins = profit_data.get("win_bets", [])
+            if wins:
+                st.subheader(f"WIN Bets ({len(wins)})")
+                rows = []
+                for w in wins:
+                    rows.append({
+                        "Race": w.get("race", ""),
+                        "Horse": w.get("horse", ""),
+                        "Grade": w.get("grade", ""),
+                        "Odds": w.get("odds", ""),
+                        "Model%": f"{w.get('model_prob', 0):.1%}",
+                        "Overlay": f"{w.get('overlay', 0):.2f}x",
+                        "Stake": f"${w.get('stake', 0):.0f}",
+                        "Cycle": w.get("projection_type", ""),
+                        "Single": "YES" if w.get("true_single") else "",
+                    })
+                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+            else:
+                st.info("No qualifying WIN bets.")
+
+            dds = profit_data.get("dd_plans", [])
+            if dds:
+                st.subheader(f"Daily Doubles ({len(dds)})")
+                for dd in dds:
+                    r1 = dd.get("start_race", 0)
+                    r2 = r1 + 1
+                    st.markdown(f"**R{r1}–R{r2}** | {dd.get('leg1_grade', '?')}/{dd.get('leg2_grade', '?')} | ${dd.get('total_cost', 0):.0f}")
+                    tickets = dd.get("tickets", [])
+                    if tickets:
+                        t_rows = []
+                        for i, t in enumerate(tickets, 1):
+                            t_rows.append({
+                                "#": i,
+                                f"Leg 1 (R{r1})": ", ".join(t.get("leg1", [])),
+                                f"Leg 2 (R{r2})": ", ".join(t.get("leg2", [])),
+                                "Cost": f"${t.get('cost', 0):.0f}",
+                                "Type": t.get("reason", ""),
+                            })
+                        st.dataframe(pd.DataFrame(t_rows), use_container_width=True, hide_index=True)
+
+            # Passed races
+            passed = profit_data.get("passed_races", [])
+            if passed:
+                st.subheader("Passed Races")
+                for pr in passed:
+                    st.caption(f"R{pr['race']}: PASS — {pr['reason']}")
+
+            for w in profit_data.get("warnings", []):
+                st.warning(w)
+
+    # --- Score Mode ---
+    if score_data:
+        with st.expander("Score Mode — Pick3 + Pick6", expanded=(mode_val in ("score", "both"))):
+            if score_data.get("budget_exhausted"):
+                st.error("Score budget exhausted — hard stop")
+
+            p3s = score_data.get("pick3_plans", [])
+            if p3s:
+                st.subheader(f"Pick3 Plans ({len(p3s)})")
+                for p3 in p3s:
+                    legs = p3.get("legs", [])
+                    st.markdown(f"**R{p3.get('start_race', '?')}–R{p3.get('start_race', 0) + 2}** | ${p3.get('cost', 0):.0f}")
+                    if legs:
+                        lr = []
+                        for j, lg in enumerate(legs, 1):
+                            lr.append({
+                                "Leg": j,
+                                "Race": lg.get("race_number", ""),
+                                "Grade": lg.get("grade", ""),
+                                "Horses": ", ".join(lg.get("horses", [])),
+                                "Count": lg.get("horse_count", 0),
+                            })
+                        st.dataframe(pd.DataFrame(lr), use_container_width=True, hide_index=True)
+            else:
+                st.info("No qualifying Pick3 windows.")
+
+            p6 = score_data.get("pick6_plan")
+            if p6:
+                st.subheader("Pick6 Plan")
+                st.markdown(f"**R{p6.get('start_race', '?')}–R{p6.get('start_race', 0) + 5}** | ${p6.get('cost', 0):.0f}")
+                legs = p6.get("legs", [])
+                if legs:
+                    lr = []
+                    for j, lg in enumerate(legs, 1):
+                        lr.append({
+                            "Leg": j,
+                            "Race": lg.get("race_number", ""),
+                            "Grade": lg.get("grade", ""),
+                            "Horses": ", ".join(lg.get("horses", [])),
+                            "Count": lg.get("horse_count", 0),
+                        })
+                    st.dataframe(pd.DataFrame(lr), use_container_width=True, hide_index=True)
+            elif settings_val := plan.get("settings", {}):
+                if settings_val.get("mandatory_payout"):
+                    st.info("No qualifying Pick6 sequence found.")
+                else:
+                    st.info("Pick6 requires mandatory payout flag.")
+
+            # Passed sequences
+            passed_seq = score_data.get("passed_sequences", [])
+            if passed_seq:
+                st.subheader("Passed Sequences")
+                for ps in passed_seq:
+                    races_str = ", ".join(f"R{r}" for r in ps.get("races", []))
+                    st.caption(f"{races_str}: PASS — {ps['reason']}")
+
+            for w in score_data.get("warnings", []):
+                st.warning(w)
+
+    # --- Export ---
+    from bet_builder import dual_mode_plan_to_text, DualModeDayPlan, ProfitModePlan, ScoreModePlan
+    # Reconstruct lightweight plan for text export
+    plan_obj = DualModeDayPlan(
+        mode=plan.get("mode", "both"),
+        profit=ProfitModePlan(**{k: v for k, v in (profit_data or {}).items()
+                                 if k in ProfitModePlan.__dataclass_fields__}) if profit_data else None,
+        score=ScoreModePlan(**{k: v for k, v in (score_data or {}).items()
+                               if k in ScoreModePlan.__dataclass_fields__}) if score_data else None,
+        total_risk=plan.get("total_risk", 0),
+        profit_budget=plan.get("profit_budget", 0),
+        score_budget=plan.get("score_budget", 0),
+        settings=plan.get("settings", {}),
+        warnings=plan.get("warnings", []),
+    )
+    st.download_button("Export Text", dual_mode_plan_to_text(plan_obj),
+                       "dual_mode_plan.txt", "text/plain", key="dm_export_txt")
 
 
 def bet_builder_page():

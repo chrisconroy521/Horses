@@ -203,6 +203,100 @@ def _estimate_win_prob(confidence: float, bias_score: float, field_size: int) ->
 
 
 # ---------------------------------------------------------------------------
+# Model Probability (Harville-style) + Overlay
+# ---------------------------------------------------------------------------
+
+_HARVILLE_EXP = 0.81
+
+
+def _model_prob(sheets_rank: int, confidence: float, spread: float,
+                field_size: int) -> float:
+    """Harville-style win probability from sheets-first rank + confidence + spread.
+
+    1. Base = rank weighting: 1/rank^0.81 normalised across field
+    2. Confidence multiplier: 0.5 + confidence  (0.75 – 1.40)
+    3. Spread penalty: 1/(1 + spread/20)  (tighter = better)
+    Clamped to [0.02, 0.65].
+    """
+    rank = max(1, sheets_rank)
+    fs = max(1, field_size)
+    base = 1.0 / (rank ** _HARVILLE_EXP)
+    denom = sum(1.0 / (r ** _HARVILLE_EXP) for r in range(1, fs + 1))
+    harville = base / denom if denom > 0 else 1.0 / fs
+    conf_mult = 0.5 + confidence
+    spread_pen = 1.0 / (1.0 + max(spread, 0.0) / 20.0)
+    return max(0.02, min(harville * conf_mult * spread_pen, 0.65))
+
+
+def _compute_race_probs(
+    projections: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Compute normalised model_prob for every horse in a race.
+
+    Returns list of dicts (one per horse, same order) with keys:
+        horse_name, post, model_prob, implied_prob, overlay, odds
+    """
+    field_size = len(projections)
+    if field_size == 0:
+        return []
+
+    raw: List[tuple] = []
+    for p in projections:
+        mp = _model_prob(
+            p.get("sheets_rank", field_size),
+            p.get("confidence", 0.5),
+            p.get("spread", 3.0),
+            field_size,
+        )
+        raw.append((p, mp))
+
+    total = sum(mp for _, mp in raw)
+    scale = 1.0 / total if total > 0 else 1.0
+
+    results: List[Dict[str, Any]] = []
+    for proj, mp in raw:
+        normed = max(0.02, min(mp * scale, 0.65))
+        odds = proj.get("odds")
+        implied = 1.0 / (odds + 1.0) if odds and odds > 0 else None
+        overlay = normed / implied if implied and implied > 0 else None
+        results.append({
+            "horse_name": _horse_name(proj),
+            "post": str(proj.get("post", "")),
+            "model_prob": round(normed, 4),
+            "implied_prob": round(implied, 4) if implied is not None else None,
+            "overlay": round(overlay, 3) if overlay is not None else None,
+            "odds": odds,
+        })
+    return results
+
+
+def is_true_single(proj: Dict[str, Any]) -> bool:
+    """TRUE SINGLE: high-cycle, high-confidence, no bounce risk."""
+    return (
+        proj.get("cycle_priority", 0) >= 5
+        and proj.get("confidence", 0) >= 0.65
+        and not proj.get("bounce_risk", False)
+    )
+
+
+def _is_score_trigger(
+    proj: Dict[str, Any],
+    overlay: Optional[float],
+    score_min_odds: float = 8.0,
+    score_min_overlay: float = 1.60,
+) -> bool:
+    """Score-mode gate: longshot + big overlay + no bounce risk."""
+    odds = proj.get("odds")
+    if odds is None or odds < score_min_odds:
+        return False
+    if overlay is None or overlay < score_min_overlay:
+        return False
+    if proj.get("bounce_risk", False):
+        return False
+    return True
+
+
+# ---------------------------------------------------------------------------
 # Race Grading
 # ---------------------------------------------------------------------------
 
@@ -1068,6 +1162,84 @@ class DailyDoublePlan:
     settings: Dict[str, Any] = field(default_factory=dict)
 
 
+# ---------------------------------------------------------------------------
+# Dual Mode Betting — Settings + Plan dataclasses
+# ---------------------------------------------------------------------------
+
+@dataclass
+class DualModeSettings:
+    """Settings for dual-mode (Profit + Score) betting."""
+    bankroll: float = 1000.0
+    risk_profile: str = "standard"
+
+    # Budget split
+    score_budget_pct: float = 0.20          # 20% of bankroll → Score mode
+
+    # Profit mode thresholds
+    profit_min_overlay: float = 1.25        # WIN requires 25% overlay
+    profit_min_odds_a: float = 2.0
+    profit_min_odds_b: float = 4.0
+    figure_quality_threshold: float = 0.80
+
+    # Score mode thresholds
+    score_min_odds: float = 8.0             # 8/1 minimum
+    score_min_overlay: float = 1.60         # 60% overlay
+    score_max_c_per_leg: int = 2            # cap C horses in chaos leg
+    score_require_singles: int = 2          # min singles for P6
+
+    # DD allocation multipliers
+    dd_aa_pct: float = 1.0                  # full alloc for A×A
+    dd_ab_pct: float = 0.5                  # half alloc for A×B / B×A
+
+    # Shared
+    paper_mode: bool = True
+    mandatory_payout: bool = False          # user flags big carryover day
+
+    @property
+    def profit_budget(self) -> float:
+        return self.bankroll * (1.0 - self.score_budget_pct)
+
+    @property
+    def score_budget(self) -> float:
+        return self.bankroll * self.score_budget_pct
+
+
+@dataclass
+class ProfitModePlan:
+    """Profit mode output: WIN bets + Daily Double plans."""
+    win_bets: List[Dict[str, Any]] = field(default_factory=list)
+    dd_plans: List[Dict[str, Any]] = field(default_factory=list)
+    total_risk: float = 0.0
+    budget: float = 0.0
+    passed_races: List[Dict[str, Any]] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)
+
+
+@dataclass
+class ScoreModePlan:
+    """Score mode output: Pick3 and/or Pick6 plans."""
+    pick3_plans: List[Dict[str, Any]] = field(default_factory=list)
+    pick6_plan: Optional[Dict[str, Any]] = None
+    total_risk: float = 0.0
+    budget: float = 0.0
+    budget_exhausted: bool = False
+    passed_sequences: List[Dict[str, Any]] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)
+
+
+@dataclass
+class DualModeDayPlan:
+    """Combined Profit + Score mode output for a full day."""
+    mode: str = "both"
+    profit: Optional[ProfitModePlan] = None
+    score: Optional[ScoreModePlan] = None
+    total_risk: float = 0.0
+    profit_budget: float = 0.0
+    score_budget: float = 0.0
+    settings: Dict[str, Any] = field(default_factory=dict)
+    warnings: List[str] = field(default_factory=list)
+
+
 def _tier_horses(
     projs: List[Dict[str, Any]],
     settings: BetSettings,
@@ -1113,11 +1285,7 @@ def _tier_horses(
 
     # TRUE SINGLE detection
     top = a_pool[0] if a_pool else non_tossed[0]
-    has_single = (
-        top.get("cycle_priority", 0) >= 5
-        and top.get("confidence", 0) >= 0.65
-        and not top.get("bounce_risk", False)
-    )
+    has_single = is_true_single(top)
 
     return a_horses, b_horses, c_horses, grade, is_chaos, has_single
 
@@ -1314,4 +1482,573 @@ def daily_double_plan_to_text(plan: DailyDoublePlan) -> str:
         lines.append("Warnings:")
         for w in plan.warnings:
             lines.append(f"  - {w}")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Dual Mode Builders
+# ---------------------------------------------------------------------------
+
+def build_profit_mode_plan(
+    race_projections: Dict[int, List[Dict[str, Any]]],
+    settings: DualModeSettings,
+    race_quality: Optional[Dict[int, float]] = None,
+    track: str = "",
+) -> ProfitModePlan:
+    """Build Profit Mode plan: WIN bets + Daily Doubles.
+
+    WIN entry: TRUE SINGLE or (Grade A + figure_quality >= threshold).
+    WIN overlay gate: >= settings.profit_min_overlay (1.25).
+    DD: one leg TRUE SINGLE or both legs A/B with quality ok.
+    DD allocation: A×A full, A×B/B×A half.
+    """
+    rq = race_quality or {}
+    multiplier = _risk_multiplier(settings.risk_profile)
+    budget = settings.profit_budget
+
+    # Build a BetSettings shim for grade_race() compatibility
+    _bs = BetSettings(
+        bankroll=budget,
+        risk_profile=settings.risk_profile,
+        figure_quality_threshold=settings.figure_quality_threshold,
+        min_odds_a=settings.profit_min_odds_a,
+        min_odds_b=settings.profit_min_odds_b,
+    )
+
+    win_bets: List[Dict[str, Any]] = []
+    passed_races: List[Dict[str, Any]] = []
+    warnings: List[str] = []
+    win_risk = 0.0
+    qualifying_races: set = set()  # races that pass the entry gate
+
+    race_nums = sorted(race_projections.keys())
+
+    for rn in race_nums:
+        projs = race_projections[rn]
+        if not projs:
+            continue
+
+        quality = rq.get(rn)
+        grade, reasons = grade_race(projs, _bs, figure_quality_pct=quality)
+
+        # Sort by sheets-first rank
+        ranked = sorted(
+            projs,
+            key=lambda p: (-p.get("cycle_priority", 2), -p.get("raw_score", 0), -p.get("confidence", 0)),
+        )
+        non_tossed = [p for p in ranked if not p.get("tossed", False)]
+        if not non_tossed:
+            passed_races.append({"race": rn, "reason": "All horses tossed"})
+            continue
+        top = non_tossed[0]
+
+        # Entry gate: TRUE SINGLE or (Grade A + quality)
+        single = is_true_single(top)
+        quality_ok = quality is None or quality >= settings.figure_quality_threshold
+        if not single and not (grade == "A" and quality_ok):
+            reason = f"Grade {grade}"
+            if not single:
+                reason += ", no TRUE SINGLE"
+            if quality is not None and not quality_ok:
+                reason += f", figure quality {quality:.0%}"
+            passed_races.append({"race": rn, "reason": reason})
+            continue
+
+        qualifying_races.add(rn)
+
+        # Compute model probs + overlay
+        probs = _compute_race_probs(projs)
+        top_name = _horse_name(top)
+        top_prob = next((p for p in probs if p["horse_name"] == top_name), None)
+        if top_prob is None:
+            passed_races.append({"race": rn, "reason": "Could not compute model prob"})
+            continue
+
+        odds = top_prob["odds"]
+        overlay = top_prob["overlay"]
+        mp = top_prob["model_prob"]
+
+        # Odds check
+        if odds is None:
+            passed_races.append({"race": rn, "reason": "No ML odds available"})
+            continue
+
+        # Overlay gate
+        if overlay is None or overlay < settings.profit_min_overlay:
+            ov_str = f"{overlay:.2f}" if overlay else "N/A"
+            passed_races.append({
+                "race": rn,
+                "reason": f"Overlay {ov_str} below {settings.profit_min_overlay} threshold",
+            })
+            continue
+
+        # Kelly sizing
+        kf = kelly_fraction(odds, mp)
+        if kf <= 0:
+            passed_races.append({"race": rn, "reason": "Negative Kelly (no edge)"})
+            continue
+
+        raw_stake = budget * kf * multiplier
+        stake = round(raw_stake / _BET_BASE) * _BET_BASE
+        stake = max(stake, _BET_BASE)
+
+        # Budget check
+        if win_risk + stake > budget:
+            warnings.append(f"R{rn}: stake ${stake:.0f} would exceed profit budget")
+            stake = max(_BET_BASE, round((budget - win_risk) / _BET_BASE) * _BET_BASE)
+            if stake <= 0:
+                break
+
+        fair_odds = (1.0 / mp) - 1.0 if mp > 0 else None
+        win_bets.append({
+            "race": rn,
+            "track": track,
+            "horse": top_name,
+            "post": str(top.get("post", "")),
+            "grade": grade,
+            "odds": odds,
+            "odds_raw": top.get("odds_raw", ""),
+            "model_prob": round(mp, 4),
+            "implied_prob": top_prob["implied_prob"],
+            "overlay": round(overlay, 3),
+            "fair_odds": round(fair_odds, 2) if fair_odds else None,
+            "kelly_fraction": round(kf, 4),
+            "stake": stake,
+            "projection_type": top.get("projection_type", ""),
+            "confidence": top.get("confidence", 0),
+            "true_single": single,
+        })
+        win_risk += stake
+
+    # --- DD scan: consecutive qualifying pairs ---
+    dd_plans: List[Dict[str, Any]] = []
+    dd_risk = 0.0
+    dd_budget_remaining = budget - win_risk
+
+    strat = MultiRaceStrategy(a_count=1, b_count=3, c_count=2)
+
+    for i in range(len(race_nums) - 1):
+        r1, r2 = race_nums[i], race_nums[i + 1]
+        if r2 != r1 + 1:
+            continue  # must be consecutive
+        if r1 not in qualifying_races and r2 not in qualifying_races:
+            continue  # at least one leg must qualify
+
+        projs1 = race_projections.get(r1, [])
+        projs2 = race_projections.get(r2, [])
+        if not projs1 or not projs2:
+            continue
+
+        q1 = rq.get(r1)
+        q2 = rq.get(r2)
+        g1, _ = grade_race(projs1, _bs, figure_quality_pct=q1)
+        g2, _ = grade_race(projs2, _bs, figure_quality_pct=q2)
+
+        # Check top horses for TRUE SINGLE
+        top1 = sorted(projs1, key=lambda p: (-p.get("cycle_priority", 2), -p.get("raw_score", 0)))
+        top1 = [p for p in top1 if not p.get("tossed", False)] or top1
+        top2 = sorted(projs2, key=lambda p: (-p.get("cycle_priority", 2), -p.get("raw_score", 0)))
+        top2 = [p for p in top2 if not p.get("tossed", False)] or top2
+
+        single1 = is_true_single(top1[0]) if top1 else False
+        single2 = is_true_single(top2[0]) if top2 else False
+
+        # DD gate: one leg TRUE SINGLE or both legs A/B with quality ok
+        both_ab = g1 in ("A", "B") and g2 in ("A", "B")
+        q_ok = (q1 is None or q1 >= settings.figure_quality_threshold) and (
+            q2 is None or q2 >= settings.figure_quality_threshold
+        )
+        if not single1 and not single2 and not (both_ab and q_ok):
+            continue
+
+        if dd_budget_remaining <= 0:
+            break
+
+        dd_projs = {r1: projs1, r2: projs2}
+        dd_quality = {}
+        if q1 is not None:
+            dd_quality[r1] = q1
+        if q2 is not None:
+            dd_quality[r2] = q2
+
+        dd_plan = build_daily_double_plan(
+            dd_projs, r1, dd_budget_remaining, _bs, strat,
+            race_quality=dd_quality or None,
+        )
+        if dd_plan.passed:
+            continue
+
+        # Scale tickets by allocation pcts
+        for t in dd_plan.tickets:
+            reason_lower = t.reason.lower()
+            if "a x a" in reason_lower or "single" in reason_lower:
+                t.cost = round(t.cost * settings.dd_aa_pct / _BET_BASE) * _BET_BASE
+            else:
+                t.cost = round(t.cost * settings.dd_ab_pct / _BET_BASE) * _BET_BASE
+            t.cost = max(t.cost, _BET_BASE)
+        dd_plan.total_cost = sum(t.cost for t in dd_plan.tickets)
+
+        if dd_risk + dd_plan.total_cost > dd_budget_remaining:
+            warnings.append(f"DD R{r1}-R{r2}: cost ${dd_plan.total_cost:.0f} exceeds remaining budget")
+            continue
+
+        dd_plans.append(daily_double_plan_to_dict(dd_plan))
+        dd_risk += dd_plan.total_cost
+
+    total = win_risk + dd_risk
+    return ProfitModePlan(
+        win_bets=win_bets,
+        dd_plans=dd_plans,
+        total_risk=total,
+        budget=budget,
+        passed_races=passed_races,
+        warnings=warnings,
+    )
+
+
+def build_score_mode_plan(
+    race_projections: Dict[int, List[Dict[str, Any]]],
+    settings: DualModeSettings,
+    race_quality: Optional[Dict[int, float]] = None,
+) -> ScoreModePlan:
+    """Build Score Mode plan: Pick3 (exactly 1 chaos leg) and/or Pick6 (mandatory payout).
+
+    Score trigger: odds >= 8/1, overlay >= 1.6, no bounce risk.
+    Pick3: exactly 1 chaos leg in 3-race window, C capped at score_max_c_per_leg.
+    Pick6: mandatory_payout + >= score_require_singles singles.
+    Hard stop when score_budget exhausted.
+    """
+    rq = race_quality or {}
+    budget = settings.score_budget
+    if budget <= 0:
+        return ScoreModePlan(budget=0.0, budget_exhausted=True,
+                             warnings=["Score budget is zero"])
+
+    _bs = BetSettings(
+        bankroll=budget,
+        risk_profile=settings.risk_profile,
+        figure_quality_threshold=settings.figure_quality_threshold,
+    )
+
+    race_nums = sorted(race_projections.keys())
+    score_spent = 0.0
+    pick3_plans: List[Dict[str, Any]] = []
+    pick6_plan: Optional[Dict[str, Any]] = None
+    passed_sequences: List[Dict[str, Any]] = []
+    warnings: List[str] = []
+
+    # Pre-compute grades and score triggers per race
+    race_grades: Dict[int, str] = {}
+    race_has_trigger: Dict[int, bool] = {}
+    race_has_single: Dict[int, bool] = {}
+
+    for rn in race_nums:
+        projs = race_projections[rn]
+        if not projs:
+            continue
+        quality = rq.get(rn)
+        grade, _ = grade_race(projs, _bs, figure_quality_pct=quality)
+        race_grades[rn] = grade
+
+        probs = _compute_race_probs(projs)
+        ranked = sorted(projs, key=lambda p: (-p.get("cycle_priority", 2), -p.get("raw_score", 0)))
+        non_tossed = [p for p in ranked if not p.get("tossed", False)] or ranked
+        top = non_tossed[0]
+
+        top_name = _horse_name(top)
+        top_prob = next((p for p in probs if p["horse_name"] == top_name), None)
+        overlay = top_prob["overlay"] if top_prob else None
+
+        race_has_trigger[rn] = _is_score_trigger(
+            top, overlay,
+            score_min_odds=settings.score_min_odds,
+            score_min_overlay=settings.score_min_overlay,
+        )
+        race_has_single[rn] = is_true_single(top)
+
+    # --- Pick3 scan: 3-race sliding window ---
+    for i in range(len(race_nums) - 2):
+        if score_spent >= budget:
+            break
+
+        window = [race_nums[i], race_nums[i + 1], race_nums[i + 2]]
+        # Must be consecutive
+        if window[1] != window[0] + 1 or window[2] != window[1] + 1:
+            continue
+
+        chaos_legs = []
+        for rn in window:
+            quality = rq.get(rn)
+            is_chaos = (race_grades.get(rn) == "C" or
+                        (quality is not None and quality < settings.figure_quality_threshold))
+            if is_chaos:
+                chaos_legs.append(rn)
+
+        if len(chaos_legs) != 1:
+            passed_sequences.append({
+                "races": window,
+                "reason": f"Need exactly 1 chaos leg, found {len(chaos_legs)}",
+            })
+            continue
+
+        # Need at least one score trigger
+        has_trigger = any(race_has_trigger.get(rn, False) for rn in window)
+        if not has_trigger:
+            passed_sequences.append({
+                "races": window,
+                "reason": "No score-trigger horse (odds >= 8/1 + overlay >= 1.6)",
+            })
+            continue
+
+        # Build Pick3 with capped C count for chaos leg
+        p3_projs = {rn: race_projections[rn] for rn in window}
+        p3_quality = {rn: rq[rn] for rn in window if rn in rq}
+        strategy = MultiRaceStrategy(
+            a_count=1, b_count=3,
+            c_count=min(2, settings.score_max_c_per_leg),
+        )
+        p3_plan = build_multi_race_plan(
+            p3_projs, window[0], "PICK3", budget - score_spent,
+            strategy, _bs,
+            race_quality=p3_quality or None,
+            c_leg_override=True,  # we already validated chaos
+        )
+        if p3_plan.cost > budget - score_spent:
+            passed_sequences.append({
+                "races": window,
+                "reason": f"Cost ${p3_plan.cost:.0f} exceeds remaining score budget ${budget - score_spent:.0f}",
+            })
+            continue
+
+        pick3_plans.append(multi_race_plan_to_dict(p3_plan))
+        score_spent += p3_plan.cost
+
+    # --- Pick6 gate ---
+    if not settings.mandatory_payout:
+        passed_sequences.append({
+            "races": race_nums[:6] if len(race_nums) >= 6 else race_nums,
+            "reason": "Mandatory payout not flagged by user",
+        })
+    elif len(race_nums) < 6:
+        passed_sequences.append({
+            "races": race_nums,
+            "reason": f"Need 6 consecutive races, only {len(race_nums)} available",
+        })
+    elif score_spent >= budget:
+        warnings.append("Score budget exhausted before Pick6")
+    else:
+        # Find best 6-race consecutive window with most singles
+        best_window = None
+        best_singles = 0
+        best_has_trigger = False
+        for i in range(len(race_nums) - 5):
+            window = race_nums[i:i + 6]
+            # Check consecutive
+            if any(window[j + 1] != window[j] + 1 for j in range(5)):
+                continue
+            singles = sum(1 for rn in window if race_has_single.get(rn, False))
+            trigger = any(race_has_trigger.get(rn, False) for rn in window)
+            if singles > best_singles or (singles == best_singles and trigger and not best_has_trigger):
+                best_window = window
+                best_singles = singles
+                best_has_trigger = trigger
+
+        if best_window is None:
+            passed_sequences.append({
+                "races": race_nums[:6],
+                "reason": "No valid 6-race consecutive window found",
+            })
+        elif best_singles < settings.score_require_singles:
+            passed_sequences.append({
+                "races": best_window,
+                "reason": f"Only {best_singles} singles, need >= {settings.score_require_singles}",
+            })
+        elif not best_has_trigger:
+            passed_sequences.append({
+                "races": best_window,
+                "reason": "No score-trigger horse in window",
+            })
+        else:
+            p6_projs = {rn: race_projections[rn] for rn in best_window}
+            p6_quality = {rn: rq[rn] for rn in best_window if rn in rq}
+            strategy = MultiRaceStrategy(
+                a_count=1, b_count=3,
+                c_count=min(2, settings.score_max_c_per_leg),
+            )
+            p6_plan = build_multi_race_plan(
+                p6_projs, best_window[0], "PICK6", budget - score_spent,
+                strategy, _bs,
+                race_quality=p6_quality or None,
+                c_leg_override=True,
+            )
+            if p6_plan.cost > budget - score_spent:
+                warnings.append(
+                    f"Pick6 cost ${p6_plan.cost:.0f} exceeds remaining score budget "
+                    f"${budget - score_spent:.0f}"
+                )
+            else:
+                pick6_plan = multi_race_plan_to_dict(p6_plan)
+                score_spent += p6_plan.cost
+
+    exhausted = score_spent >= budget
+    return ScoreModePlan(
+        pick3_plans=pick3_plans,
+        pick6_plan=pick6_plan,
+        total_risk=score_spent,
+        budget=budget,
+        budget_exhausted=exhausted,
+        passed_sequences=passed_sequences,
+        warnings=warnings,
+    )
+
+
+def build_dual_mode_day_plan(
+    race_projections: Dict[int, List[Dict[str, Any]]],
+    settings: DualModeSettings,
+    mode: str = "both",
+    race_quality: Optional[Dict[int, float]] = None,
+    track: str = "",
+) -> DualModeDayPlan:
+    """Orchestrate Profit + Score modes under separate budgets."""
+    profit_plan = None
+    score_plan = None
+    top_warnings: List[str] = []
+
+    if mode in ("profit", "both"):
+        profit_plan = build_profit_mode_plan(
+            race_projections, settings,
+            race_quality=race_quality, track=track,
+        )
+    if mode in ("score", "both"):
+        score_plan = build_score_mode_plan(
+            race_projections, settings,
+            race_quality=race_quality,
+        )
+
+    total = 0.0
+    if profit_plan:
+        total += profit_plan.total_risk
+    if score_plan:
+        total += score_plan.total_risk
+
+    if total > settings.bankroll:
+        top_warnings.append(
+            f"Total risk ${total:.0f} exceeds bankroll ${settings.bankroll:.0f}"
+        )
+
+    return DualModeDayPlan(
+        mode=mode,
+        profit=profit_plan,
+        score=score_plan,
+        total_risk=total,
+        profit_budget=settings.profit_budget,
+        score_budget=settings.score_budget,
+        settings={
+            "bankroll": settings.bankroll,
+            "risk_profile": settings.risk_profile,
+            "score_budget_pct": settings.score_budget_pct,
+            "profit_min_overlay": settings.profit_min_overlay,
+            "score_min_odds": settings.score_min_odds,
+            "score_min_overlay": settings.score_min_overlay,
+            "mandatory_payout": settings.mandatory_payout,
+        },
+        warnings=top_warnings,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Dual Mode Serializers
+# ---------------------------------------------------------------------------
+
+def _profit_plan_to_dict(plan: ProfitModePlan) -> Dict[str, Any]:
+    return {
+        "win_bets": plan.win_bets,
+        "dd_plans": plan.dd_plans,
+        "total_risk": plan.total_risk,
+        "budget": plan.budget,
+        "passed_races": plan.passed_races,
+        "warnings": plan.warnings,
+    }
+
+
+def _score_plan_to_dict(plan: ScoreModePlan) -> Dict[str, Any]:
+    return {
+        "pick3_plans": plan.pick3_plans,
+        "pick6_plan": plan.pick6_plan,
+        "total_risk": plan.total_risk,
+        "budget": plan.budget,
+        "budget_exhausted": plan.budget_exhausted,
+        "passed_sequences": plan.passed_sequences,
+        "warnings": plan.warnings,
+    }
+
+
+def dual_mode_plan_to_dict(plan: DualModeDayPlan) -> Dict[str, Any]:
+    """Serialize DualModeDayPlan to JSON-friendly dict."""
+    return {
+        "mode": plan.mode,
+        "profit": _profit_plan_to_dict(plan.profit) if plan.profit else None,
+        "score": _score_plan_to_dict(plan.score) if plan.score else None,
+        "total_risk": plan.total_risk,
+        "profit_budget": plan.profit_budget,
+        "score_budget": plan.score_budget,
+        "settings": plan.settings,
+        "warnings": plan.warnings,
+    }
+
+
+def dual_mode_plan_to_text(plan: DualModeDayPlan) -> str:
+    """Human-readable summary of a dual-mode day plan."""
+    lines = ["=== DUAL MODE BETTING ==="]
+    lines.append(f"Mode: {plan.mode.upper()}")
+    lines.append(f"Bankroll: ${plan.settings.get('bankroll', 0):.0f}")
+    lines.append(f"Profit budget: ${plan.profit_budget:.0f}  |  Score budget: ${plan.score_budget:.0f}")
+    lines.append(f"Total risk: ${plan.total_risk:.0f}")
+    lines.append("")
+
+    if plan.profit:
+        p = plan.profit
+        lines.append("--- PROFIT MODE ---")
+        if p.win_bets:
+            lines.append(f"WIN bets ({len(p.win_bets)}):")
+            for w in p.win_bets:
+                lines.append(
+                    f"  R{w['race']} {w['horse']}  odds={w.get('odds', '?')}"
+                    f"  overlay={w.get('overlay', '?')}  stake=${w.get('stake', 0):.0f}"
+                )
+        if p.dd_plans:
+            lines.append(f"Daily Doubles ({len(p.dd_plans)}):")
+            for dd in p.dd_plans:
+                lines.append(f"  R{dd['start_race']}-R{dd['start_race']+1}  ${dd['total_cost']:.0f}")
+        if p.passed_races:
+            lines.append("Passed races:")
+            for pr in p.passed_races:
+                lines.append(f"  R{pr['race']}: {pr['reason']}")
+        lines.append(f"Profit risk: ${p.total_risk:.0f} / ${p.budget:.0f}")
+        lines.append("")
+
+    if plan.score:
+        s = plan.score
+        lines.append("--- SCORE MODE ---")
+        if s.budget_exhausted:
+            lines.append("BUDGET EXHAUSTED — hard stop")
+        if s.pick3_plans:
+            lines.append(f"Pick3 plans ({len(s.pick3_plans)}):")
+            for p3 in s.pick3_plans:
+                lines.append(f"  R{p3['start_race']}-R{p3['start_race']+2}  ${p3['cost']:.0f}")
+        if s.pick6_plan:
+            lines.append(f"Pick6: R{s.pick6_plan['start_race']}-R{s.pick6_plan['start_race']+5}  ${s.pick6_plan['cost']:.0f}")
+        if s.passed_sequences:
+            lines.append("Passed sequences:")
+            for ps in s.passed_sequences:
+                races_str = "-".join(str(r) for r in ps["races"])
+                lines.append(f"  R{races_str}: {ps['reason']}")
+        lines.append(f"Score risk: ${s.total_risk:.0f} / ${s.budget:.0f}")
+        lines.append("")
+
+    if plan.warnings:
+        lines.append("Warnings:")
+        for w in plan.warnings:
+            lines.append(f"  - {w}")
+
     return "\n".join(lines)

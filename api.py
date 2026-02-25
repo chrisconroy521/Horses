@@ -23,6 +23,7 @@ from bet_builder import (
     build_daily_wins, DailyWinCandidate,
     MultiRaceStrategy, build_multi_race_plan, multi_race_plan_to_dict,
     build_daily_double_plan, daily_double_plan_to_dict,
+    DualModeSettings, build_dual_mode_day_plan, dual_mode_plan_to_dict,
 )
 import hashlib
 import subprocess as _subprocess
@@ -1759,6 +1760,94 @@ async def build_daily_double(payload: dict):
             total_risk=plan.total_cost, paper_mode=True,
             engine_version=_ENGINE_VERSION,
             plan_type="daily_double",
+        )
+        result["plan_id"] = plan_id
+
+    return result
+
+
+@app.post("/bets/dual-mode")
+async def build_dual_mode(payload: dict):
+    """Generate dual-mode (Profit + Score) betting plan.
+
+    Body: {session_id, track, race_date, mode?,
+           bankroll?, risk_profile?, score_budget_pct?,
+           profit_min_overlay?, score_min_odds?, score_min_overlay?,
+           mandatory_payout?, save?}
+    """
+    sid = payload.get("session_id", "")
+    track = payload.get("track", "")
+    race_date = payload.get("race_date", "")
+    if not sid or not track or not race_date:
+        raise HTTPException(status_code=400, detail="session_id, track, race_date required")
+
+    mode = payload.get("mode", "both")
+    if mode not in ("profit", "score", "both"):
+        raise HTTPException(status_code=400, detail="mode must be profit, score, or both")
+
+    settings = DualModeSettings(
+        bankroll=float(payload.get("bankroll", 1000)),
+        risk_profile=payload.get("risk_profile", "standard"),
+        score_budget_pct=float(payload.get("score_budget_pct", 0.20)),
+        profit_min_overlay=float(payload.get("profit_min_overlay", 1.25)),
+        profit_min_odds_a=float(payload.get("profit_min_odds_a", 2.0)),
+        profit_min_odds_b=float(payload.get("profit_min_odds_b", 4.0)),
+        figure_quality_threshold=float(payload.get("figure_quality_threshold", 0.80)),
+        score_min_odds=float(payload.get("score_min_odds", 8.0)),
+        score_min_overlay=float(payload.get("score_min_overlay", 1.60)),
+        score_max_c_per_leg=int(payload.get("score_max_c_per_leg", 2)),
+        score_require_singles=int(payload.get("score_require_singles", 2)),
+        mandatory_payout=bool(payload.get("mandatory_payout", False)),
+        paper_mode=bool(payload.get("paper_mode", True)),
+    )
+
+    # Load predictions
+    preds = _db.get_predictions_vs_results(track=track, race_date=race_date, session_id=sid)
+    if not preds:
+        raise HTTPException(status_code=404, detail="No predictions found for this card")
+
+    # Inject ML odds
+    ml_snaps = _db.get_odds_snapshots_full(track=track, race_date=race_date, source='morning_line')
+    ml_by_name: Dict[tuple, dict] = {}
+    for snap in ml_snaps:
+        key = (snap["race_number"], snap["normalized_name"])
+        ml_by_name[key] = snap
+    for p in preds:
+        if p.get('odds') is None:
+            key = (p.get('race_number', 0), _db._normalize_name(p.get('horse_name', '')))
+            snap = ml_by_name.get(key)
+            if snap and snap.get('odds_decimal') is not None:
+                p['odds'] = snap['odds_decimal']
+                p['odds_raw'] = snap.get('odds_raw', '')
+
+    # Group by race_number
+    race_projections: Dict[int, list] = {}
+    for p in preds:
+        rn = p.get("race_number", 0)
+        race_projections.setdefault(rn, []).append(p)
+
+    # Compute figure quality per race
+    race_quality: Dict[int, float] = {}
+    for rn, projs in race_projections.items():
+        non_tossed = [p for p in projs if not p.get("tossed", False)]
+        with_figs = sum(1 for p in non_tossed if p.get("bias_score", 0) != 0)
+        race_quality[rn] = with_figs / len(non_tossed) if non_tossed else 0.0
+
+    plan = build_dual_mode_day_plan(
+        race_projections, settings, mode=mode,
+        race_quality=race_quality, track=track,
+    )
+    plan_dict = dual_mode_plan_to_dict(plan)
+
+    result: Dict[str, Any] = {"plan": plan_dict}
+
+    if payload.get("save", False):
+        plan_id = _db.save_bet_plan(
+            session_id=sid, track=track, race_date=race_date,
+            settings_dict=plan.settings, plan_dict=plan_dict,
+            total_risk=plan.total_risk, paper_mode=settings.paper_mode,
+            engine_version=_ENGINE_VERSION,
+            plan_type="dual_mode",
         )
         result["plan_id"] = plan_id
 
