@@ -85,10 +85,6 @@ class Persistence:
                 PRIMARY KEY (session_id, race_no)
             );
 
-            /* ============================================================
-               Cumulative horse database tables
-               ============================================================ */
-
             CREATE TABLE IF NOT EXISTS uploads (
                 upload_id    TEXT PRIMARY KEY,
                 source_type  TEXT NOT NULL,
@@ -211,6 +207,43 @@ class Persistence:
                 PRIMARY KEY (canonical_name, alias_name)
             );
             CREATE INDEX IF NOT EXISTS idx_alias_alias ON horse_aliases(alias_name);
+
+            CREATE TABLE IF NOT EXISTS result_races (
+                result_id    INTEGER PRIMARY KEY AUTOINCREMENT,
+                track        TEXT NOT NULL,
+                race_date    TEXT NOT NULL,
+                race_number  INTEGER NOT NULL,
+                surface      TEXT,
+                distance     TEXT,
+                winner_post  INTEGER,
+                winner_name  TEXT,
+                imported_at  TEXT NOT NULL,
+                UNIQUE(track, race_date, race_number)
+            );
+            CREATE INDEX IF NOT EXISTS idx_rr_track_date ON result_races(track, race_date);
+
+            CREATE TABLE IF NOT EXISTS result_entries (
+                entry_result_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                track           TEXT NOT NULL,
+                race_date       TEXT NOT NULL,
+                race_number     INTEGER NOT NULL,
+                post            INTEGER NOT NULL,
+                horse_name      TEXT,
+                normalized_name TEXT,
+                finish_pos      INTEGER,
+                beaten_lengths  REAL,
+                odds            REAL,
+                win_payoff      REAL,
+                place_payoff    REAL,
+                show_payoff     REAL,
+                sheets_horse_id  INTEGER,
+                brisnet_horse_id INTEGER,
+                projection_type  TEXT,
+                pick_rank        INTEGER,
+                UNIQUE(track, race_date, race_number, post)
+            );
+            CREATE INDEX IF NOT EXISTS idx_re_track_date ON result_entries(track, race_date);
+            CREATE INDEX IF NOT EXISTS idx_re_name ON result_entries(normalized_name);
             """
         )
         self.conn.commit()
@@ -1311,3 +1344,259 @@ class Persistence:
             "unmatched_brisnet": unmatched_brisnet_list,
             "collision_warnings": collision_warnings,
         }
+
+    # ==================================================================
+    # Race results
+    # ==================================================================
+
+    def insert_race_result(
+        self, track: str, race_date: str, race_number: int,
+        surface: str = "", distance: str = "",
+        winner_post: int = 0, winner_name: str = "",
+    ) -> Optional[int]:
+        """Insert or update a race result row. Returns result_id."""
+        track = self._normalize_track(track)
+        race_date = self._normalize_date(race_date)
+        now = datetime.utcnow().isoformat()
+        cur = self.conn.execute(
+            """
+            INSERT INTO result_races(track, race_date, race_number, surface,
+                                     distance, winner_post, winner_name, imported_at)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(track, race_date, race_number) DO UPDATE SET
+                surface=excluded.surface, distance=excluded.distance,
+                winner_post=excluded.winner_post, winner_name=excluded.winner_name,
+                imported_at=excluded.imported_at
+            """,
+            (track, race_date, race_number, surface, distance,
+             winner_post, winner_name, now),
+        )
+        self.conn.commit()
+        return cur.lastrowid
+
+    def insert_entry_result(
+        self, track: str, race_date: str, race_number: int, post: int,
+        horse_name: str = "", finish_pos: int = 0,
+        beaten_lengths: float = None, odds: float = None,
+        win_payoff: float = None, place_payoff: float = None,
+        show_payoff: float = None,
+    ) -> Optional[int]:
+        """Insert or update an entry result row. Returns entry_result_id."""
+        track = self._normalize_track(track)
+        race_date = self._normalize_date(race_date)
+        norm = self._normalize_name(horse_name)
+        cur = self.conn.execute(
+            """
+            INSERT INTO result_entries(track, race_date, race_number, post,
+                horse_name, normalized_name, finish_pos, beaten_lengths,
+                odds, win_payoff, place_payoff, show_payoff)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(track, race_date, race_number, post) DO UPDATE SET
+                horse_name=excluded.horse_name,
+                normalized_name=excluded.normalized_name,
+                finish_pos=excluded.finish_pos,
+                beaten_lengths=excluded.beaten_lengths,
+                odds=excluded.odds,
+                win_payoff=excluded.win_payoff,
+                place_payoff=excluded.place_payoff,
+                show_payoff=excluded.show_payoff
+            """,
+            (track, race_date, race_number, post, horse_name, norm,
+             finish_pos, beaten_lengths, odds,
+             win_payoff, place_payoff, show_payoff),
+        )
+        self.conn.commit()
+        return cur.lastrowid
+
+    def link_results_to_entries(self, track: str = "", race_date: str = "") -> Dict[str, int]:
+        """Link result_entries to sheets/brisnet horses and pick rankings.
+
+        Pass 1: (track, race_date, race_number, post) exact to sheets_horses
+        Pass 2: normalized_name fallback
+        """
+        track = self._normalize_track(track) if track else ""
+        race_date = self._normalize_date(race_date) if race_date else ""
+        linked = 0
+
+        where = "WHERE er.sheets_horse_id IS NULL"
+        params: List[Any] = []
+        if track:
+            where += " AND er.track = ?"
+            params.append(track)
+        if race_date:
+            where += " AND er.race_date = ?"
+            params.append(race_date)
+
+        # Pass 1: exact post match to sheets
+        rows = self.conn.execute(
+            f"""
+            SELECT er.entry_result_id, sh.horse_id
+            FROM result_entries er
+            JOIN sheets_horses sh
+                ON er.track = sh.track
+                AND er.race_date = sh.race_date
+                AND er.race_number = sh.race_number
+                AND CAST(er.post AS TEXT) = CAST(sh.post AS TEXT)
+            {where}
+            """,
+            params,
+        ).fetchall()
+        for r in rows:
+            self.conn.execute(
+                "UPDATE result_entries SET sheets_horse_id = ? WHERE entry_result_id = ?",
+                (r["horse_id"], r["entry_result_id"]),
+            )
+            linked += 1
+
+        # Pass 2: name fallback for unlinked
+        rows2 = self.conn.execute(
+            f"""
+            SELECT er.entry_result_id, sh.horse_id
+            FROM result_entries er
+            JOIN sheets_horses sh
+                ON er.normalized_name = sh.normalized_name
+                AND er.track = sh.track
+                AND er.race_date = sh.race_date
+            WHERE er.sheets_horse_id IS NULL
+            """,
+        ).fetchall()
+        for r in rows2:
+            self.conn.execute(
+                "UPDATE result_entries SET sheets_horse_id = ? WHERE entry_result_id = ?",
+                (r["horse_id"], r["entry_result_id"]),
+            )
+            linked += 1
+
+        # Link brisnet via reconciliation
+        self.conn.execute(
+            """
+            UPDATE result_entries SET brisnet_horse_id = (
+                SELECT r.brisnet_id FROM reconciliation r
+                WHERE r.horse_id = result_entries.sheets_horse_id
+                LIMIT 1
+            )
+            WHERE sheets_horse_id IS NOT NULL AND brisnet_horse_id IS NULL
+            """
+        )
+
+        self.conn.commit()
+        return {"linked": linked}
+
+    def get_results_stats(
+        self, track: str = "", date_from: str = "", date_to: str = "",
+    ) -> Dict[str, Any]:
+        """ROI and results statistics, optionally filtered."""
+        where_parts = ["1=1"]
+        params: List[Any] = []
+        if track:
+            where_parts.append("er.track = ?")
+            params.append(self._normalize_track(track))
+        if date_from:
+            where_parts.append("er.race_date >= ?")
+            params.append(self._normalize_date(date_from))
+        if date_to:
+            where_parts.append("er.race_date <= ?")
+            params.append(self._normalize_date(date_to))
+        where = " AND ".join(where_parts)
+
+        # Total races with results
+        total_races = self.conn.execute(
+            f"SELECT COUNT(DISTINCT track || race_date || race_number) FROM result_entries er WHERE {where}",
+            params,
+        ).fetchone()[0]
+
+        # Total entries with odds
+        total_with_odds = self.conn.execute(
+            f"SELECT COUNT(*) FROM result_entries er WHERE odds IS NOT NULL AND {where}",
+            params,
+        ).fetchone()[0]
+
+        total_entries = self.conn.execute(
+            f"SELECT COUNT(*) FROM result_entries er WHERE {where}",
+            params,
+        ).fetchone()[0]
+
+        linked_entries = self.conn.execute(
+            f"SELECT COUNT(*) FROM result_entries er WHERE sheets_horse_id IS NOT NULL AND {where}",
+            params,
+        ).fetchone()[0]
+
+        linking_rate = (linked_entries / total_entries * 100) if total_entries > 0 else 0.0
+
+        # ROI by pick rank (1 = top pick)
+        roi_by_rank = self._calc_roi_by_rank(where, params)
+
+        # ROI by projection_type (cycle label)
+        roi_by_cycle = self._calc_roi_by_cycle(where, params)
+
+        return {
+            "total_races": total_races,
+            "total_entries": total_entries,
+            "total_with_odds": total_with_odds,
+            "linked_entries": linked_entries,
+            "linking_rate": round(linking_rate, 1),
+            "roi_by_rank": roi_by_rank,
+            "roi_by_cycle": roi_by_cycle,
+        }
+
+    def _calc_roi_by_rank(self, where: str, params: list) -> List[Dict]:
+        """ROI for $2 win bets on each pick rank."""
+        rows = self.conn.execute(
+            f"""
+            SELECT er.pick_rank,
+                   COUNT(*) as bets,
+                   SUM(CASE WHEN er.finish_pos = 1 THEN 1 ELSE 0 END) as wins,
+                   SUM(CASE WHEN er.finish_pos = 1 AND er.win_payoff IS NOT NULL
+                            THEN er.win_payoff ELSE 0 END) as payoff_sum
+            FROM result_entries er
+            WHERE er.pick_rank IS NOT NULL AND er.pick_rank > 0 AND {where}
+            GROUP BY er.pick_rank
+            ORDER BY er.pick_rank
+            """,
+            params,
+        ).fetchall()
+        result = []
+        for r in rows:
+            bets = r["bets"]
+            cost = bets * 2.0
+            payoff = r["payoff_sum"] or 0
+            roi = ((payoff - cost) / cost * 100) if cost > 0 else 0
+            result.append({
+                "rank": r["pick_rank"],
+                "bets": bets,
+                "wins": r["wins"],
+                "win_pct": round(r["wins"] / bets * 100, 1) if bets > 0 else 0,
+                "roi_pct": round(roi, 1),
+            })
+        return result
+
+    def _calc_roi_by_cycle(self, where: str, params: list) -> List[Dict]:
+        """ROI for $2 win bets grouped by cycle/projection type."""
+        rows = self.conn.execute(
+            f"""
+            SELECT er.projection_type,
+                   COUNT(*) as bets,
+                   SUM(CASE WHEN er.finish_pos = 1 THEN 1 ELSE 0 END) as wins,
+                   SUM(CASE WHEN er.finish_pos = 1 AND er.win_payoff IS NOT NULL
+                            THEN er.win_payoff ELSE 0 END) as payoff_sum
+            FROM result_entries er
+            WHERE er.projection_type IS NOT NULL AND er.projection_type != '' AND {where}
+            GROUP BY er.projection_type
+            ORDER BY er.projection_type
+            """,
+            params,
+        ).fetchall()
+        result = []
+        for r in rows:
+            bets = r["bets"]
+            cost = bets * 2.0
+            payoff = r["payoff_sum"] or 0
+            roi = ((payoff - cost) / cost * 100) if cost > 0 else 0
+            result.append({
+                "cycle": r["projection_type"],
+                "bets": bets,
+                "wins": r["wins"],
+                "win_pct": round(r["wins"] / bets * 100, 1) if bets > 0 else 0,
+                "roi_pct": round(roi, 1),
+            })
+        return result

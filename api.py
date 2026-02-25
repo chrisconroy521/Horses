@@ -739,6 +739,33 @@ async def session_stats(session_id: str):
     return result
 
 
+@app.get("/results/stats")
+async def results_stats(track: str = "", date_from: str = "", date_to: str = ""):
+    """ROI and results statistics, optionally filtered by track/date range."""
+    return _db.get_results_stats(track=track, date_from=date_from, date_to=date_to)
+
+
+@app.post("/results/upload")
+async def upload_results(file: UploadFile = File(...), track: str = "", date: str = ""):
+    """Upload a results CSV and ingest into DB."""
+    if not file.filename.lower().endswith('.csv'):
+        raise HTTPException(status_code=400, detail="Only CSV files are allowed")
+
+    content = await file.read()
+    import tempfile
+    tmp = Path(tempfile.mktemp(suffix=".csv"))
+    tmp.write_bytes(content)
+
+    try:
+        from ingest_results import ingest_csv
+        result = ingest_csv(_db, str(tmp), track=track, race_date=date)
+        return {"success": True, **result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
 @app.post("/db/alias")
 async def add_alias(payload: dict):
     """Add a horse name alias. Body: {canonical: str, alias: str}"""

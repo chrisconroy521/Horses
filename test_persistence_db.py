@@ -513,5 +513,73 @@ class TestSessionStats:
         assert r2["new_matches"] >= 1  # auto-matched on reconcile
 
 
+# ==================================================================
+# Race results
+# ==================================================================
+
+class TestResults:
+    def test_insert_and_read_results(self, db):
+        """Insert race + entry results, then query stats."""
+        db.insert_race_result("GP", "02/26/2026", 1, winner_post=2, winner_name="BOLD OPTION")
+        db.insert_entry_result("GP", "02/26/2026", 1, 1, "MAGICAL TWIST", finish_pos=3, odds=8.5)
+        db.insert_entry_result("GP", "02/26/2026", 1, 2, "BOLD OPTION", finish_pos=1,
+                               odds=3.2, win_payoff=8.40)
+        db.insert_entry_result("GP", "02/26/2026", 1, 3, "FAST TRACKER", finish_pos=5, odds=12.0)
+
+        stats = db.get_results_stats()
+        assert stats["total_races"] == 1
+        assert stats["total_entries"] == 3
+        assert stats["total_with_odds"] == 3
+
+    def test_link_results_to_sheets_horse(self, db):
+        """Linking connects result_entries to sheets_horses by post."""
+        db.record_upload("u1", "sheets", "s.pdf", None, "GP", "02/26/2026")
+        db.ingest_sheets_horse("u1", {
+            "horse_name": "BOLD OPTION", "race_number": 1, "post": "2",
+            "age": 3, "lines": [],
+        }, "GP", "02/26/2026")
+
+        db.insert_entry_result("GP", "02/26/2026", 1, 2, "Bold Option",
+                               finish_pos=1, odds=3.2, win_payoff=8.40)
+
+        result = db.link_results_to_entries(track="GP", race_date="02/26/2026")
+        assert result["linked"] >= 1
+
+        # Verify the link
+        row = db.conn.execute(
+            "SELECT sheets_horse_id FROM result_entries WHERE post = 2"
+        ).fetchone()
+        assert row["sheets_horse_id"] is not None
+
+    def test_roi_calc_sanity(self, db):
+        """ROI calculation returns correct numbers for known data."""
+        # Insert 3 entries: one winner with payoff, two losers
+        db.insert_entry_result("GP", "02/26/2026", 1, 1, "WINNER",
+                               finish_pos=1, odds=3.0, win_payoff=8.00)
+        db.insert_entry_result("GP", "02/26/2026", 2, 1, "LOSER A",
+                               finish_pos=3, odds=2.0)
+        db.insert_entry_result("GP", "02/26/2026", 3, 1, "LOSER B",
+                               finish_pos=2, odds=5.0)
+
+        # Set pick_rank=1 on all (simulating top pick)
+        db.conn.execute("UPDATE result_entries SET pick_rank = 1, projection_type = 'PAIRED'")
+        db.conn.commit()
+
+        stats = db.get_results_stats()
+        assert stats["total_races"] == 3
+        roi_rank = stats["roi_by_rank"]
+        assert len(roi_rank) == 1
+        r = roi_rank[0]
+        assert r["rank"] == 1
+        assert r["bets"] == 3
+        assert r["wins"] == 1
+        # Cost = 3 * $2 = $6, payoff = $8, ROI = (8-6)/6 * 100 = 33.3%
+        assert abs(r["roi_pct"] - 33.3) < 1.0
+
+        roi_cycle = stats["roi_by_cycle"]
+        assert len(roi_cycle) == 1
+        assert roi_cycle[0]["cycle"] == "PAIRED"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

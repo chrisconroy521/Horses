@@ -1,0 +1,52 @@
+race_number,post,horse_name,finish_pos,odds,win_payoff,place_payoff,show_payoff
+1,1,Magical Twist,3,8.5,,,
+1,2,Bold Option,1,3.2,8.40,4.60,3.20
+1,3,Fast Tracker,5,12.0,,,
+1,4,Silver Lining,2,5.0,,5.80,3.60
+1,5,Night Runner,4,15.0,,,
+1,6,Storm Chaser,6,20.0,,,
+2,1,Morning Glory,2,6.0,,4.20,2.80
+2,2,Desert Wind,1,2.5,7.00,3.40,2.60
+2,3,Lucky Seven,4,9.0,,,
+2,4,Thunder Road,3,4.5,,,3.40
+2,5,River Stone,5,18.0,,,
+3,1,Crimson Tide,1,4.0,10.00,5.20,3.40
+3,2,Golden Eagle,3,7.5,,,
+3,3,Blue Diamond,2,3.0,,3.80,2.80
+3,4,Iron Will,5,25.0,,,
+3,5,Swift Justice,4,6.0,,,
+4,1,Alpha Strike,2,5.0,,4.40,3.00
+4,2,Wild Card,4,10.0,,,
+4,3,Brave Heart,1,2.0,6.00,3.60,2.40
+4,4,Cool Breeze,3,8.0,,,4.20
+4,5,Dark Horse,5,30.0,,,
+5,1,Royal Flush,3,7.0,,,
+5,2,Top Gun,1,1.5,5.00,2.80,2.20
+5,3,Midnight Sun,2,4.0,,3.60,2.60
+5,4,Flying Ace,5,12.0,,,
+5,5,Power Play,4,9.0,,,
+6,1,Sea Breeze,1,6.0,14.00,6.40,4.00
+6,2,Highland Mist,4,8.0,,,
+6,3,Prairie Wind,2,3.5,,4.00,3.00
+6,4,Canyon Run,3,5.0,,,3.60
+6,5,Coast Guard,5,15.0,,,
+7,1,Grand Slam,2,4.0,,4.60,3.20
+7,2,Hat Trick,3,6.0,,,
+7,3,Marathon Man,1,3.0,8.00,4.20,3.00
+7,4,Sprint King,4,10.0,,,
+7,5,Legend,5,20.0,,,
+8,1,Sunrise,3,8.0,,,
+8,2,Twilight,1,5.0,12.00,5.40,3.60
+8,3,Stardust,2,3.5,,4.00,2.80
+8,4,Moonlight,4,7.0,,,
+8,5,Eclipse,5,25.0,,,
+9,1,Champion,1,2.0,6.00,3.20,2.40
+9,2,Contender,2,4.5,,4.40,3.00
+9,3,Challenger,3,6.0,,,
+9,4,Underdog,4,15.0,,,
+9,5,Longshot,5,35.0,,,
+10,1,Fury Road,2,5.0,,5.00,3.40
+10,2,Iron Horse,3,7.0,,,
+10,3,Steel Resolve,4,9.0,,,
+10,4,Diamond Cutter,1,3.0,8.00,4.00,2.80
+10,5,Rocket Man,5,12.0,,,

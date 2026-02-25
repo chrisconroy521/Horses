@@ -30,7 +30,7 @@ def main():
     # Sidebar
     st.sidebar.header("Navigation")
     pages = ["Upload PDF", "Engine", "Horse Past Performance", "Horses Overview",
-             "Individual Horse Analysis", "Race Analysis", "Database",
+             "Individual Horse Analysis", "Race Analysis", "Database", "Results",
              "Statistics", "Manage Sheets", "API Status"]
 
     # Apply programmatic navigation (e.g. "Open in Engine" button)
@@ -53,6 +53,8 @@ def main():
         race_analysis_page()
     elif page == "Database":
         database_page()
+    elif page == "Results":
+        results_page()
     elif page == "Statistics":
         statistics_page()
     elif page == "Manage Sheets":
@@ -1634,6 +1636,101 @@ def database_page():
                 "`python ingest.py --sheets <pdf>`\n\n"
                 "`python ingest.py --brisnet <pdf>`\n\n"
                 "`python ingest.py --backfill-json` (import existing output/*.json)")
+
+
+def results_page():
+    st.header("Race Results & ROI")
+    st.caption("Upload race results CSVs to track ROI by pick rank and cycle pattern.")
+
+    # --- Upload CSV ---
+    st.subheader("Import Results")
+    csv_file = st.file_uploader("Upload results CSV", type=["csv"], key="results_csv_uploader")
+    col_t, col_d = st.columns(2)
+    with col_t:
+        r_track = st.text_input("Track (e.g. GP)", key="results_track")
+    with col_d:
+        r_date = st.text_input("Date (MM/DD/YYYY)", key="results_date")
+
+    if csv_file is not None and st.button("Import Results", type="primary", key="btn_import_results"):
+        with st.spinner("Importing results..."):
+            try:
+                files = {"file": (csv_file.name, csv_file.getvalue(), "text/csv")}
+                params = {}
+                if r_track:
+                    params["track"] = r_track
+                if r_date:
+                    params["date"] = r_date
+                resp = requests.post(
+                    f"{API_BASE_URL}/results/upload",
+                    files=files, params=params, timeout=60,
+                )
+                if resp.status_code == 200:
+                    res = resp.json()
+                    st.success(f"Imported {res['races']} races, {res['entries']} entries, "
+                               f"{res['linked']} linked to horses")
+                else:
+                    st.error(f"Error: {resp.text}")
+            except requests.exceptions.ConnectionError:
+                st.error("Cannot connect to API.")
+            except Exception as e:
+                st.error(f"Error: {e}")
+
+    st.divider()
+
+    # --- Stats ---
+    try:
+        params = {}
+        if r_track:
+            params["track"] = r_track
+        resp = requests.get(f"{API_BASE_URL}/results/stats", params=params, timeout=15)
+        if resp.status_code != 200:
+            st.info("No results data yet. Upload a results CSV above.")
+            return
+        stats = resp.json()
+    except requests.exceptions.ConnectionError:
+        st.error("Cannot connect to API.")
+        return
+    except Exception as e:
+        st.error(f"Error: {e}")
+        return
+
+    if stats.get("total_entries", 0) == 0:
+        st.info("No results in database. Upload a results CSV to see ROI analysis.\n\n"
+                "CLI: `python ingest_results.py --csv results.csv --track GP --date 02/26/2026`")
+        return
+
+    # Summary metrics
+    m1, m2, m3, m4 = st.columns(4)
+    with m1:
+        st.metric("Races", stats["total_races"])
+    with m2:
+        st.metric("Entries", stats["total_entries"])
+    with m3:
+        st.metric("With Odds", stats["total_with_odds"])
+    with m4:
+        st.metric("Linking Rate", f"{stats['linking_rate']:.1f}%")
+
+    st.divider()
+
+    # ROI by Pick Rank
+    roi_rank = stats.get("roi_by_rank", [])
+    if roi_rank:
+        st.subheader("ROI by Pick Rank ($2 Win)")
+        rank_df = pd.DataFrame(roi_rank)
+        rank_df.columns = ["Rank", "Bets", "Wins", "Win%", "ROI%"]
+        st.dataframe(rank_df, hide_index=True, use_container_width=True)
+
+    # ROI by Cycle Type
+    roi_cycle = stats.get("roi_by_cycle", [])
+    if roi_cycle:
+        st.subheader("ROI by Cycle Pattern ($2 Win)")
+        cycle_df = pd.DataFrame(roi_cycle)
+        cycle_df.columns = ["Pattern", "Bets", "Wins", "Win%", "ROI%"]
+        st.dataframe(cycle_df, hide_index=True, use_container_width=True)
+
+    if not roi_rank and not roi_cycle:
+        st.info("Results imported but no entries linked to picks yet. "
+                "Run the engine on matching sessions first, then re-link.")
 
 
 def statistics_page():
