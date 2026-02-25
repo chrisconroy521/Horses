@@ -972,6 +972,12 @@ async def calibration_roi(track: str = "", min_n: int = 30):
     return _db.get_calibration_data(min_n=min_n, track_filter=track)
 
 
+@app.get("/calibration/detailed-roi")
+async def detailed_roi(track: str = "", min_n: int = 5):
+    """ROI by cycle, confidence tier, odds bucket, pick rank + leaks/suggestions."""
+    return _db.get_detailed_roi(track_filter=track, min_n=min_n)
+
+
 @app.get("/predictions/export-bets")
 async def export_bets(track: str = "", date: str = "", session_id: str = ""):
     """All predictions + outcomes for audit/export."""

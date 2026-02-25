@@ -17,7 +17,7 @@ NEUTRAL       – No clear cycle signal.  Project around recent figure ±2.5.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Dict, Optional
+from typing import Any, List, Dict, Optional
 import math
 
 # ======================================================================
@@ -40,13 +40,14 @@ DEV_DOWNGRADE_PENALTY = 2.0  # raw_score penalty for stalled/declining developme
 
 # --- Sheets-first cycle priority (higher = better cycle) ---
 CYCLE_PRIORITY = {
-    "PAIRED": 6,            # includes PAIRED_TOP (same projection_type)
+    "PAIRED": 5,            # regular paired / plateau
     "REBOUND": 4,
     "IMPROVING": 3,
     "NEUTRAL": 2,
     "TAIL_OFF": 1,
     "NEW_TOP_BOUNCE": 0,    # risk flag, never treated as positive
 }
+_PAIRED_TOP_PRIORITY = 6    # PAIRED at/near best — highest priority
 TIE_WINDOW = 1.5            # proj_mid gap within which bias_score breaks ties
 
 
@@ -116,7 +117,7 @@ class HorseProjection:
     cycle_priority: int = 2
     sheets_rank: int = 0            # 1-based position in sheets-first order
     tie_break_used: bool = False
-    explain: List[tuple] = field(default_factory=list)
+    explain: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -186,8 +187,8 @@ class HandicappingEngine:
             changed = False
             for i in range(len(results) - 1):
                 a, b = results[i], results[i + 1]
-                if (a.cycle_priority == b.cycle_priority
-                        and abs(a.proj_mid - b.proj_mid) <= TIE_WINDOW
+                if ((a.cycle_priority == b.cycle_priority
+                        or abs(a.proj_mid - b.proj_mid) <= TIE_WINDOW)
                         and b.bias_score > a.bias_score):
                     results[i], results[i + 1] = b, a
                     a.tie_break_used = True
@@ -197,15 +198,24 @@ class HandicappingEngine:
         # Reassign final sheets_rank and build explain
         for i, hp in enumerate(results):
             hp.sheets_rank = i + 1
-            hp.explain = [
-                ("cycle_priority", hp.cycle_priority),
-                ("proj_mid", round(hp.proj_mid, 1)),
-                ("confidence", hp.confidence),
-                ("tie_break_used", hp.tie_break_used),
-                ("bias_score", round(hp.bias_score, 1)),
-                ("sheets_rank", hp.sheets_rank),
-                ("notes", list(hp.tags)),
-            ]
+            hp.explain = {
+                "cycle": hp.projection_type,
+                "cycle_priority": hp.cycle_priority,
+                "proj_low": round(hp.projected_low, 1),
+                "proj_high": round(hp.projected_high, 1),
+                "proj_mid": round(hp.proj_mid, 1),
+                "spread": round(hp.spread, 1),
+                "confidence": hp.confidence,
+                "tie_window_used": hp.tie_break_used,
+                "tie_reason": (
+                    f"bias_score swap ({round(hp.bias_score, 1)})"
+                    if hp.tie_break_used else ""
+                ),
+                "bias_score": round(hp.bias_score, 1),
+                "bias_used": hp.tie_break_used,
+                "sheets_rank": hp.sheets_rank,
+                "tags": list(hp.tags),
+            }
 
         return results
 
@@ -559,7 +569,10 @@ class HandicappingEngine:
             dev_explanation=dev_expl,
             proj_mid=(projected_low + projected_high) / 2,
             spread=projected_high - projected_low,
-            cycle_priority=CYCLE_PRIORITY.get(projection_type, 2),
+            cycle_priority=(
+                _PAIRED_TOP_PRIORITY if "PAIRED_TOP" in tags
+                else CYCLE_PRIORITY.get(projection_type, 2)
+            ),
         )
 
     # ------------------------------------------------------------------

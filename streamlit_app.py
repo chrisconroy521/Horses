@@ -342,12 +342,25 @@ def _persist_predictions(session_id, track, race_date, race_number, projections)
         pass  # best-effort; don't block the UI
 
 
-def _mark_engine_run(session_id: str, race_number: int):
-    """Record that the engine has been run for a session/race."""
+def _mark_engine_run(session_id: str, race_number: int,
+                     projections=None, audit=None, bias=None):
+    """Record engine outputs for a session/race as the canonical source of truth.
+
+    Stores full projections, audit, and bias per race so that downstream pages
+    (Bet Builder, Dual Mode, Big Race Mode) can read from session_state instead
+    of re-fetching from the API.
+    """
     store = st.session_state.setdefault("engine_outputs_by_session", {})
-    entry = store.setdefault(session_id, {"races_run": set(), "timestamp": None})
+    entry = store.setdefault(session_id, {
+        "races_run": set(), "race_outputs": {}, "timestamp": None,
+    })
     entry["races_run"].add(race_number)
-    from datetime import datetime
+    if projections is not None:
+        entry.setdefault("race_outputs", {})[race_number] = {
+            "projections": projections,
+            "audit": audit,
+            "bias": bias,
+        }
     entry["timestamp"] = datetime.now().isoformat()
     st.session_state["current_session_id"] = session_id
 
@@ -396,10 +409,10 @@ def _run_engine_full_card(session_id: str, session_meta: dict):
         if not rh:
             progress.progress((idx + 1) / len(race_keys))
             continue
-        projs, _audit = _run_race_projections(engine, rh, bias, [], rn)
+        projs, audit = _run_race_projections(engine, rh, bias, [], rn)
         if projs:
             _persist_predictions(session_id, track, date, rn, projs)
-            _mark_engine_run(session_id, rn)
+            _mark_engine_run(session_id, rn, projections=projs, audit=audit, bias=bias)
             any_produced = True
         progress.progress((idx + 1) / len(race_keys))
 
@@ -649,7 +662,8 @@ def _render_analysis_expanders(sorted_by_bias, audit, race_horses, key_prefix="e
                 st.markdown(f"**{rank_label} {p.name}**{tie_marker}")
                 if hasattr(p, 'explain') and p.explain:
                     explain_rows = []
-                    for key, val in p.explain:
+                    items = p.explain.items() if isinstance(p.explain, dict) else p.explain
+                    for key, val in items:
                         explain_rows.append({"Factor": key, "Value": str(val)})
                     st.dataframe(pd.DataFrame(explain_rows), use_container_width=True, hide_index=True)
                 st.markdown("---")
@@ -1259,7 +1273,7 @@ def dashboard_page():
                             s_track = dash_sel.get('track') or dash_sel.get('track_name', '')
                             s_date = dash_sel.get('date') or dash_sel.get('race_date', '')
                             _persist_predictions(dash_sid, s_track, s_date, dash_race, projs)
-                            _mark_engine_run(dash_sid, dash_race)
+                            _mark_engine_run(dash_sid, dash_race, projections=projs, audit=audit)
 
                     # Display projections
                     d_projs = st.session_state.get("dash_projections")
@@ -1730,7 +1744,7 @@ def engine_page():
             s_track = selected.get('track') or selected.get('track_name', '')
             s_date = selected.get('date') or selected.get('race_date', '')
             _persist_predictions(sel_id, s_track, s_date, selected_race, projections)
-            _mark_engine_run(sel_id, selected_race)
+            _mark_engine_run(sel_id, selected_race, projections=projections, audit=audit)
 
     # =====================================================================
     # (C) Outputs
@@ -1814,7 +1828,7 @@ def engine_page():
             s_track = selected.get('track') or selected.get('track_name', '')
             s_date = selected.get('date') or selected.get('race_date', '')
             _persist_predictions(sel_id, s_track, s_date, rn, projs)
-            _mark_engine_run(sel_id, rn)
+            _mark_engine_run(sel_id, rn, projections=projs, audit=_audit, bias=bias)
             progress.progress((idx + 1) / len(race_keys))
 
         progress.empty()
@@ -3730,6 +3744,106 @@ def calibration_page():
                     )
                 st.markdown(f"- **{r['label']}**: {' | '.join(parts)}")
 
+    # --- Detailed ROI Dashboard ---
+    st.divider()
+    st.header("Detailed ROI Breakdown")
+    st.caption("ROI by cycle pattern, confidence tier, odds bucket, and pick rank (top pick = rank 1).")
+
+    if st.button("Load Detailed ROI", key="btn_detailed_roi"):
+        with st.spinner("Loading detailed ROI data..."):
+            try:
+                d_params = {}
+                if cal_track:
+                    d_params["track"] = cal_track
+                d_resp = api_get("/calibration/detailed-roi", params=d_params, timeout=30)
+                if d_resp.status_code == 200:
+                    st.session_state["detailed_roi"] = d_resp.json()
+                else:
+                    st.error(f"Error: {d_resp.text}")
+            except requests.exceptions.ConnectionError:
+                st.error("Cannot connect to API.")
+
+    d_roi = st.session_state.get("detailed_roi")
+    if d_roi:
+        # By Cycle
+        by_cycle = d_roi.get("by_cycle", [])
+        if by_cycle:
+            st.subheader("ROI by Cycle Pattern (Top Pick)")
+            cycle_rows = []
+            for c in by_cycle:
+                cycle_rows.append({
+                    "Cycle": c["cycle"],
+                    "N": c["N"],
+                    "Wins": c["wins"],
+                    "Win%": f"{c['win_pct']:.1f}",
+                    "ROI%": f"{c['roi_pct']:+.1f}",
+                })
+            st.dataframe(pd.DataFrame(cycle_rows), hide_index=True, use_container_width=True)
+
+        # By Confidence
+        by_conf = d_roi.get("by_confidence", [])
+        if by_conf:
+            st.subheader("ROI by Confidence Tier (Top Pick)")
+            conf_rows = []
+            for c in by_conf:
+                conf_rows.append({
+                    "Tier": c["tier"],
+                    "N": c["N"],
+                    "Wins": c["wins"],
+                    "Win%": f"{c['win_pct']:.1f}",
+                    "ROI%": f"{c['roi_pct']:+.1f}",
+                })
+            st.dataframe(pd.DataFrame(conf_rows), hide_index=True, use_container_width=True)
+
+        # By Odds Bucket
+        by_odds = d_roi.get("by_odds", [])
+        if by_odds:
+            st.subheader("ROI by Odds Bucket (Top Pick)")
+            odds_rows = []
+            for o in by_odds:
+                odds_rows.append({
+                    "Odds": o["bucket"],
+                    "N": o["N"],
+                    "Wins": o["wins"],
+                    "Win%": f"{o['win_pct']:.1f}",
+                    "ROI%": f"{o['roi_pct']:+.1f}",
+                })
+            st.dataframe(pd.DataFrame(odds_rows), hide_index=True, use_container_width=True)
+
+        # By Pick Rank
+        by_rank = d_roi.get("by_rank", [])
+        if by_rank:
+            st.subheader("ROI by Pick Rank")
+            rank_rows = []
+            for r in by_rank:
+                rank_rows.append({
+                    "Rank": f"#{r['rank']}",
+                    "N": r["N"],
+                    "Wins": r["wins"],
+                    "Win%": f"{r['win_pct']:.1f}",
+                    "ROI%": f"{r['roi_pct']:+.1f}",
+                })
+            st.dataframe(pd.DataFrame(rank_rows), hide_index=True, use_container_width=True)
+
+        # Top Leaks
+        leaks = d_roi.get("leaks", [])
+        if leaks:
+            st.divider()
+            st.subheader("Top Leaks (Worst ROI Spots)")
+            for lk in leaks:
+                st.markdown(
+                    f"- **{lk['spot']}**: ROI {lk['roi_pct']:+.1f}%, "
+                    f"Win% {lk['win_pct']:.1f}%, N={lk['N']}"
+                )
+
+        # Tuning Suggestions
+        suggestions = d_roi.get("suggestions", [])
+        if suggestions:
+            st.divider()
+            st.subheader("Tuning Suggestions")
+            for s in suggestions:
+                st.markdown(f"- {s}")
+
     # --- Export ---
     st.divider()
     st.subheader("Export")
@@ -4109,6 +4223,21 @@ def dual_mode_page():
     bc1, bc2 = st.columns(2)
     bc1.caption(f"Profit budget: ${profit_bud:.0f}")
     bc2.caption(f"Score budget: ${score_bud:.0f}")
+
+    # --- Engine output check ---
+    engine_store = st.session_state.get("engine_outputs_by_session", {})
+    dm_engine_entry = engine_store.get(dm_sid)
+    if not dm_engine_entry or not dm_engine_entry.get("races_run"):
+        st.warning("No engine outputs for this session. Run the engine first or click below.")
+        if st.button("Run Engine Now", key="dm_run_engine"):
+            with st.spinner("Running engine on full card..."):
+                ok = _run_engine_full_card(dm_sid, dm_sel)
+                if ok:
+                    st.success("Engine complete — ready to generate plan.")
+                    st.rerun()
+                else:
+                    st.error("No horse data found for this session.")
+            return
 
     # --- Generate ---
     if st.button("Generate Plan", type="primary", key="dm_generate"):

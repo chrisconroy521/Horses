@@ -2614,6 +2614,171 @@ class Persistence:
 
         return {"buckets": buckets, "recommendations": recommendations, "min_n": min_n}
 
+    def get_detailed_roi(
+        self, track_filter: str = "", min_n: int = 5,
+    ) -> Dict[str, Any]:
+        """ROI breakdowns by cycle (projection_type), confidence tier, odds bucket,
+        and pick rank. Returns top leaks and tuning suggestions."""
+        where_parts = ["er.finish_pos IS NOT NULL"]
+        params: list = []
+        if track_filter:
+            where_parts.append("rp.track = ?")
+            params.append(self._normalize_track(track_filter))
+        where = " AND ".join(where_parts)
+
+        base_join = f"""
+            FROM result_predictions rp
+            JOIN result_entries er
+                ON rp.track = er.track AND rp.race_date = er.race_date
+                AND rp.race_number = er.race_number
+                AND rp.normalized_name = er.normalized_name
+            WHERE {where}
+        """
+
+        # --- By cycle (projection_type) ---
+        cycle_rows = self.conn.execute(f"""
+            SELECT rp.projection_type AS cycle,
+                   COUNT(*) AS N,
+                   SUM(CASE WHEN er.finish_pos = 1 THEN 1 ELSE 0 END) AS wins,
+                   SUM(CASE WHEN er.finish_pos = 1 AND er.win_payoff IS NOT NULL
+                            THEN er.win_payoff ELSE 0 END) AS payoff
+            {base_join}
+            AND rp.pick_rank = 1
+            GROUP BY rp.projection_type
+            ORDER BY N DESC
+        """, params).fetchall()
+        by_cycle = []
+        for r in cycle_rows:
+            n = r["N"]
+            cost = n * 2.0
+            pay = r["payoff"] or 0
+            roi = ((pay - cost) / cost * 100) if cost > 0 else 0
+            by_cycle.append({
+                "cycle": r["cycle"], "N": n, "wins": r["wins"],
+                "win_pct": round(r["wins"] / n * 100, 1) if n else 0,
+                "roi_pct": round(roi, 1),
+            })
+
+        # --- By confidence tier (top pick only) ---
+        conf_tiers = [
+            ("High (>=70%)", 0.70, 1.01),
+            ("Medium (55-69%)", 0.55, 0.70),
+            ("Low (<55%)", 0.0, 0.55),
+        ]
+        by_confidence = []
+        for label, lo, hi in conf_tiers:
+            row = self.conn.execute(f"""
+                SELECT COUNT(*) AS N,
+                       SUM(CASE WHEN er.finish_pos = 1 THEN 1 ELSE 0 END) AS wins,
+                       SUM(CASE WHEN er.finish_pos = 1 AND er.win_payoff IS NOT NULL
+                                THEN er.win_payoff ELSE 0 END) AS payoff
+                {base_join}
+                AND rp.pick_rank = 1
+                AND rp.confidence >= ? AND rp.confidence < ?
+            """, params + [lo, hi]).fetchone()
+            n = row["N"]
+            if n > 0:
+                cost = n * 2.0
+                pay = row["payoff"] or 0
+                roi = ((pay - cost) / cost * 100) if cost > 0 else 0
+                by_confidence.append({
+                    "tier": label, "N": n, "wins": row["wins"],
+                    "win_pct": round(row["wins"] / n * 100, 1),
+                    "roi_pct": round(roi, 1),
+                })
+
+        # --- By odds bucket (top pick only) ---
+        odds_buckets = [
+            ("Even-2/1", 0.0, 3.0),
+            ("5/2-4/1", 3.0, 5.0),
+            ("9/2-7/1", 5.0, 8.0),
+            ("8/1-14/1", 8.0, 15.0),
+            ("15/1+", 15.0, 9999.0),
+        ]
+        by_odds = []
+        for label, lo, hi in odds_buckets:
+            row = self.conn.execute(f"""
+                SELECT COUNT(*) AS N,
+                       SUM(CASE WHEN er.finish_pos = 1 THEN 1 ELSE 0 END) AS wins,
+                       SUM(CASE WHEN er.finish_pos = 1 AND er.win_payoff IS NOT NULL
+                                THEN er.win_payoff ELSE 0 END) AS payoff
+                {base_join}
+                AND rp.pick_rank = 1
+                AND er.odds >= ? AND er.odds < ?
+            """, params + [lo, hi]).fetchone()
+            n = row["N"]
+            if n > 0:
+                cost = n * 2.0
+                pay = row["payoff"] or 0
+                roi = ((pay - cost) / cost * 100) if cost > 0 else 0
+                by_odds.append({
+                    "bucket": label, "N": n, "wins": row["wins"],
+                    "win_pct": round(row["wins"] / n * 100, 1),
+                    "roi_pct": round(roi, 1),
+                })
+
+        # --- By pick rank (1-5) ---
+        rank_rows = self.conn.execute(f"""
+            SELECT rp.pick_rank AS rank,
+                   COUNT(*) AS N,
+                   SUM(CASE WHEN er.finish_pos = 1 THEN 1 ELSE 0 END) AS wins,
+                   SUM(CASE WHEN er.finish_pos = 1 AND er.win_payoff IS NOT NULL
+                            THEN er.win_payoff ELSE 0 END) AS payoff
+            {base_join}
+            AND rp.pick_rank <= 5
+            GROUP BY rp.pick_rank
+            ORDER BY rp.pick_rank
+        """, params).fetchall()
+        by_rank = []
+        for r in rank_rows:
+            n = r["N"]
+            cost = n * 2.0
+            pay = r["payoff"] or 0
+            roi = ((pay - cost) / cost * 100) if cost > 0 else 0
+            by_rank.append({
+                "rank": r["rank"], "N": n, "wins": r["wins"],
+                "win_pct": round(r["wins"] / n * 100, 1) if n else 0,
+                "roi_pct": round(roi, 1),
+            })
+
+        # --- Top leaks: worst ROI spots ---
+        leaks = []
+        all_rows = by_cycle + [
+            {**c, "cycle": c.get("tier", c.get("bucket", ""))} for c in by_confidence + by_odds
+        ]
+        for row in all_rows:
+            if row["N"] >= min_n and row["roi_pct"] < -20:
+                leaks.append({
+                    "spot": row.get("cycle") or row.get("tier") or row.get("bucket", ""),
+                    "N": row["N"], "roi_pct": row["roi_pct"],
+                    "win_pct": row["win_pct"],
+                })
+        leaks.sort(key=lambda x: x["roi_pct"])
+
+        # --- Tuning suggestions ---
+        suggestions = []
+        for c in by_cycle:
+            if c["N"] >= min_n:
+                if c["roi_pct"] > 10:
+                    suggestions.append(f"Keep betting {c['cycle']} (ROI {c['roi_pct']:+.1f}%, N={c['N']})")
+                elif c["roi_pct"] < -30:
+                    suggestions.append(f"Consider avoiding {c['cycle']} top picks (ROI {c['roi_pct']:+.1f}%, N={c['N']})")
+        for o in by_odds:
+            if o["N"] >= min_n and o["roi_pct"] > 10:
+                suggestions.append(f"Profitable in {o['bucket']} range (ROI {o['roi_pct']:+.1f}%, N={o['N']})")
+        for c in by_confidence:
+            if c["N"] >= min_n and c["roi_pct"] > 10:
+                suggestions.append(f"{c['tier']} confidence is profitable (ROI {c['roi_pct']:+.1f}%, N={c['N']})")
+
+        return {
+            "by_cycle": by_cycle,
+            "by_confidence": by_confidence,
+            "by_odds": by_odds,
+            "by_rank": by_rank,
+            "leaks": leaks[:5],
+            "suggestions": suggestions,
+        }
+
     def get_all_bets(
         self, track: str = "", race_date: str = "", session_id: str = "",
     ) -> List[Dict[str, Any]]:
