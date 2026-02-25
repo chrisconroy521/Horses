@@ -1349,7 +1349,7 @@ async def build_daily_wins_endpoint(payload: dict):
     """Generate cross-track daily WIN bet plan.
 
     Body: {race_date, bankroll?, risk_profile?, max_risk_per_day_pct?,
-           min_confidence?, min_odds_a?, paper_mode?, max_bets?, save?}
+           min_confidence?, min_odds_a?, min_overlay?, paper_mode?, max_bets?, save?}
     """
     race_date = payload.get("race_date", "")
     if not race_date:
@@ -1363,6 +1363,7 @@ async def build_daily_wins_endpoint(payload: dict):
         min_odds_a=float(payload.get("min_odds_a", 2.0)),
         paper_mode=bool(payload.get("paper_mode", True)),
         allow_missing_odds=bool(payload.get("allow_missing_odds", False)),
+        min_overlay=float(payload.get("min_overlay", 1.10)),
     )
     max_bets = int(payload.get("max_bets", 10))
 

@@ -54,6 +54,7 @@ class BetSettings:
     paper_mode: bool = True                 # paper bets (no real money implied)
     allow_missing_odds: bool = False         # allow flat-stake WIN when odds absent
     figure_quality_threshold: float = 0.80   # block race if < 80% figures present
+    min_overlay: float = 1.10               # require 10% overlay min for daily wins
 
     @property
     def max_risk_per_race(self) -> float:
@@ -116,6 +117,10 @@ class DailyWinCandidate:
     odds_decimal: Optional[float]
     odds_raw: str
     edge: float
+    win_prob: float
+    fair_odds: Optional[float]
+    implied_prob: Optional[float]
+    overlay: Optional[float]
     kelly_fraction: float
     stake: float
     best_bet_score: float
@@ -351,6 +356,8 @@ def build_win_ticket(
             "odds_raw": top.get("odds_raw", ""),
             "kelly_fraction": round(kf, 4),
             "win_prob_est": round(win_prob, 3),
+            "fair_odds": round((1.0 / win_prob) - 1.0, 2) if win_prob > 0 else None,
+            "overlay": round(odds / ((1.0 / win_prob) - 1.0), 3) if win_prob > 0 and (1.0 / win_prob - 1.0) > 0 else None,
             "method": "kelly",
         },
     )
@@ -723,12 +730,16 @@ def build_daily_wins(
             odds_raw = top.get("odds_raw", "")
             field_size = len(ranked)
 
-            # Compute edge
+            # Compute edge + overlay
             win_prob = _estimate_win_prob(conf, bias, field_size)
+            fair_odds_val = (1.0 / win_prob) - 1.0 if win_prob > 0 else None
             if odds is not None and odds > 0:
                 implied_prob = 1.0 / (odds + 1.0)
                 edge = win_prob - implied_prob
                 if edge <= 0:
+                    continue
+                overlay = odds / fair_odds_val if fair_odds_val and fair_odds_val > 0 else None
+                if overlay is not None and overlay < settings.min_overlay:
                     continue
                 kf = kelly_fraction(odds, win_prob)
                 if kf <= 0:
@@ -738,6 +749,8 @@ def build_daily_wins(
                 stake = max(stake, _BET_BASE)
                 stake = min(stake, settings.max_risk_per_race)
             elif settings.allow_missing_odds:
+                implied_prob = None
+                overlay = None
                 edge = win_prob * 0.5  # rough edge estimate for sort
                 kf = 0.0
                 stake = round(settings.max_risk_per_race * 0.5 / _BET_BASE) * _BET_BASE
@@ -766,6 +779,10 @@ def build_daily_wins(
                 odds_decimal=odds,
                 odds_raw=odds_raw,
                 edge=edge,
+                win_prob=win_prob,
+                fair_odds=fair_odds_val,
+                implied_prob=implied_prob,
+                overlay=overlay,
                 kelly_fraction=kf,
                 stake=stake,
                 best_bet_score=best_bet_score,
@@ -774,8 +791,8 @@ def build_daily_wins(
                 bounce_risk=bool(top.get("bounce_risk", False)),
             ))
 
-    # Sort by edge descending, then best_bet_score descending
-    candidates.sort(key=lambda c: (c.edge, c.best_bet_score), reverse=True)
+    # Sort by overlay descending, then edge, then best_bet_score
+    candidates.sort(key=lambda c: (c.overlay or 0, c.edge, c.best_bet_score), reverse=True)
 
     # Truncate to max_bets, enforce daily risk cap
     selected: List[DailyWinCandidate] = []

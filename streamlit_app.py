@@ -2732,7 +2732,7 @@ def results_page():
 
 def daily_wins_page():
     st.header("Daily Best WIN Bets")
-    st.caption("Cross-track A-grade WIN bets ranked by edge, with Kelly sizing.")
+    st.caption("Cross-track A-grade WIN bets ranked by value overlay, with Kelly sizing.")
 
     # --- Date input ---
     from datetime import date as _date
@@ -2754,6 +2754,9 @@ def daily_wins_page():
     with c3:
         min_odds = st.number_input("Min odds (A-grade)", value=2.0, min_value=1.0, step=0.5, key="dw_min_odds")
         max_bets = st.number_input("Max bets", value=10, min_value=5, max_value=15, step=1, key="dw_max_bets")
+        min_overlay = st.number_input("Min overlay", value=1.10, min_value=1.0, max_value=2.0,
+                                       step=0.05, key="dw_min_overlay",
+                                       help="Minimum overlay ratio (ML odds / fair odds). 1.10 = require 10% value edge.")
 
     paper_mode = st.checkbox("Paper mode", value=True, key="dw_paper")
 
@@ -2772,6 +2775,7 @@ def daily_wins_page():
                     "min_odds_a": min_odds,
                     "paper_mode": paper_mode,
                     "max_bets": max_bets,
+                    "min_overlay": min_overlay,
                     "save": True,
                 }
                 try:
@@ -2823,7 +2827,10 @@ def daily_wins_page():
                     "Horse": c.get("horse_name", ""),
                     "Cycle": c.get("projection_type", ""),
                     "Conf": f"{c.get('confidence', 0):.0%}",
+                    "WinProb": f"{c.get('win_prob', 0):.1%}",
                     "Odds": f"{c['odds_decimal']:.1f}-1" if c.get("odds_decimal") else "-",
+                    "FairOdds": f"{c['fair_odds']:.1f}-1" if c.get("fair_odds") else "-",
+                    "Overlay": f"{c['overlay']:.2f}x" if c.get("overlay") else "-",
                     "Edge": f"{c.get('edge', 0):.1%}",
                     "Stake": f"${c.get('stake', 0):.0f}",
                     "Score": f"{c.get('best_bet_score', 0):.1f}",
@@ -2835,13 +2842,17 @@ def daily_wins_page():
             st.subheader("Export")
             ec1, ec2 = st.columns(2)
 
-            csv_header = "track,race,horse,cycle,confidence,odds,edge,stake,score"
+            csv_header = "track,race,horse,cycle,confidence,win_prob,odds,fair_odds,overlay,edge,stake,score"
             csv_lines = [csv_header]
             for c in candidates:
+                fair_v = f"{c['fair_odds']:.2f}" if c.get("fair_odds") else ""
+                over_v = f"{c['overlay']:.3f}" if c.get("overlay") else ""
                 csv_lines.append(
                     f"{c.get('track','')},{c.get('race_number','')},\"{c.get('horse_name','')}\","
                     f"{c.get('projection_type','')},{c.get('confidence', 0):.2f},"
-                    f"{c.get('odds_decimal', '')},{c.get('edge', 0):.4f},"
+                    f"{c.get('win_prob', 0):.3f},"
+                    f"{c.get('odds_decimal', '')},{fair_v},{over_v},"
+                    f"{c.get('edge', 0):.4f},"
                     f"{c.get('stake', 0):.2f},{c.get('best_bet_score', 0):.1f}"
                 )
             with ec1:
@@ -2851,9 +2862,11 @@ def daily_wins_page():
             text_lines = [f"=== DAILY WIN BETS ({st.session_state.get('dw_last_date', '')}) ==="]
             for c in candidates:
                 odds_str = f"{c['odds_decimal']:.1f}-1" if c.get("odds_decimal") else "?"
+                fair_str = f"(fair: {c['fair_odds']:.1f}-1)" if c.get("fair_odds") else ""
+                overlay_str = f"[{c['overlay']:.2f}x]" if c.get("overlay") else ""
                 text_lines.append(
                     f"{c.get('track','')} R{c.get('race_number','')}: "
-                    f"{c.get('horse_name','')} @ {odds_str} — ${c.get('stake', 0):.0f}"
+                    f"{c.get('horse_name','')} @ {odds_str} {fair_str} {overlay_str} — ${c.get('stake', 0):.0f}"
                 )
             text_lines.append(f"\nTotal risk: ${result.get('total_risk', 0):.0f}")
             with ec2:
