@@ -36,9 +36,9 @@ def main():
     # Sidebar
     st.sidebar.header("Navigation")
     pages = [
-        "Upload PDF", "Engine", "Results", "Results Inbox", "Bet Builder",
-        "Daily Best WIN Bets", "Calibration", "Database", "Horse Past Performance",
-        "Horses Overview",
+        "Dashboard", "Upload PDF", "Engine", "Results", "Results Inbox",
+        "Bet Builder", "Daily Best WIN Bets", "Calibration", "Database",
+        "Horse Past Performance", "Horses Overview",
         "Individual Horse Analysis", "Race Analysis", "Statistics",
         "Manage Sheets", "API Status",
     ]
@@ -50,7 +50,9 @@ def main():
     page = st.sidebar.selectbox("Choose a page", pages, key='_page_selector')
     st.sidebar.markdown("---")
 
-    if page == "Upload PDF":
+    if page == "Dashboard":
+        dashboard_page()
+    elif page == "Upload PDF":
         upload_page()
     elif page == "Engine":
         engine_page()
@@ -264,6 +266,737 @@ def _persist_predictions(session_id, track, race_date, race_number, projections)
         requests.post(f"{API_BASE_URL}/predictions/save", json=payload, timeout=10)
     except Exception:
         pass  # best-effort; don't block the UI
+
+
+# ---------------------------------------------------------------------------
+# Shared display helpers (used by Engine + Dashboard)
+# ---------------------------------------------------------------------------
+
+def _render_top_picks(display_projections, race_number, key_prefix="eng"):
+    """Render top 3 pick cards for a race."""
+    top3 = display_projections[:3]
+    st.subheader(f"Top 3 Picks \u2014 Race {race_number}")
+    for rank, p in enumerate(top3, 1):
+        col1, col2, col3 = st.columns([1, 2, 3])
+        badge = ""
+        if p.new_top_setup:
+            badge = " \u2b50\u2b50" if p.new_top_confidence >= 75 else " \u2b50"
+        if p.bounce_risk:
+            badge += " \u26a0\ufe0f"
+        with col1:
+            st.metric(label=f"#{rank}", value=p.name)
+        with col2:
+            st.markdown(
+                f"**Post {p.post}** | {p.style} | {p.projection_type}  \n"
+                f"Fig {p.projected_low:.1f}\u2013{p.projected_high:.1f} | "
+                f"Conf {p.confidence:.0%}"
+            )
+        with col3:
+            if badge:
+                st.markdown(f"**Tags:** {badge.strip()}")
+            st.caption(p.summary)
+            if p.new_top_setup:
+                st.caption(
+                    f"New Top Setup: {p.new_top_setup_type} "
+                    f"({p.new_top_confidence}%) \u2014 {p.new_top_explanation}"
+                )
+
+
+def _render_ranked_table(display_projections, race_horses, show_odds,
+                         odds_data, odds_by_post, race_num, key_prefix="eng"):
+    """Render the full ranked table with optional odds column."""
+    is_brisnet_data = any(
+        h.get('figure_source') == 'brisnet' or h.get('quickplay_positive')
+        for h in race_horses
+    )
+
+    st.subheader("Full Ranked Table")
+    if show_odds:
+        odds_found = sum(
+            1 for p in display_projections
+            if _lookup_odds(race_num, p.name, p.post, odds_data, odds_by_post)
+            and _lookup_odds(race_num, p.name, p.post, odds_data, odds_by_post).get("odds_decimal") is not None
+        )
+        st.caption(f"Odds coverage: {odds_found}/{len(display_projections)} horses")
+
+    rows = []
+    for p in display_projections:
+        row = {
+            'Horse': p.name,
+            'Post': p.post,
+            'Style': p.style,
+            'Cycle': p.projection_type,
+            'Setup': '',
+            'Proj Low': f"{p.projected_low:.1f}",
+            'Proj High': f"{p.projected_high:.1f}",
+            'Confidence': f"{p.confidence:.0%}",
+            'Tags': ', '.join(p.tags) if p.tags else '-',
+            'Bias Score': f"{p.bias_score:.1f}",
+            'Summary': p.summary,
+        }
+        if p.new_top_setup:
+            stars = "\u2b50\u2b50" if p.new_top_confidence >= 75 else "\u2b50"
+            row['Setup'] = f"{stars} {p.new_top_setup_type} ({p.new_top_confidence}%)"
+        elif p.bounce_risk:
+            row['Setup'] = "\u26a0\ufe0f BOUNCE RISK"
+        if is_brisnet_data:
+            matching = [h for h in race_horses if h.get('horse_name') == p.name]
+            if matching:
+                row['Prime Power'] = matching[0].get('prime_power', '')
+        if show_odds:
+            o = _lookup_odds(race_num, p.name, p.post, odds_data, odds_by_post)
+            row['Odds (ML)'] = _fmt_odds_display(o)
+            if not o or o.get("odds_decimal") is None:
+                existing = row.get('Tags', '-')
+                row['Tags'] = f"{existing}, NO_ODDS" if existing != '-' else "NO_ODDS"
+        rows.append(row)
+
+    render_styled_table(pd.DataFrame(rows))
+
+
+def _render_analysis_expanders(sorted_by_bias, audit, race_horses, key_prefix="eng"):
+    """Render QuickPlay, enrichment, setups, toss, audit, and charts expanders."""
+    is_brisnet_data = any(
+        h.get('figure_source') == 'brisnet' or h.get('quickplay_positive')
+        for h in race_horses
+    )
+
+    # --- QuickPlay Comments (BRISNET only) ---
+    if is_brisnet_data:
+        with st.expander("QuickPlay Comments", expanded=False):
+            for h in race_horses:
+                name = h.get('horse_name', 'Unknown')
+                qp_pos = h.get('quickplay_positive', [])
+                qp_neg = h.get('quickplay_negative', [])
+                pp = h.get('prime_power', '')
+                if qp_pos or qp_neg:
+                    st.markdown(f"**{name}** (Prime Power: {pp})")
+                    for comment in qp_pos:
+                        st.markdown(f"  :green[+ {comment}]")
+                    for comment in qp_neg:
+                        st.markdown(f"  :red[- {comment}]")
+                    st.markdown("---")
+
+    # --- Enrichment Details ---
+    has_enrichment = any(h.get('enrichment_source') == 'both' for h in race_horses)
+    if has_enrichment:
+        with st.expander("Enrichment Details", expanded=False):
+            for h in race_horses:
+                if h.get('enrichment_source') != 'both':
+                    continue
+                name = h.get('horse_name', 'Unknown')
+                st.markdown(f"**{name}**")
+                trainer = h.get('trainer', '')
+                trainer_stats = h.get('trainer_stats', '')
+                jockey = h.get('jockey', '')
+                jockey_stats = h.get('jockey_stats', '')
+                life_rec = h.get('life_record', '')
+                life_earn = h.get('life_earnings', '')
+                st.markdown(
+                    f"Trainer: {trainer} ({trainer_stats}) | "
+                    f"Jockey: {jockey} ({jockey_stats}) | "
+                    f"Life: {h.get('life_starts', 0)} starts, {life_rec} | "
+                    f"Earnings: {'$' + str(life_earn) if life_earn else 'N/A'}"
+                )
+                workouts = h.get('workouts', [])
+                if workouts:
+                    wo_strs = [
+                        f"{w.get('date','')} {w.get('track','')} "
+                        f"{w.get('distance','')} {w.get('time','')}"
+                        for w in workouts[:3]
+                    ]
+                    st.caption("Workouts: " + " | ".join(wo_strs))
+
+    # --- New Top Setups & Bounce Risk ---
+    new_top_horses = [p for p in sorted_by_bias if p.new_top_setup]
+    bounce_risk_horses = [p for p in sorted_by_bias if p.bounce_risk and not p.new_top_setup]
+    if new_top_horses or bounce_risk_horses:
+        with st.expander("New Top Setups & Bounce Risk", expanded=True):
+            if new_top_horses:
+                st.markdown("**New Top Setup Candidates:**")
+                for p in new_top_horses:
+                    stars = "\u2b50\u2b50" if p.new_top_confidence >= 75 else "\u2b50"
+                    st.markdown(
+                        f"- **{p.name}** {stars} | "
+                        f"Type: {p.new_top_setup_type} | "
+                        f"Confidence: {p.new_top_confidence}% | "
+                        f"{p.new_top_explanation}"
+                    )
+            if bounce_risk_horses:
+                st.markdown("**Bounce Risk (ran big new top last out):**")
+                for p in bounce_risk_horses:
+                    st.markdown(
+                        f"- **{p.name}** \u26a0\ufe0f | "
+                        f"Cycle: {p.projection_type} | "
+                        f"Fig: {p.projected_low:.1f}\u2013{p.projected_high:.1f}"
+                    )
+
+    # --- TOSS List ---
+    tossed_horses = [p for p in sorted_by_bias if p.tossed]
+    if tossed_horses:
+        with st.expander("TOSS List (eliminate)", expanded=True):
+            for p in tossed_horses:
+                reasons_str = "; ".join(p.toss_reasons)
+                st.markdown(f"- **{p.name}** \u2014 {reasons_str}")
+
+    # --- AUDIT ---
+    if audit:
+        with st.expander("AUDIT", expanded=True):
+            st.markdown(
+                f"**Cycle-best:** {audit.cycle_best} | "
+                f"**Raw-best:** {audit.raw_best}"
+            )
+            if audit.cycle_vs_raw_match:
+                st.success("Cycle-best and raw-best are the same horse.")
+            else:
+                st.info(f"Cycle-best ({audit.cycle_best}) differs from raw-best ({audit.raw_best}).")
+
+            if audit.bounce_candidates:
+                st.markdown("**Bounce candidates:** " + ", ".join(audit.bounce_candidates))
+
+            if audit.first_time_surface:
+                st.markdown("**First-time-surface horses:**")
+                for entry in audit.first_time_surface:
+                    st.markdown(
+                        f"- **{entry['name']}** \u2014 penalty: {entry['penalty']}, "
+                        f"conf adj: {entry['conf_adj']}"
+                    )
+
+            if audit.toss_list:
+                st.markdown("**Tossed:**")
+                for entry in audit.toss_list:
+                    reasons_str = "; ".join(entry['reasons'])
+                    st.markdown(f"- **{entry['name']}** \u2014 {reasons_str}")
+
+    # --- Charts ---
+    with st.expander("Charts", expanded=False):
+        fig = px.bar(
+            x=[p.name for p in sorted_by_bias],
+            y=[p.confidence for p in sorted_by_bias],
+            labels={'x': 'Horse', 'y': 'Confidence'},
+            title="Projection Confidence",
+        )
+        fig.update_yaxes(range=[0, 1])
+        st.plotly_chart(fig, use_container_width=True)
+
+        fig2 = go.Figure()
+        for p in sorted_by_bias:
+            fig2.add_trace(go.Bar(
+                name=p.name,
+                x=[p.name],
+                y=[p.projected_high - p.projected_low],
+                base=[p.projected_low],
+                text=[f"{p.projected_low:.1f}-{p.projected_high:.1f}"],
+                textposition='outside',
+            ))
+        fig2.update_layout(
+            title="Projected Figure Range",
+            yaxis_title="Speed Figure",
+            showlegend=False,
+        )
+        st.plotly_chart(fig2, use_container_width=True)
+
+
+def _render_best_bets_table(best_bets, odds_data, odds_by_post, key_prefix="eng"):
+    """Render best bets table + top 3 cards."""
+    top_n = min(10, len(best_bets))
+    st.caption(f"Showing top {top_n} of {len(best_bets)} entries")
+
+    bb_show_odds = st.checkbox("Show Odds", value=True, key=f"bb_show_odds_{key_prefix}")
+    if bb_show_odds:
+        bb_odds_found = sum(
+            1 for _rn, _p in best_bets[:top_n]
+            if _lookup_odds(_rn, _p.name, _p.post, odds_data, odds_by_post)
+            and _lookup_odds(_rn, _p.name, _p.post, odds_data, odds_by_post).get("odds_decimal") is not None
+        )
+        st.caption(f"Odds coverage: {bb_odds_found}/{top_n} horses")
+
+    rows = []
+    for rn, p in best_bets[:top_n]:
+        score = _best_bet_score(p)
+        row = {
+            'Race': rn,
+            'Horse': p.name,
+            'Post': p.post,
+            'Style': p.style,
+            'Cycle': p.projection_type,
+            'Setup': '',
+            'Proj': f"{p.projected_low:.1f}\u2013{p.projected_high:.1f}",
+            'Confidence': f"{p.confidence:.0%}",
+            'Bias Score': f"{p.bias_score:.1f}",
+            'Best Bet Score': f"{score:.1f}",
+            'Tags': ', '.join(p.tags) if p.tags else '-',
+            'Summary': p.summary,
+        }
+        if p.new_top_setup:
+            stars = "\u2b50\u2b50" if p.new_top_confidence >= 75 else "\u2b50"
+            row['Setup'] = f"{stars} {p.new_top_setup_type} ({p.new_top_confidence}%)"
+        elif p.bounce_risk:
+            row['Setup'] = "\u26a0\ufe0f BOUNCE RISK"
+        if bb_show_odds:
+            o = _lookup_odds(rn, p.name, p.post, odds_data, odds_by_post)
+            row['Odds (ML)'] = _fmt_odds_display(o)
+            if not o or o.get("odds_decimal") is None:
+                existing = row.get('Tags', '-')
+                row['Tags'] = f"{existing}, NO_ODDS" if existing != '-' else "NO_ODDS"
+        rows.append(row)
+
+    df = pd.DataFrame(rows)
+    styled = df.style
+    st.dataframe(styled, use_container_width=True, hide_index=True)
+
+    # Highlight top 3
+    st.subheader("Top 3 Best Bets")
+    for rank, (rn, p) in enumerate(best_bets[:3], 1):
+        score = _best_bet_score(p)
+        col1, col2, col3 = st.columns([1, 2, 3])
+        with col1:
+            badge = ""
+            if p.new_top_setup:
+                badge = " \u2b50\u2b50" if p.new_top_confidence >= 75 else " \u2b50"
+            if p.bounce_risk:
+                badge += " \u26a0\ufe0f"
+            st.metric(f"#{rank}", f"R{rn} {p.name}{badge}")
+        with col2:
+            st.markdown(
+                f"**Cycle** {p.projection_type} | "
+                f"**Fig** {p.projected_low:.1f}\u2013{p.projected_high:.1f} | "
+                f"**Conf** {p.confidence:.0%} | "
+                f"**Score** {score:.1f}"
+            )
+            if p.new_top_setup:
+                st.caption(
+                    f"New Top Setup (4yo): {p.new_top_setup_type} "
+                    f"({p.new_top_confidence}%) \u2014 {p.new_top_explanation}"
+                )
+        with col3:
+            tags_str = ", ".join(p.tags) if p.tags else "none"
+            st.markdown(f"Tags: {tags_str}")
+            st.caption(p.summary)
+
+
+def dashboard_page():
+    st.header("Dashboard")
+    st.caption("Unified workflow: upload \u2192 analyze \u2192 bet \u2192 evaluate.")
+
+    # ===== Section A: Upload =====
+    with st.expander("Upload", expanded=False):
+        ucol1, ucol2 = st.columns(2)
+        with ucol1:
+            st.markdown("**Primary (Ragozin / BRISNET)**")
+            primary_file = st.file_uploader(
+                "Upload primary PDF", type=["pdf"], key="dash_primary_upload")
+            if primary_file and st.button("Upload Primary", key="dash_btn_primary"):
+                with st.spinner("Uploading primary..."):
+                    try:
+                        files = {"file": (primary_file.name, primary_file.getvalue(), "application/pdf")}
+                        resp = requests.post(f"{API_BASE_URL}/upload_primary", files=files, timeout=60)
+                        if resp.ok:
+                            data = resp.json()
+                            sid = data.get("session_id", "")
+                            st.success(f"Session: {sid}")
+                            st.session_state["dash_session_id"] = sid
+                        else:
+                            st.error(f"Upload error: {resp.text}")
+                    except Exception as e:
+                        st.error(f"Error: {e}")
+
+        with ucol2:
+            st.markdown("**Secondary (add to existing session)**")
+            sec_file = st.file_uploader(
+                "Upload secondary PDF", type=["pdf"], key="dash_sec_upload")
+            dash_sec_sid = st.text_input("Session ID:", key="dash_sec_sid",
+                                          value=st.session_state.get("dash_session_id", ""))
+            if sec_file and dash_sec_sid and st.button("Upload Secondary", key="dash_btn_sec"):
+                with st.spinner("Uploading secondary..."):
+                    try:
+                        files = {"file": (sec_file.name, sec_file.getvalue(), "application/pdf")}
+                        resp = requests.post(
+                            f"{API_BASE_URL}/upload_secondary",
+                            files=files,
+                            params={"session_id": dash_sec_sid},
+                            timeout=60,
+                        )
+                        if resp.ok:
+                            st.success("Secondary merged.")
+                        else:
+                            st.error(f"Upload error: {resp.text}")
+                    except Exception as e:
+                        st.error(f"Error: {e}")
+
+        # Quick link to Engine
+        if st.session_state.get("dash_session_id"):
+            if st.button("Open in Engine", key="dash_open_engine"):
+                st.session_state["active_session_id"] = st.session_state["dash_session_id"]
+                st.session_state["_nav_target"] = "Engine"
+                st.rerun()
+
+    # ===== Section B: Daily Best WIN Bets =====
+    with st.expander("Daily Best WIN Bets", expanded=True):
+        from datetime import date as _date
+        dw_date = st.date_input("Race Date", value=_date.today(), key="dash_dw_date")
+        dw_date_str = dw_date.strftime("%m/%d/%Y") if dw_date else ""
+
+        dc1, dc2, dc3 = st.columns(3)
+        with dc1:
+            dw_bankroll = st.number_input("Bankroll ($)", value=1000, min_value=100, step=100, key="dash_dw_bankroll")
+        with dc2:
+            dw_min_overlay = st.number_input("Min overlay", value=1.10, min_value=1.0, max_value=2.0,
+                                              step=0.05, key="dash_dw_min_overlay")
+        with dc3:
+            dw_max_bets = st.number_input("Max bets", value=10, min_value=5, max_value=15, step=1, key="dash_dw_max_bets")
+
+        if st.button("Generate", type="primary", key="dash_btn_daily_wins"):
+            if not dw_date_str:
+                st.warning("Select a race date.")
+            else:
+                with st.spinner("Building daily WIN bets..."):
+                    payload = {
+                        "race_date": dw_date_str,
+                        "bankroll": dw_bankroll,
+                        "risk_profile": "standard",
+                        "max_risk_per_day_pct": 6.0,
+                        "min_confidence": 0.65,
+                        "min_odds_a": 2.0,
+                        "paper_mode": True,
+                        "max_bets": dw_max_bets,
+                        "min_overlay": dw_min_overlay,
+                        "save": True,
+                    }
+                    try:
+                        resp = requests.post(f"{API_BASE_URL}/bets/daily-wins", json=payload, timeout=30)
+                        if resp.ok:
+                            st.session_state["dash_dw_result"] = resp.json()
+                        elif resp.status_code == 404:
+                            st.warning("No predictions found. Run the engine on sessions first.")
+                        else:
+                            st.error(f"Error: {resp.text}")
+                    except Exception as e:
+                        st.error(f"Error: {e}")
+
+        dw_result = st.session_state.get("dash_dw_result")
+        if dw_result:
+            candidates = dw_result.get("candidates", [])
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Total Risk", f"${dw_result.get('total_risk', 0):.0f}")
+            m2.metric("Bets", len(candidates))
+            m3.metric("Tracks", len(dw_result.get("tracks", [])))
+
+            if candidates:
+                rows = []
+                for c in candidates:
+                    rows.append({
+                        "Track": c.get("track", ""),
+                        "Race": c.get("race_number", ""),
+                        "Horse": c.get("horse_name", ""),
+                        "Cycle": c.get("projection_type", ""),
+                        "Conf": f"{c.get('confidence', 0):.0%}",
+                        "Odds": f"{c['odds_decimal']:.1f}-1" if c.get("odds_decimal") else "-",
+                        "FairOdds": f"{c['fair_odds']:.1f}-1" if c.get("fair_odds") else "-",
+                        "Overlay": f"{c['overlay']:.2f}x" if c.get("overlay") else "-",
+                        "Stake": f"${c.get('stake', 0):.0f}",
+                    })
+                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+                # CSV export
+                csv_data = "track,race,horse,cycle,confidence,odds,fair_odds,overlay,stake\n"
+                for c in candidates:
+                    csv_data += (
+                        f"{c.get('track','')},{c.get('race_number','')},{c.get('horse_name','')}"
+                        f",{c.get('projection_type','')},{c.get('confidence',0):.2f}"
+                        f",{c.get('odds_decimal','')},{c.get('fair_odds','')}"
+                        f",{c.get('overlay','')},{c.get('stake',0):.0f}\n"
+                    )
+                st.download_button("Export CSV", csv_data, "daily_wins.csv", "text/csv", key="dash_dw_csv")
+            else:
+                st.info("No qualifying bets found.")
+
+    # ===== Section C: Engine Drilldown =====
+    with st.expander("Engine Drilldown", expanded=True):
+        engine = HandicappingEngine()
+
+        # Session selector
+        try:
+            sess_resp = requests.get(f"{API_BASE_URL}/races", timeout=15)
+            races = sess_resp.json().get("races", []) if sess_resp.ok else []
+        except Exception:
+            races = []
+
+        if not races:
+            st.info("No parsed sessions. Upload a PDF first.")
+        else:
+            def _dash_session_label(x):
+                name = x.get('primary_pdf_filename') or x.get('original_filename', 'unknown')
+                track = x.get('track') or x.get('track_name', '')
+                date = x.get('date') or x.get('analysis_date', x.get('race_date', ''))
+                return f"{name} | {track} | {date}"
+
+            dash_sel = st.selectbox("Session:", options=races,
+                                     format_func=_dash_session_label, key="dash_sess")
+            if dash_sel:
+                dash_sid = dash_sel.get('session_id') or dash_sel.get('id')
+                is_session = 'session_id' in dash_sel
+
+                # Fetch horses
+                try:
+                    if is_session and dash_sel.get('has_secondary'):
+                        h_resp = requests.get(
+                            f"{API_BASE_URL}/sessions/{dash_sid}/races",
+                            params={"source": "merged"}, timeout=30)
+                        dash_horses = h_resp.json().get("race_data", {}).get("horses", []) if h_resp.ok else []
+                    else:
+                        h_resp = requests.get(f"{API_BASE_URL}/races/{dash_sid}/horses", timeout=30)
+                        dash_horses = h_resp.json().get("horses", []) if h_resp.ok else []
+                except Exception:
+                    dash_horses = []
+
+                if not dash_horses:
+                    st.warning("No horse data in this session.")
+                else:
+                    # Fetch odds
+                    _d_odds_key = f"_odds_{dash_sid}"
+                    if _d_odds_key not in st.session_state:
+                        _d_odds = {}
+                        _d_odds_by_post = {}
+                        try:
+                            _o_resp = requests.get(f"{API_BASE_URL}/odds/snapshots/{dash_sid}", timeout=10)
+                            if _o_resp.ok:
+                                for snap in _o_resp.json().get("snapshots", []):
+                                    entry = {"odds_raw": snap.get("odds_raw", ""), "odds_decimal": snap.get("odds_decimal")}
+                                    _d_odds[(snap["race_number"], snap["normalized_name"])] = entry
+                                    if snap.get("post") is not None:
+                                        _d_odds_by_post[(snap["race_number"], snap["post"])] = entry
+                        except Exception:
+                            pass
+                        st.session_state[_d_odds_key] = (_d_odds, _d_odds_by_post)
+                    _d_odds_data, _d_odds_by_post = st.session_state[_d_odds_key]
+
+                    # Group by race
+                    dash_race_groups = {}
+                    for h in dash_horses:
+                        rn = h.get('race_number', 0) or 0
+                        dash_race_groups.setdefault(rn, []).append(h)
+
+                    # Figure quality
+                    _d_race_quality = {}
+                    for rn, horses_in_race in dash_race_groups.items():
+                        missing = 0
+                        first_timers = 0
+                        for h in horses_in_race:
+                            lines = h.get('lines', [])
+                            figs = [_extract_figure(ln) for ln in lines]
+                            max_fig = max(figs) if figs else 0
+                            is_stub = (len(lines) == 1 and not lines[0].get('raw_text', ''))
+                            if is_stub:
+                                first_timers += 1
+                            elif not figs or max_fig == 0:
+                                missing += 1
+                        scoreable = len(horses_in_race) - first_timers
+                        _d_race_quality[rn] = missing / scoreable if scoreable > 0 else 0
+
+                    # Race summary
+                    race_summary = []
+                    for rn in sorted(dash_race_groups.keys()):
+                        q = _d_race_quality.get(rn)
+                        badge = f" {_quality_badge(q)}" if q is not None else ""
+                        race_summary.append(f"R{rn}: {len(dash_race_groups[rn])}{badge}")
+                    st.markdown(" | ".join(race_summary))
+
+                    # Bias sliders
+                    bc1, bc2, bc3, bc4, bc5 = st.columns(5)
+                    with bc1:
+                        d_e = st.slider("E %", 0, 100, 25, key="dash_e")
+                    with bc2:
+                        d_ep = st.slider("EP %", 0, 100, 25, key="dash_ep")
+                    with bc3:
+                        d_p = st.slider("P %", 0, 100, 25, key="dash_p")
+                    with bc4:
+                        d_s = st.slider("S %", 0, 100, 25, key="dash_s")
+                    with bc5:
+                        d_sf = st.checkbox("Speed favoring", key="dash_sf")
+
+                    dash_bias = BiasInput(
+                        e_pct=float(d_e), ep_pct=float(d_ep),
+                        p_pct=float(d_p), s_pct=float(d_s),
+                        speed_favoring=d_sf,
+                    )
+
+                    # Race selector
+                    dash_race_options = sorted(dash_race_groups.keys())
+                    dash_race = st.selectbox(
+                        "Race:", options=dash_race_options,
+                        format_func=lambda rn: f"Race {rn} ({len(dash_race_groups[rn])} horses)" if rn else "All",
+                        key="dash_race_sel",
+                    )
+
+                    race_horses = dash_race_groups[dash_race]
+
+                    if st.button("Run Projections", type="primary", key="dash_run_proj"):
+                        projs, audit = _run_race_projections(engine, race_horses, dash_bias, [], dash_race)
+                        if not projs:
+                            st.warning("No projections produced.")
+                        else:
+                            st.session_state["dash_projections"] = projs
+                            st.session_state["dash_proj_race"] = dash_race
+                            st.session_state["dash_audit"] = audit
+                            st.session_state["dash_last_computed"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            # Persist
+                            s_track = dash_sel.get('track') or dash_sel.get('track_name', '')
+                            s_date = dash_sel.get('date') or dash_sel.get('race_date', '')
+                            _persist_predictions(dash_sid, s_track, s_date, dash_race, projs)
+
+                    # Display projections
+                    d_projs = st.session_state.get("dash_projections")
+                    d_proj_race = st.session_state.get("dash_proj_race")
+                    d_audit = st.session_state.get("dash_audit")
+                    d_last = st.session_state.get("dash_last_computed")
+
+                    if d_projs and d_proj_race == dash_race:
+                        if d_last:
+                            st.caption(f"Last computed at: {d_last}")
+                        sorted_by_bias = sorted(d_projs, key=lambda p: p.bias_score, reverse=True)
+                        _render_top_picks(sorted_by_bias, dash_race, key_prefix="dash")
+                        show_odds = st.checkbox("Show Odds", value=True, key=f"dash_show_odds_{dash_race}")
+                        _render_ranked_table(sorted_by_bias, race_horses, show_odds,
+                                             _d_odds_data, _d_odds_by_post, dash_race,
+                                             key_prefix="dash")
+                        _render_analysis_expanders(sorted_by_bias, d_audit, race_horses,
+                                                   key_prefix="dash")
+                    else:
+                        st.info("Click **Run Projections** to analyze this race.")
+
+    # ===== Section D: Bet Builder =====
+    with st.expander("Bet Builder", expanded=False):
+        # Need a session with best bets
+        try:
+            sess_resp2 = requests.get(f"{API_BASE_URL}/races", timeout=15)
+            races2 = sess_resp2.json().get("races", []) if sess_resp2.ok else []
+        except Exception:
+            races2 = []
+
+        if not races2:
+            st.info("No sessions available. Upload a PDF first.")
+        else:
+            def _bb_label(x):
+                name = x.get('primary_pdf_filename') or x.get('original_filename', 'unknown')
+                track = x.get('track') or x.get('track_name', '')
+                return f"{name} | {track}"
+
+            bb_sel = st.selectbox("Session:", options=races2, format_func=_bb_label, key="dash_bb_sess")
+            if bb_sel:
+                bb_sid = bb_sel.get('session_id') or bb_sel.get('id')
+                bb_track = bb_sel.get('track') or bb_sel.get('track_name', '')
+                bb_date = bb_sel.get('date') or bb_sel.get('race_date', '')
+
+                bc1, bc2, bc3 = st.columns(3)
+                with bc1:
+                    bb_bankroll = st.number_input("Bankroll ($)", value=1000, min_value=100, step=100, key="dash_bb_bankroll")
+                with bc2:
+                    bb_risk = st.selectbox("Risk Profile", ["conservative", "standard", "aggressive"],
+                                           index=1, key="dash_bb_risk")
+                with bc3:
+                    bb_paper = st.checkbox("Paper mode", value=True, key="dash_bb_paper")
+
+                if st.button("Generate Plan", type="primary", key="dash_bb_generate"):
+                    payload = {
+                        "session_id": bb_sid,
+                        "track": bb_track,
+                        "race_date": bb_date,
+                        "bankroll": bb_bankroll,
+                        "risk_profile": bb_risk,
+                        "paper_mode": bb_paper,
+                        "save": True,
+                    }
+                    try:
+                        resp = requests.post(f"{API_BASE_URL}/bets/build", json=payload, timeout=30)
+                        if resp.ok:
+                            st.session_state["dash_bb_plan"] = resp.json()
+                        else:
+                            st.error(f"Error: {resp.text}")
+                    except Exception as e:
+                        st.error(f"Error: {e}")
+
+                plan_data = st.session_state.get("dash_bb_plan")
+                if plan_data:
+                    plan = plan_data.get("plan", {})
+                    race_plans = plan.get("race_plans", [])
+                    diag = plan.get("diagnostics", {})
+
+                    pm1, pm2, pm3, pm4 = st.columns(4)
+                    pm1.metric("Total Risk", f"${plan.get('total_risk', 0):.0f}")
+                    pm2.metric("Tickets", diag.get("total_tickets", 0))
+                    pm3.metric("Races", len(race_plans))
+                    pm4.metric("Passed", diag.get("total_passed", 0))
+
+                    if plan_data.get("plan_id"):
+                        st.caption(f"Plan saved (ID {plan_data['plan_id']})")
+
+                    for rp in race_plans:
+                        if rp.get("passed"):
+                            continue
+                        tickets = rp.get("tickets", [])
+                        ticket_lines = []
+                        for t in tickets:
+                            sels = " / ".join(t.get("selections", []))
+                            ticket_lines.append(f"{t['bet_type']} {sels} — ${t['cost']:.0f}")
+                        with st.expander(
+                            f"R{rp['race_number']} Grade {rp['grade']} (${rp['total_cost']:.0f})",
+                            expanded=True,
+                        ):
+                            for tl in ticket_lines:
+                                st.markdown(f"- {tl}")
+
+    # ===== Section E: Results & ROI =====
+    with st.expander("Results & ROI", expanded=False):
+        res_file = st.file_uploader("Upload results PDF", type=["pdf"], key="dash_results_upload")
+        if res_file and st.button("Upload Results", key="dash_btn_results"):
+            with st.spinner("Uploading results..."):
+                try:
+                    files = {"file": (res_file.name, res_file.getvalue(), "application/pdf")}
+                    resp = requests.post(f"{API_BASE_URL}/results/upload", files=files, timeout=60)
+                    if resp.ok:
+                        st.success("Results uploaded.")
+                    else:
+                        st.error(f"Error: {resp.text}")
+                except Exception as e:
+                    st.error(f"Error: {e}")
+
+        # ROI summary
+        try:
+            roi_resp = requests.get(f"{API_BASE_URL}/predictions/roi-detailed",
+                                     params={"min_n": 3}, timeout=15)
+            if roi_resp.ok:
+                roi = roi_resp.json()
+                summary = roi.get("summary", {})
+                if summary.get("total_predictions", 0) > 0:
+                    r1, r2, r3, r4 = st.columns(4)
+                    r1.metric("Total Predictions", summary.get("total_predictions", 0))
+                    r2.metric("With Results", summary.get("with_results", 0))
+                    r3.metric("Correct Wins", summary.get("correct_wins", 0))
+                    flat_roi = summary.get("flat_roi_pct")
+                    r4.metric("Flat $2 ROI", f"{flat_roi:.1f}%" if flat_roi is not None else "N/A")
+                else:
+                    st.info("No prediction data with results yet.")
+            else:
+                st.info("No ROI data available.")
+        except Exception:
+            st.info("Could not fetch ROI data.")
+
+    # ===== Section F: Database =====
+    with st.expander("Database", expanded=False):
+        try:
+            db_resp = requests.get(f"{API_BASE_URL}/db/stats", timeout=10)
+            if db_resp.ok:
+                stats = db_resp.json()
+                d1, d2, d3, d4 = st.columns(4)
+                d1.metric("Sheets Horses", stats.get("sheets_horses", 0))
+                d2.metric("BRISNET Horses", stats.get("brisnet_horses", 0))
+                d3.metric("Reconciled Pairs", stats.get("reconciled_pairs", 0))
+                d4.metric("Coverage", f"{stats.get('coverage_pct', 0):.1f}%")
+            else:
+                st.info("Could not fetch DB stats.")
+        except Exception:
+            st.info("Could not connect to API.")
 
 
 def engine_page():
@@ -614,217 +1347,17 @@ def engine_page():
                 st.info("No New Top Setup horses found in this race.")
 
         # --- Top 3 Picks ---
-        top3 = display_projections[:3]
-        st.subheader(f"Top 3 Picks \u2014 Race {selected_race}")
-        for rank, p in enumerate(top3, 1):
-            col1, col2, col3 = st.columns([1, 2, 3])
-            badge = ""
-            if p.new_top_setup:
-                badge = " \u2b50\u2b50" if p.new_top_confidence >= 75 else " \u2b50"
-            if p.bounce_risk:
-                badge += " \u26a0\ufe0f"
-            with col1:
-                st.metric(label=f"#{rank}", value=p.name)
-            with col2:
-                st.markdown(
-                    f"**Post {p.post}** | {p.style} | {p.projection_type}  \n"
-                    f"Fig {p.projected_low:.1f}\u2013{p.projected_high:.1f} | "
-                    f"Conf {p.confidence:.0%}"
-                )
-            with col3:
-                if badge:
-                    st.markdown(f"**Tags:** {badge.strip()}")
-                st.caption(p.summary)
-                if p.new_top_setup:
-                    st.caption(
-                        f"New Top Setup: {p.new_top_setup_type} "
-                        f"({p.new_top_confidence}%) \u2014 {p.new_top_explanation}"
-                    )
+        _render_top_picks(display_projections, selected_race, key_prefix=f"eng_{sel_id}")
 
         # --- Full Ranked Table ---
-        is_brisnet_data = any(
-            h.get('figure_source') == 'brisnet' or h.get('quickplay_positive')
-            for h in race_horses
-        )
-
-        st.subheader("Full Ranked Table")
         show_odds = st.checkbox("Show Odds", value=True, key=f"show_odds_{sel_id}_{selected_race}")
-        if show_odds:
-            odds_found = sum(
-                1 for p in display_projections
-                if _lookup_odds(selected_race, p.name, p.post, _odds_data, _odds_by_post)
-                and _lookup_odds(selected_race, p.name, p.post, _odds_data, _odds_by_post).get("odds_decimal") is not None
-            )
-            st.caption(f"Odds coverage: {odds_found}/{len(display_projections)} horses")
+        _render_ranked_table(display_projections, race_horses, show_odds,
+                             _odds_data, _odds_by_post, selected_race,
+                             key_prefix=f"eng_{sel_id}")
 
-        rows = []
-        for p in display_projections:
-            row = {
-                'Horse': p.name,
-                'Post': p.post,
-                'Style': p.style,
-                'Cycle': p.projection_type,
-                'Setup': '',
-                'Proj Low': f"{p.projected_low:.1f}",
-                'Proj High': f"{p.projected_high:.1f}",
-                'Confidence': f"{p.confidence:.0%}",
-                'Tags': ', '.join(p.tags) if p.tags else '-',
-                'Bias Score': f"{p.bias_score:.1f}",
-                'Summary': p.summary,
-            }
-            if p.new_top_setup:
-                stars = "\u2b50\u2b50" if p.new_top_confidence >= 75 else "\u2b50"
-                row['Setup'] = f"{stars} {p.new_top_setup_type} ({p.new_top_confidence}%)"
-            elif p.bounce_risk:
-                row['Setup'] = "\u26a0\ufe0f BOUNCE RISK"
-            if is_brisnet_data:
-                matching = [h for h in race_horses if h.get('horse_name') == p.name]
-                if matching:
-                    row['Prime Power'] = matching[0].get('prime_power', '')
-            if show_odds:
-                o = _lookup_odds(selected_race, p.name, p.post, _odds_data, _odds_by_post)
-                row['Odds (ML)'] = _fmt_odds_display(o)
-                if not o or o.get("odds_decimal") is None:
-                    existing = row.get('Tags', '-')
-                    row['Tags'] = f"{existing}, NO_ODDS" if existing != '-' else "NO_ODDS"
-            rows.append(row)
-
-        render_styled_table(pd.DataFrame(rows))
-
-        # --- QuickPlay Comments (BRISNET only) ---
-        if is_brisnet_data:
-            with st.expander("QuickPlay Comments", expanded=False):
-                for h in race_horses:
-                    name = h.get('horse_name', 'Unknown')
-                    qp_pos = h.get('quickplay_positive', [])
-                    qp_neg = h.get('quickplay_negative', [])
-                    pp = h.get('prime_power', '')
-                    if qp_pos or qp_neg:
-                        st.markdown(f"**{name}** (Prime Power: {pp})")
-                        for comment in qp_pos:
-                            st.markdown(f"  :green[+ {comment}]")
-                        for comment in qp_neg:
-                            st.markdown(f"  :red[- {comment}]")
-                        st.markdown("---")
-
-        # --- Enrichment Details ---
-        has_enrichment = any(h.get('enrichment_source') == 'both' for h in race_horses)
-        if has_enrichment:
-            with st.expander("Enrichment Details", expanded=False):
-                for h in race_horses:
-                    if h.get('enrichment_source') != 'both':
-                        continue
-                    name = h.get('horse_name', 'Unknown')
-                    st.markdown(f"**{name}**")
-                    trainer = h.get('trainer', '')
-                    trainer_stats = h.get('trainer_stats', '')
-                    jockey = h.get('jockey', '')
-                    jockey_stats = h.get('jockey_stats', '')
-                    life_rec = h.get('life_record', '')
-                    life_earn = h.get('life_earnings', '')
-                    st.markdown(
-                        f"Trainer: {trainer} ({trainer_stats}) | "
-                        f"Jockey: {jockey} ({jockey_stats}) | "
-                        f"Life: {h.get('life_starts', 0)} starts, {life_rec} | "
-                        f"Earnings: {'$' + str(life_earn) if life_earn else 'N/A'}"
-                    )
-                    workouts = h.get('workouts', [])
-                    if workouts:
-                        wo_strs = [
-                            f"{w.get('date','')} {w.get('track','')} "
-                            f"{w.get('distance','')} {w.get('time','')}"
-                            for w in workouts[:3]
-                        ]
-                        st.caption("Workouts: " + " | ".join(wo_strs))
-
-        # --- New Top Setups & Bounce Risk ---
-        new_top_horses = [p for p in sorted_by_bias if p.new_top_setup]
-        bounce_risk_horses = [p for p in sorted_by_bias if p.bounce_risk and not p.new_top_setup]
-        if new_top_horses or bounce_risk_horses:
-            with st.expander("New Top Setups & Bounce Risk", expanded=True):
-                if new_top_horses:
-                    st.markdown("**New Top Setup Candidates:**")
-                    for p in new_top_horses:
-                        stars = "\u2b50\u2b50" if p.new_top_confidence >= 75 else "\u2b50"
-                        st.markdown(
-                            f"- **{p.name}** {stars} | "
-                            f"Type: {p.new_top_setup_type} | "
-                            f"Confidence: {p.new_top_confidence}% | "
-                            f"{p.new_top_explanation}"
-                        )
-                if bounce_risk_horses:
-                    st.markdown("**Bounce Risk (ran big new top last out):**")
-                    for p in bounce_risk_horses:
-                        st.markdown(
-                            f"- **{p.name}** \u26a0\ufe0f | "
-                            f"Cycle: {p.projection_type} | "
-                            f"Fig: {p.projected_low:.1f}\u2013{p.projected_high:.1f}"
-                        )
-
-        # --- TOSS List ---
-        tossed_horses = [p for p in sorted_by_bias if p.tossed]
-        if tossed_horses:
-            with st.expander("TOSS List (eliminate)", expanded=True):
-                for p in tossed_horses:
-                    reasons_str = "; ".join(p.toss_reasons)
-                    st.markdown(f"- **{p.name}** \u2014 {reasons_str}")
-
-        # --- AUDIT ---
-        if audit:
-            with st.expander("AUDIT", expanded=True):
-                st.markdown(
-                    f"**Cycle-best:** {audit.cycle_best} | "
-                    f"**Raw-best:** {audit.raw_best}"
-                )
-                if audit.cycle_vs_raw_match:
-                    st.success("Cycle-best and raw-best are the same horse.")
-                else:
-                    st.info(f"Cycle-best ({audit.cycle_best}) differs from raw-best ({audit.raw_best}).")
-
-                if audit.bounce_candidates:
-                    st.markdown("**Bounce candidates:** " + ", ".join(audit.bounce_candidates))
-
-                if audit.first_time_surface:
-                    st.markdown("**First-time-surface horses:**")
-                    for entry in audit.first_time_surface:
-                        st.markdown(
-                            f"- **{entry['name']}** \u2014 penalty: {entry['penalty']}, "
-                            f"conf adj: {entry['conf_adj']}"
-                        )
-
-                if audit.toss_list:
-                    st.markdown("**Tossed:**")
-                    for entry in audit.toss_list:
-                        reasons_str = "; ".join(entry['reasons'])
-                        st.markdown(f"- **{entry['name']}** \u2014 {reasons_str}")
-
-        # --- Charts ---
-        with st.expander("Charts", expanded=False):
-            fig = px.bar(
-                x=[p.name for p in sorted_by_bias],
-                y=[p.confidence for p in sorted_by_bias],
-                labels={'x': 'Horse', 'y': 'Confidence'},
-                title="Projection Confidence",
-            )
-            fig.update_yaxes(range=[0, 1])
-            st.plotly_chart(fig, use_container_width=True)
-
-            fig2 = go.Figure()
-            for p in sorted_by_bias:
-                fig2.add_trace(go.Bar(
-                    name=p.name,
-                    x=[p.name],
-                    y=[p.projected_high - p.projected_low],
-                    base=[p.projected_low],
-                    text=[f"{p.projected_low:.1f}-{p.projected_high:.1f}"],
-                    textposition='outside',
-                ))
-            fig2.update_layout(
-                title="Projected Figure Range",
-                yaxis_title="Speed Figure",
-                showlegend=False,
-            )
-            st.plotly_chart(fig2, use_container_width=True)
+        # --- Analysis expanders ---
+        _render_analysis_expanders(sorted_by_bias, audit, race_horses,
+                                   key_prefix=f"eng_{sel_id}")
 
     # =====================================================================
     # (B) Best Bets - across all races
@@ -877,81 +1410,8 @@ def engine_page():
         st.session_state.pop('best_bets', None)
         best_bets = None
     if best_bets:
-        top_n = min(10, len(best_bets))
-        st.caption(f"Showing top {top_n} of {len(best_bets)} entries")
-
-        bb_show_odds = st.checkbox("Show Odds", value=True, key=f"bb_show_odds_{sel_id}")
-        if bb_show_odds:
-            bb_odds_found = sum(
-                1 for _rn, _p in best_bets[:top_n]
-                if _lookup_odds(_rn, _p.name, _p.post, _odds_data, _odds_by_post)
-                and _lookup_odds(_rn, _p.name, _p.post, _odds_data, _odds_by_post).get("odds_decimal") is not None
-            )
-            st.caption(f"Odds coverage: {bb_odds_found}/{top_n} horses")
-
-        rows = []
-        for rn, p in best_bets[:top_n]:
-            score = _best_bet_score(p)
-            row = {
-                'Race': rn,
-                'Horse': p.name,
-                'Post': p.post,
-                'Style': p.style,
-                'Cycle': p.projection_type,
-                'Setup': '',
-                'Proj': f"{p.projected_low:.1f}\u2013{p.projected_high:.1f}",
-                'Confidence': f"{p.confidence:.0%}",
-                'Bias Score': f"{p.bias_score:.1f}",
-                'Best Bet Score': f"{score:.1f}",
-                'Tags': ', '.join(p.tags) if p.tags else '-',
-                'Summary': p.summary,
-            }
-            if p.new_top_setup:
-                stars = "\u2b50\u2b50" if p.new_top_confidence >= 75 else "\u2b50"
-                row['Setup'] = f"{stars} {p.new_top_setup_type} ({p.new_top_confidence}%)"
-            elif p.bounce_risk:
-                row['Setup'] = "\u26a0\ufe0f BOUNCE RISK"
-            if bb_show_odds:
-                o = _lookup_odds(rn, p.name, p.post, _odds_data, _odds_by_post)
-                row['Odds (ML)'] = _fmt_odds_display(o)
-                if not o or o.get("odds_decimal") is None:
-                    existing = row.get('Tags', '-')
-                    row['Tags'] = f"{existing}, NO_ODDS" if existing != '-' else "NO_ODDS"
-            rows.append(row)
-
-        df = pd.DataFrame(rows)
-
-        styled = df.style
-        st.dataframe(styled, use_container_width=True, hide_index=True)
-
-        # Highlight top 3
-        st.subheader("Top 3 Best Bets")
-        for rank, (rn, p) in enumerate(best_bets[:3], 1):
-            score = _best_bet_score(p)
-            col1, col2, col3 = st.columns([1, 2, 3])
-            with col1:
-                badge = ""
-                if p.new_top_setup:
-                    badge = " \u2b50\u2b50" if p.new_top_confidence >= 75 else " \u2b50"
-                if p.bounce_risk:
-                    badge += " \u26a0\ufe0f"
-                st.metric(f"#{rank}", f"R{rn} {p.name}{badge}")
-            with col2:
-                st.markdown(
-                    f"**Cycle** {p.projection_type} | "
-                    f"**Fig** {p.projected_low:.1f}\u2013{p.projected_high:.1f} | "
-                    f"**Conf** {p.confidence:.0%} | "
-                    f"**Score** {score:.1f}"
-                )
-                if p.new_top_setup:
-                    st.caption(
-                        f"New Top Setup (4yo): {p.new_top_setup_type} "
-                        f"({p.new_top_confidence}%) \u2014 {p.new_top_explanation}"
-                    )
-            with col3:
-                tags_str = ", ".join(p.tags) if p.tags else "none"
-                st.markdown(f"Tags: {tags_str}")
-                st.caption(p.summary)
+        _render_best_bets_table(best_bets, _odds_data, _odds_by_post,
+                                key_prefix=f"eng_bb_{sel_id}")
 
     # =====================================================================
     # (C) Bet Builder — inline on Engine page

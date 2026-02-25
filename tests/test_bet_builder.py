@@ -467,3 +467,23 @@ class TestTicketResultLinking:
         tr = result["ticket_results"][0]
         assert tr["outcome"] == "lost"  # Beta Horse finished 2nd
         assert tr["match_tier"] == "low"  # fell through to selection name
+
+
+class TestDashboardSharedPipeline:
+    """Verify shared helpers produce identical output (deterministic pipeline)."""
+
+    def test_grade_race_deterministic(self):
+        """grade_race is a pure function — same input = same output."""
+        settings = BetSettings()
+        g1, r1 = grade_race(A_RACE, settings)
+        g2, r2 = grade_race(A_RACE, settings)
+        assert g1 == g2
+        assert r1 == r2
+
+    def test_build_day_plan_deterministic(self):
+        """build_day_plan is deterministic — same projections = same plan."""
+        projs = {1: A_RACE, 2: B_RACE}
+        settings = BetSettings(bankroll=1000)
+        p1 = day_plan_to_dict(build_day_plan(projs, settings))
+        p2 = day_plan_to_dict(build_day_plan(projs, settings))
+        assert p1 == p2
