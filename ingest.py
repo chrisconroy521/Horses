@@ -167,6 +167,75 @@ def backfill_json(db: Persistence) -> None:
     print(f"  Tracks:           {', '.join(stats['tracks']) or 'none'}")
 
 
+def ingest_folder(db: Persistence, folder: str, source_type: str) -> None:
+    """Ingest all PDFs in a folder. source_type is 'sheets' or 'brisnet'."""
+    folder_path = Path(folder)
+    if not folder_path.is_dir():
+        print(f"Not a directory: {folder}")
+        sys.exit(1)
+
+    pdfs = sorted(folder_path.glob("*.pdf"))
+    if not pdfs:
+        print(f"No PDFs found in {folder}")
+        return
+
+    before = db.get_db_stats()
+    new_count = 0
+    skip_count = 0
+
+    for pdf in pdfs:
+        pdf_hash = compute_pdf_hash(str(pdf))
+        if db.get_upload_by_hash(pdf_hash):
+            print(f"  [skip] {pdf.name} (already ingested)")
+            skip_count += 1
+            continue
+
+        try:
+            if source_type == "sheets":
+                from ragozin_parser import RagozinParser
+                from api import _trad_to_dict
+                parser = RagozinParser()
+                race_data = parser.parse_ragozin_sheet(str(pdf))
+                parsed_json = _trad_to_dict(race_data)
+                upload_id = str(uuid.uuid4())
+                track = parsed_json.get("track_name", "")
+                race_date = parsed_json.get("race_date", "")
+                db.record_upload(upload_id, "sheets", pdf.name, pdf_hash, track, race_date,
+                                 horses_count=len(parsed_json.get("horses", [])))
+                result = db.ingest_sheets_card(upload_id, parsed_json)
+            else:
+                from brisnet_parser import BrisnetParser, to_pipeline_json, to_races_json
+                bp = BrisnetParser()
+                card = bp.parse(str(pdf))
+                pipeline_json = to_pipeline_json(card)
+                races_json = to_races_json(card)
+                upload_id = str(uuid.uuid4())
+                track = pipeline_json.get("track_name", "") or pipeline_json.get("track", "")
+                race_date = pipeline_json.get("race_date", "") or pipeline_json.get("date", "")
+                db.record_upload(upload_id, "brisnet", pdf.name, pdf_hash, track, race_date,
+                                 horses_count=len(pipeline_json.get("horses", [])))
+                result = db.ingest_brisnet_card(upload_id, pipeline_json, races_json)
+
+            print(f"  [ok]   {pdf.name}: {result['inserted']} inserted, {result['skipped']} skipped")
+            new_count += 1
+        except Exception as e:
+            print(f"  [err]  {pdf.name}: {e}")
+
+    # Reconcile after all ingestion
+    recon = db.reconcile()
+    after = db.get_db_stats()
+
+    print(f"\n--- Folder ingest summary ---")
+    print(f"  PDFs processed: {new_count} new, {skip_count} skipped")
+    print(f"  Sheets horses:  {before['sheets_horses']} -> {after['sheets_horses']} "
+          f"(+{after['sheets_horses'] - before['sheets_horses']})")
+    print(f"  BRISNET horses: {before['brisnet_horses']} -> {after['brisnet_horses']} "
+          f"(+{after['brisnet_horses'] - before['brisnet_horses']})")
+    print(f"  Reconciled:     {before['reconciled_pairs']} -> {after['reconciled_pairs']} "
+          f"(+{after['reconciled_pairs'] - before['reconciled_pairs']})")
+    print(f"  Coverage:       {before['coverage_pct']:.1f}% -> {after['coverage_pct']:.1f}%")
+
+
 def show_stats(db: Persistence) -> None:
     stats = db.get_db_stats()
     print("Cumulative Database Statistics:")
@@ -184,6 +253,9 @@ def main():
     ap = argparse.ArgumentParser(description="Ingest PDFs into cumulative database")
     ap.add_argument("--sheets", metavar="PDF", help="Ingest a Ragozin sheets PDF")
     ap.add_argument("--brisnet", metavar="PDF", help="Ingest a BRISNET PDF")
+    ap.add_argument("--folder", metavar="DIR", help="Ingest all PDFs in a folder")
+    ap.add_argument("--type", choices=["sheets", "brisnet"],
+                    help="Source type for --folder (required with --folder)")
     ap.add_argument("--stats", action="store_true", help="Show DB statistics")
     ap.add_argument("--backfill-json", action="store_true",
                     help="Import existing output/*.json into DB")
@@ -192,7 +264,12 @@ def main():
 
     db = Persistence(Path(args.db))
 
-    if args.sheets:
+    if args.folder:
+        if not args.type:
+            print("--type is required with --folder (sheets or brisnet)")
+            sys.exit(1)
+        ingest_folder(db, args.folder, args.type)
+    elif args.sheets:
         if not os.path.exists(args.sheets):
             print(f"File not found: {args.sheets}")
             sys.exit(1)

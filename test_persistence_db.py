@@ -461,5 +461,57 @@ class TestReconTiers:
         assert result["existing"] == 0
 
 
+# ==================================================================
+# Session stats + auto-reconcile
+# ==================================================================
+
+class TestSessionStats:
+    def test_session_stats_returns_scoped_data(self, db):
+        """get_session_stats returns counts scoped to that upload only."""
+        # Session 1: sheets
+        db.record_upload("sess1", "sheets", "a.pdf", "h1", "GP", "02/26/2026",
+                         session_id="sess1")
+        db.ingest_sheets_horse("sess1", {
+            "horse_name": "STAR", "race_number": 1, "post": "1",
+            "age": 3, "lines": [],
+        }, "GP", "02/26/2026")
+        # Session 2: brisnet (same card)
+        db.record_upload("sess2", "brisnet", "b.pdf", "h2", "GP", "02/26/2026",
+                         session_id="sess1")
+        db.ingest_brisnet_horse("sess2", {
+            "horse_name": "Star", "race_number": 1, "post": 1,
+            "runstyle": "E", "sire": "S", "dam": "D",
+            "lines": [], "workouts": [],
+        }, {"track": "GP", "race_date": "02/26/2026", "race_number": 1, "restrictions": ""})
+
+        db.reconcile()
+
+        stats = db.get_session_stats("sess1")
+        assert stats["sheets_horses"] == 1
+        assert stats["reconciled_pairs"] >= 1
+        assert stats["coverage_pct"] > 0
+        assert "confidence_breakdown" in stats
+
+    def test_auto_reconcile_on_ingest(self, db):
+        """Reconcile after each ingest picks up matches automatically."""
+        db.record_upload("u1", "sheets", "s.pdf", None, "GP", "02/26/2026")
+        db.ingest_sheets_horse("u1", {
+            "horse_name": "GOLDEN BOY", "race_number": 2, "post": "4",
+            "age": 3, "lines": [],
+        }, "GP", "02/26/2026")
+        r1 = db.reconcile()
+        assert r1["existing"] == 0  # no brisnet yet
+
+        # Now add brisnet
+        db.record_upload("u2", "brisnet", "b.pdf", None, "GP", "02/26/2026")
+        db.ingest_brisnet_horse("u2", {
+            "horse_name": "Golden Boy", "race_number": 2, "post": 4,
+            "runstyle": "P", "sire": "GOLD", "dam": "LADY",
+            "lines": [], "workouts": [],
+        }, {"track": "GP", "race_date": "02/26/2026", "race_number": 2, "restrictions": ""})
+        r2 = db.reconcile()
+        assert r2["new_matches"] >= 1  # auto-matched on reconcile
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -1138,6 +1138,89 @@ class Persistence:
     # Statistics
     # ==================================================================
 
+    def get_session_stats(self, upload_id: str) -> Dict[str, Any]:
+        """Stats scoped to a single upload/session and its reconciliation impact."""
+        # Also accept session_id that maps to multiple upload_ids (primary + _sec)
+        upload_ids = [r[0] for r in self.conn.execute(
+            "SELECT upload_id FROM uploads WHERE upload_id = ? OR session_id = ?",
+            (upload_id, upload_id),
+        ).fetchall()]
+        if not upload_ids:
+            return {"error": "upload not found"}
+
+        placeholders = ",".join("?" * len(upload_ids))
+
+        sh = self.conn.execute(
+            f"SELECT COUNT(*) FROM sheets_horses WHERE upload_id IN ({placeholders})",
+            upload_ids,
+        ).fetchone()[0]
+
+        bh = self.conn.execute(
+            f"SELECT COUNT(*) FROM brisnet_horses WHERE upload_id IN ({placeholders})",
+            upload_ids,
+        ).fetchone()[0]
+
+        # Reconciled pairs involving horses from these uploads
+        rp_rows = self.conn.execute(
+            f"""
+            SELECT r.confidence, COUNT(*) as cnt
+            FROM reconciliation r
+            WHERE r.horse_id IN (
+                SELECT horse_id FROM sheets_horses WHERE upload_id IN ({placeholders})
+            )
+            OR r.brisnet_id IN (
+                SELECT brisnet_id FROM brisnet_horses WHERE upload_id IN ({placeholders})
+            )
+            GROUP BY r.confidence
+            """,
+            upload_ids + upload_ids,
+        ).fetchall()
+        confidence_breakdown = {r["confidence"]: r["cnt"] for r in rp_rows}
+        rp = sum(confidence_breakdown.values())
+
+        total_session_horses = sh + bh
+        coverage_pct = (rp / total_session_horses * 100) if total_session_horses > 0 else 0.0
+
+        # Unmatched from this session (top 20 each)
+        unmatched_sh = self.conn.execute(
+            f"""
+            SELECT sh.normalized_name, sh.track, sh.race_date
+            FROM sheets_horses sh
+            WHERE sh.upload_id IN ({placeholders})
+            AND NOT EXISTS (SELECT 1 FROM reconciliation r WHERE r.horse_id = sh.horse_id)
+            ORDER BY sh.normalized_name LIMIT 20
+            """,
+            upload_ids,
+        ).fetchall()
+
+        unmatched_bh = self.conn.execute(
+            f"""
+            SELECT bh.normalized_name, bh.track, bh.race_date
+            FROM brisnet_horses bh
+            WHERE bh.upload_id IN ({placeholders})
+            AND NOT EXISTS (SELECT 1 FROM reconciliation r WHERE r.brisnet_id = bh.brisnet_id)
+            ORDER BY bh.normalized_name LIMIT 20
+            """,
+            upload_ids,
+        ).fetchall()
+
+        return {
+            "upload_ids": upload_ids,
+            "sheets_horses": sh,
+            "brisnet_horses": bh,
+            "reconciled_pairs": rp,
+            "coverage_pct": round(coverage_pct, 1),
+            "confidence_breakdown": confidence_breakdown,
+            "unmatched_sheets": [
+                {"name": r["normalized_name"], "track": r["track"], "date": r["race_date"]}
+                for r in unmatched_sh
+            ],
+            "unmatched_brisnet": [
+                {"name": r["normalized_name"], "track": r["track"], "date": r["race_date"]}
+                for r in unmatched_bh
+            ],
+        }
+
     def get_db_stats(self) -> Dict[str, Any]:
         """Aggregate statistics for the Streamlit panel."""
         sh = self.conn.execute("SELECT COUNT(*) FROM sheets_horses").fetchone()[0]

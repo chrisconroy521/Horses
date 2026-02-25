@@ -249,6 +249,28 @@ def engine_page():
         f"Loaded lines: {total_lines}, horses: {len(all_horses)} (source: {source})"
     )
 
+    # --- Session DB Stats ---
+    try:
+        ss_resp = requests.get(f"{API_BASE_URL}/sessions/{sel_id}/stats", timeout=10)
+        if ss_resp.status_code == 200:
+            ss = ss_resp.json()
+            db_resp = requests.get(f"{API_BASE_URL}/db/stats", timeout=10)
+            gs = db_resp.json() if db_resp.status_code == 200 else {}
+            with st.expander("DB Coverage (this session / global)", expanded=False):
+                s1, s2, s3, s4 = st.columns(4)
+                with s1:
+                    st.metric("Session Matched", ss.get("reconciled_pairs", 0))
+                with s2:
+                    sess_conf = ss.get("confidence_breakdown", {})
+                    st.metric("H / M / L",
+                              f"{sess_conf.get('high', 0)}/{sess_conf.get('medium', 0)}/{sess_conf.get('low', 0)}")
+                with s3:
+                    st.metric("Global Pairs", gs.get("reconciled_pairs", 0))
+                with s4:
+                    st.metric("Global Coverage", f"{gs.get('coverage_pct', 0):.1f}%")
+    except Exception:
+        pass
+
     # --- Figure quality sanity check ---
     figure_warnings: dict = {}  # race_number -> pct_missing
     _temp_groups: dict = {}
@@ -767,6 +789,14 @@ def upload_page():
                                 st.metric("Track", result.get('track', 'N/A'))
                             with col3:
                                 st.metric("Parser", result.get('parser_used', 'unknown'))
+                            # Show reconciliation impact
+                            if result.get('reconciliation'):
+                                recon = result['reconciliation']
+                                rc1, rc2 = st.columns(2)
+                                with rc1:
+                                    st.metric("New Matches", recon.get('new_matches', 0))
+                                with rc2:
+                                    st.metric("Global Coverage", f"{result.get('db_coverage_pct', 0):.1f}%")
                         else:
                             st.error(f"Error: {response.text}")
                     except requests.exceptions.ConnectionError:
@@ -797,6 +827,13 @@ def upload_page():
                             st.success(f"Secondary attached: {result['horses_count']} horses")
                             if result.get('merge_coverage'):
                                 st.info(f"Merge coverage: {result['merge_coverage']}")
+                            if result.get('reconciliation'):
+                                recon = result['reconciliation']
+                                rc1, rc2 = st.columns(2)
+                                with rc1:
+                                    st.metric("New Matches", recon.get('new_matches', 0))
+                                with rc2:
+                                    st.metric("Global Coverage", f"{result.get('db_coverage_pct', 0):.1f}%")
                         else:
                             st.error(f"Error: {response.text}")
                     except Exception as e:

@@ -605,6 +605,7 @@ async def upload_primary(file: UploadFile = File(...), use_gpt: bool = False):
     sessions[session_id] = session_meta
 
     # --- Cumulative DB ingestion ---
+    recon_result = None
     try:
         pdf_hash = hashlib.sha256(content).hexdigest()
         _db.record_upload(
@@ -617,11 +618,11 @@ async def upload_primary(file: UploadFile = File(...), use_gpt: bool = False):
             _db.ingest_brisnet_card(session_id, output_dict, {})
         else:
             _db.ingest_sheets_card(session_id, output_dict)
-        _db.reconcile(session_id)
+        recon_result = _db.reconcile(session_id)
     except Exception as db_err:
         logger.warning(f"DB ingestion failed (non-fatal): {db_err}")
 
-    return {
+    resp = {
         "success": True,
         "session_id": session_id,
         "track": track,
@@ -632,6 +633,12 @@ async def upload_primary(file: UploadFile = File(...), use_gpt: bool = False):
         "parser_used": parse_source,
         "processing_duration": processing_duration,
     }
+    if recon_result:
+        resp["reconciliation"] = recon_result
+        global_stats = _db.get_db_stats()
+        resp["db_coverage_pct"] = global_stats["coverage_pct"]
+        resp["db_reconciled_pairs"] = global_stats["reconciled_pairs"]
+    return resp
 
 
 @app.post("/upload_secondary")
@@ -687,6 +694,7 @@ async def upload_secondary(session_id: str, file: UploadFile = File(...)):
     })
 
     # --- Cumulative DB ingestion for secondary ---
+    recon_result = None
     try:
         sec_upload_id = f"{session_id}_sec"
         pdf_hash = hashlib.sha256(content).hexdigest()
@@ -697,23 +705,38 @@ async def upload_secondary(session_id: str, file: UploadFile = File(...)):
             session_id=session_id, horses_count=horses_count,
         )
         _db.ingest_brisnet_card(sec_upload_id, output_dict, {})
-        _db.reconcile(sec_upload_id)
+        recon_result = _db.reconcile(sec_upload_id)
     except Exception as db_err:
         logger.warning(f"DB ingestion (secondary) failed (non-fatal): {db_err}")
 
-    return {
+    resp = {
         "success": True,
         "session_id": session_id,
         "secondary_pdf_type": pdf_type,
         "horses_count": horses_count,
         "merge_coverage": merge_coverage,
     }
+    if recon_result:
+        resp["reconciliation"] = recon_result
+        global_stats = _db.get_db_stats()
+        resp["db_coverage_pct"] = global_stats["coverage_pct"]
+        resp["db_reconciled_pairs"] = global_stats["reconciled_pairs"]
+    return resp
 
 
 @app.get("/db/stats")
 async def db_stats():
     """Return cumulative database statistics."""
     return _db.get_db_stats()
+
+
+@app.get("/sessions/{session_id}/stats")
+async def session_stats(session_id: str):
+    """Return reconciliation stats scoped to a single session/upload."""
+    result = _db.get_session_stats(session_id)
+    if "error" in result:
+        raise HTTPException(status_code=404, detail=result["error"])
+    return result
 
 
 @app.post("/db/alias")
