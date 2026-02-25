@@ -1987,6 +1987,12 @@ class Persistence:
         # ROI by projection_type (cycle label)
         roi_by_cycle = self._calc_roi_by_cycle(where, params)
 
+        # Available tracks in results
+        track_rows = self.conn.execute(
+            "SELECT DISTINCT track FROM result_entries ORDER BY track"
+        ).fetchall()
+        available_tracks = [r["track"] for r in track_rows if r["track"]]
+
         return {
             "total_races": total_races,
             "total_entries": total_entries,
@@ -1995,6 +2001,7 @@ class Persistence:
             "linking_rate": round(linking_rate, 1),
             "roi_by_rank": roi_by_rank,
             "roi_by_cycle": roi_by_cycle,
+            "available_tracks": available_tracks,
         }
 
     # ------------------------------------------------------------------
@@ -2479,6 +2486,51 @@ class Persistence:
             "distance",
         )
 
+        # 6. By tags (comma-separated in rp.tags — aggregate in Python)
+        tag_rows = self.conn.execute(f"""
+            SELECT rp.tags,
+                   CASE WHEN er.finish_pos = 1 THEN 1 ELSE 0 END as won,
+                   CASE WHEN er.finish_pos = 1 AND er.win_payoff IS NOT NULL
+                        THEN er.win_payoff ELSE 0 END as payoff
+            {base_join}
+        """, params).fetchall()
+
+        tag_agg: Dict[str, Dict[str, Any]] = {}
+        for row in tag_rows:
+            raw_tags = row["tags"] or ""
+            tags = [t.strip() for t in raw_tags.split(",") if t.strip()]
+            if not tags:
+                tags = ["NO_TAGS"]
+            for tag in tags:
+                if tag not in tag_agg:
+                    tag_agg[tag] = {"bets": 0, "wins": 0, "payoff": 0.0}
+                tag_agg[tag]["bets"] += 1
+                tag_agg[tag]["wins"] += row["won"]
+                tag_agg[tag]["payoff"] += row["payoff"]
+
+        roi_tags = []
+        for tag, stats in sorted(tag_agg.items()):
+            b = stats["bets"]
+            cost = b * 2.0
+            pay = stats["payoff"]
+            roi = ((pay - cost) / cost * 100) if cost > 0 else 0
+            roi_tags.append({
+                "tag": tag, "N": b, "wins": stats["wins"],
+                "win_pct": round(stats["wins"] / b * 100, 1) if b else 0,
+                "roi_pct": round(roi, 1),
+            })
+
+        # 7. By pick rank (top1 vs top2 vs top3+)
+        roi_rank = _build(
+            _roi_query("""
+                CASE WHEN rp.pick_rank = 1 THEN 'Top Pick'
+                     WHEN rp.pick_rank = 2 THEN '2nd Pick'
+                     WHEN rp.pick_rank = 3 THEN '3rd Pick'
+                     ELSE '4th+' END
+            """),
+            "rank",
+        )
+
         # Summary counts
         total_preds = self.conn.execute(
             f"SELECT COUNT(*) FROM result_predictions rp WHERE {where}", params
@@ -2496,6 +2548,8 @@ class Persistence:
             "roi_by_odds": roi_odds,
             "roi_by_surface": roi_surface,
             "roi_by_distance": roi_distance,
+            "roi_by_tags": roi_tags,
+            "roi_by_rank": roi_rank,
         }
 
     def get_calibration_data(

@@ -3719,6 +3719,68 @@ def _render_recommendations(roi_cycle: list, roi_conf: list, roi_odds: list):
         st.info("Not enough data with N >= 30 to make recommendations yet.")
 
 
+def _render_top_leaks(roi_rank: list, roi_cycle: list, roi_conf: list,
+                      roi_odds: list, roi_tags: list):
+    """Identify worst-performing buckets across all ROI dimensions."""
+    st.subheader("Top Leaks")
+    st.caption("Worst-performing buckets (N >= 30). These are where money is lost.")
+
+    leaks = []
+    for label, data, key, dim in [
+        ("Pick Rank", roi_rank, "rank", "Rank"),
+        ("Cycle", roi_cycle, "cycle", "Cycle"),
+        ("Confidence", roi_conf, "confidence", "Confidence"),
+        ("Odds", roi_odds, "odds", "Odds"),
+        ("Tag", roi_tags, "tag", "Tag"),
+    ]:
+        for d in (data or []):
+            n = d.get("N", d.get("bets", 0))
+            roi = d.get("roi_pct", 0)
+            if n >= _LOW_SAMPLE_THRESHOLD and roi < -15:
+                leaks.append({
+                    "Dimension": dim,
+                    "Bucket": d.get(key, ""),
+                    "N": n,
+                    "Win%": d.get("win_pct", 0),
+                    "ROI%": roi,
+                })
+
+    if not leaks:
+        st.info("No major leaks detected (no bucket with ROI < -15% and N >= 30).")
+        return
+
+    leaks.sort(key=lambda x: x["ROI%"])
+    df = pd.DataFrame(leaks[:10])
+    df["Win%"] = df["Win%"].apply(lambda x: f"{x:.1f}")
+    df["ROI%"] = df["ROI%"].apply(lambda x: f"{x:+.1f}")
+    st.dataframe(df, hide_index=True, use_container_width=True)
+
+    # Actionable suggestions from leaks
+    suggestions = []
+    for leak in leaks[:5]:
+        dim = leak["Dimension"]
+        bucket = leak["Bucket"]
+        roi = leak["ROI%"]
+        n = leak["N"]
+        if dim == "Confidence" and bucket in ("0-59",):
+            suggestions.append(f"Raise min confidence — **{bucket}%** confidence bets lost **{roi}%** (N={n})")
+        elif dim == "Odds" and bucket == "<=2-1":
+            suggestions.append(f"Avoid heavy favorites — **{bucket}** odds lost **{roi}%** (N={n})")
+        elif dim == "Cycle":
+            suggestions.append(f"Review **{bucket}** cycle — lost **{roi}%** on {n} bets")
+        elif dim == "Tag":
+            suggestions.append(f"Tag **{bucket}** is bleeding — **{roi}%** on {n} bets")
+        elif dim == "Rank" and "4th" in str(bucket):
+            suggestions.append(f"Stop betting 4th+ picks — **{roi}%** (N={n})")
+        else:
+            suggestions.append(f"**{dim}: {bucket}** — {roi}% (N={n})")
+
+    if suggestions:
+        st.markdown("**Tuning suggestions:**")
+        for s in suggestions:
+            st.markdown(f"- {s}")
+
+
 def _render_exports(roi_params: dict, det: dict,
                     roi_rank: list, roi_cycle: list, roi_conf: list,
                     roi_odds: list, roi_surface: list, roi_distance: list):
@@ -3971,16 +4033,13 @@ def results_page():
 
     st.divider()
 
-    # --- Stats ---
+    # --- Stats (initial fetch without track filter to get available tracks) ---
     try:
-        params = {}
-        if r_track:
-            params["track"] = r_track
-        resp = api_get(f"/results/stats", params=params, timeout=15)
+        resp = api_get(f"/results/stats", timeout=15)
         if resp.status_code != 200:
             st.info("No results data yet. Upload a results CSV above.")
             return
-        stats = resp.json()
+        all_stats = resp.json()
     except requests.exceptions.ConnectionError:
         st.error("Cannot connect to API.")
         return
@@ -3988,10 +4047,29 @@ def results_page():
         st.error(f"Error: {e}")
         return
 
-    if stats.get("total_entries", 0) == 0:
+    if all_stats.get("total_entries", 0) == 0:
         st.info("No results in database. Upload a results CSV to see ROI analysis.\n\n"
                 "CLI: `python ingest_results.py --csv results.csv --track GP --date 02/26/2026`")
         return
+
+    # --- Track filter dropdown ---
+    available_tracks = all_stats.get("available_tracks", [])
+    track_filter = ""
+    if available_tracks:
+        track_options = ["All Tracks"] + available_tracks
+        sel_track_filter = st.selectbox("Filter by Track", track_options, key="roi_track_filter")
+        if sel_track_filter != "All Tracks":
+            track_filter = sel_track_filter
+
+    # Re-fetch stats with track filter applied
+    stats = all_stats
+    if track_filter:
+        try:
+            resp = api_get(f"/results/stats", params={"track": track_filter}, timeout=15)
+            if resp.status_code == 200:
+                stats = resp.json()
+        except Exception:
+            pass
 
     # Summary metrics
     render_metrics_row({
@@ -4005,7 +4083,9 @@ def results_page():
 
     # --- Fetch detailed ROI from predictions ---
     roi_params = {}
-    if r_track:
+    if track_filter:
+        roi_params["track"] = track_filter
+    elif r_track:
         roi_params["track"] = r_track
     if r_date:
         roi_params["date"] = r_date
@@ -4044,8 +4124,8 @@ def results_page():
 
         # ---------- ROI tables with sample-size warnings ----------
 
-        # ROI by Pick Rank (from simple endpoint — has rank column)
-        roi_rank = pred_roi.get("roi_by_rank", [])
+        # ROI by Pick Rank (prefer detailed endpoint, fallback to simple)
+        roi_rank = det.get("roi_by_rank") or pred_roi.get("roi_by_rank", [])
         if roi_rank:
             _render_roi_table(
                 "ROI by Pick Rank ($2 Win)", roi_rank,
@@ -4091,6 +4171,19 @@ def results_page():
                 "ROI by Distance ($2 Win)", roi_distance,
                 label_key="distance", label_col="Distance",
             )
+
+        # ROI by Tags
+        roi_tags = det.get("roi_by_tags", [])
+        if roi_tags:
+            _render_roi_table(
+                "ROI by Tag ($2 Win)", roi_tags,
+                label_key="tag", label_col="Tag",
+            )
+
+        st.divider()
+
+        # ---------- Top Leaks ----------
+        _render_top_leaks(roi_rank, roi_cycle, roi_conf, roi_odds, roi_tags)
 
         st.divider()
 
@@ -4628,8 +4721,18 @@ def daily_wins_page():
 
     paper_mode = st.checkbox("Paper mode", value=True, key="dw_paper")
 
-    # --- Exotic ticket depth ---
-    with st.expander("Exotic Ticket Depth (A/B/C counts)", expanded=False):
+    # --- Exotic settings ---
+    with st.expander("Exotic Bet Settings", expanded=False):
+        st.caption("**Base Wagers**")
+        bw1, bw2, bw3 = st.columns(3)
+        with bw1:
+            dw_dd_base = st.selectbox("DD base ($)", [1.0, 2.0, 3.0, 5.0], index=1, key="dw_dd_base")
+        with bw2:
+            dw_ex_base = st.selectbox("EX base ($)", [0.50, 1.0, 2.0, 3.0], index=1, key="dw_ex_base")
+        with bw3:
+            dw_tri_base = st.selectbox("TRI base ($)", [0.20, 0.50, 1.0, 2.0], index=1, key="dw_tri_base")
+
+        st.caption("**Ticket Depth (A/B/C counts)**")
         ec1, ec2, ec3 = st.columns(3)
         with ec1:
             st.caption("Daily Double")
@@ -4644,6 +4747,9 @@ def daily_wins_page():
             dw_tri_a = st.number_input("TRI A", min_value=1, max_value=2, value=1, key="dw_tri_a")
             dw_tri_b = st.number_input("TRI B", min_value=1, max_value=4, value=2, key="dw_tri_b")
             dw_tri_c = st.number_input("TRI C", min_value=1, max_value=5, value=3, key="dw_tri_c")
+
+        st.caption("**Top N Plays**")
+        dw_top_n = st.number_input("Max exotic plays per type", min_value=3, max_value=10, value=5, key="dw_top_n")
 
     # --- Generate ---
     if st.button("Generate Daily Best Bets", type="primary", key="btn_daily_wins"):
@@ -4674,15 +4780,24 @@ def daily_wins_page():
                         st.session_state["dw_last_date"] = dw_date_str
                         plan_id = resp.json().get("plan_id", "?")
                         st.success(f"Plan generated (plan_id={plan_id})")
-                        # Also fetch exotics (with A/B/C counts)
+                        # Also fetch exotics (with A/B/C counts + base wagers + top N)
                         try:
                             ex_payload = {**payload,
                                           "dd_a": dw_dd_a, "dd_b": dw_dd_b,
                                           "ex_a": dw_ex_a, "ex_b": dw_ex_b,
-                                          "tri_a": dw_tri_a, "tri_b": dw_tri_b, "tri_c": dw_tri_c}
+                                          "tri_a": dw_tri_a, "tri_b": dw_tri_b, "tri_c": dw_tri_c,
+                                          "dd_base_wager": dw_dd_base,
+                                          "ex_base_wager": dw_ex_base,
+                                          "tri_base_wager": dw_tri_base,
+                                          "max_plays": dw_top_n,
+                                          "save": True}
                             ex_resp = api_post("/bets/daily-exotics", json=ex_payload, timeout=30)
                             if ex_resp.status_code == 200:
-                                st.session_state["dw_exotics"] = ex_resp.json()
+                                ex_data = ex_resp.json()
+                                st.session_state["dw_exotics"] = ex_data
+                                ex_plan_id = ex_data.get("plan_id")
+                                if ex_plan_id:
+                                    st.success(f"Exotic plan saved (plan_id={ex_plan_id})")
                             else:
                                 st.session_state["dw_exotics"] = None
                         except Exception:
@@ -4781,18 +4896,28 @@ def daily_wins_page():
         # --- Exotic Recommendations ---
         exotics = st.session_state.get("dw_exotics")
         if exotics:
+            ex_total = exotics.get("total_cost")
+            if ex_total:
+                st.divider()
+                st.metric("Total Exotic Cost", f"${ex_total:.2f}")
+
+            dd_list = exotics.get("daily_doubles", [])
+            ex_list = exotics.get("exactas", [])
+            tri_list = exotics.get("trifectas", [])
+            n_dd = len([p for p in dd_list if not p.get("passed")])
+            n_ex = len([p for p in ex_list if not p.get("passed")])
+            n_tri = len([p for p in tri_list if not p.get("passed")])
             _render_exotic_table(
-                "Best Daily Doubles (Top 5)",
-                exotics.get("daily_doubles", []),
-                multi_race=True,
+                f"Best Daily Doubles ({n_dd})",
+                dd_list, multi_race=True,
             )
             _render_exotic_table(
-                "Best Exactas (Top 5)",
-                exotics.get("exactas", []),
+                f"Best Exactas ({n_ex})",
+                ex_list,
             )
             _render_exotic_table(
-                "Best Trifectas (Top 5)",
-                exotics.get("trifectas", []),
+                f"Best Trifectas ({n_tri})",
+                tri_list,
             )
 
         # --- Past plans ---
@@ -4810,9 +4935,11 @@ def daily_wins_page():
                         dp_id = dp.get("plan_id")
                         dp_risk = dp.get("total_risk", 0)
                         dp_mode = "Paper" if dp.get("paper_mode") else "Live"
+                        dp_type = dp.get("plan_type", "daily")
                         dp_created = dp.get("created_at", "")[:19]
+                        type_label = "WIN" if dp_type == "daily" else "EXOTIC" if dp_type == "exotic" else dp_type.upper()
                         st.markdown(
-                            f"**Plan #{dp_id}** — Risk: ${dp_risk:.0f} | "
+                            f"**Plan #{dp_id}** ({type_label}) — Risk: ${dp_risk:.0f} | "
                             f"Mode: {dp_mode} | Created: {dp_created}"
                         )
                         if st.button(f"Evaluate ROI (Plan #{dp_id})", key=f"dw_eval_{dp_id}"):

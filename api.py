@@ -1676,26 +1676,69 @@ async def build_daily_exotics_endpoint(payload: dict):
     tri_b = int(payload.get("tri_b", 2))
     tri_c = int(payload.get("tri_c", 3))
 
+    # Base wager overrides
+    dd_base = float(payload.get("dd_base_wager", 2.0))
+    ex_base = float(payload.get("ex_base_wager", 1.0))
+    tri_base = float(payload.get("tri_base_wager", 0.50))
+
     # Build all three exotic types
     dd_plays = best_daily_doubles(
         predictions_by_track, odds_by_key, settings,
         max_plays=max_plays, a_count=dd_a, b_count=dd_b,
+        base_wager=dd_base,
     )
     ex_plays = best_exactas(
         predictions_by_track, odds_by_key, settings,
         max_plays=max_plays, a_count=ex_a, b_count=ex_b,
+        base_wager=ex_base,
     )
     tri_plays = best_trifectas(
         predictions_by_track, odds_by_key, settings,
         max_plays=max_plays, a_count=tri_a, b_count=tri_b, c_count=tri_c,
+        base_wager=tri_base,
     )
 
     from dataclasses import asdict as _asdict_ex
-    return {
+    result = {
         "daily_doubles": [_asdict_ex(p) for p in dd_plays],
         "exactas": [_asdict_ex(p) for p in ex_plays],
         "trifectas": [_asdict_ex(p) for p in tri_plays],
     }
+
+    # Auto-persist exotic plan
+    if payload.get("save", True):
+        all_plays = dd_plays + ex_plays + tri_plays
+        active_plays = [p for p in all_plays if not p.passed]
+        if active_plays:
+            total_cost = sum(p.cost for p in active_plays)
+            plan_dict = {
+                "daily_doubles": [_asdict_ex(p) for p in dd_plays],
+                "exactas": [_asdict_ex(p) for p in ex_plays],
+                "trifectas": [_asdict_ex(p) for p in tri_plays],
+                "total_cost": total_cost,
+                "settings": {
+                    "dd_base_wager": dd_base, "ex_base_wager": ex_base,
+                    "tri_base_wager": tri_base,
+                    "dd_a": dd_a, "dd_b": dd_b,
+                    "ex_a": ex_a, "ex_b": ex_b,
+                    "tri_a": tri_a, "tri_b": tri_b, "tri_c": tri_c,
+                },
+            }
+            plan_id = _db.save_bet_plan(
+                session_id=f"daily_{race_date}",
+                track="ALL",
+                race_date=race_date,
+                settings_dict=plan_dict["settings"],
+                plan_dict=plan_dict,
+                total_risk=total_cost,
+                paper_mode=settings.paper_mode,
+                engine_version=_ENGINE_VERSION,
+                plan_type="exotic",
+            )
+            result["plan_id"] = plan_id
+            result["total_cost"] = total_cost
+
+    return result
 
 
 @app.post("/bets/multi-race")

@@ -1204,6 +1204,7 @@ def best_exactas(
     race_quality: Optional[Dict[tuple, float]] = None,
     a_count: int = 1,
     b_count: int = 3,
+    base_wager: float = 2.0,
 ) -> List[ExoticPlay]:
     """Build cross-track best exacta plays.
 
@@ -1295,7 +1296,7 @@ def best_exactas(
                 combos = len(box_names) * (len(box_names) - 1)
                 ticket_desc = f"BOX {'/'.join(box_names)}"
 
-            cost = combos * 2.0
+            cost = combos * base_wager
             badges = _exotic_reason_badges(ana)
             flags = _exotic_risk_flags(ana)
 
@@ -1324,6 +1325,7 @@ def best_trifectas(
     a_count: int = 1,
     b_count: int = 2,
     c_count: int = 3,
+    base_wager: float = 2.0,
 ) -> List[ExoticPlay]:
     """Build cross-track best trifecta plays.
 
@@ -1420,7 +1422,7 @@ def best_trifectas(
                 for t in third_pool:
                     if t != first_name and t != s:
                         combos += 1
-            cost = combos * 2.0
+            cost = combos * base_wager
 
             legs = [[first_name], second_pool, third_pool]
             ticket_desc = f"KEY {first_name} / {','.join(second_pool)} / {','.join(third_pool)}"
@@ -1460,6 +1462,7 @@ def best_daily_doubles(
     race_quality: Optional[Dict[tuple, float]] = None,
     a_count: int = 1,
     b_count: int = 2,
+    base_wager: float = 2.0,
 ) -> List[ExoticPlay]:
     """Build cross-track best daily double plays.
 
@@ -1552,7 +1555,7 @@ def best_daily_doubles(
                 ticket_desc = f"{'+'.join(leg1_picks)} \u00d7 {'+'.join(leg2_picks)}"
 
             combos = len(leg1_picks) * len(leg2_picks)
-            cost = combos * 2.0
+            cost = combos * base_wager
 
             stronger = ana1 if ana1["top_conf"] >= ana2["top_conf"] else ana2
             badges = _exotic_reason_badges(stronger)
