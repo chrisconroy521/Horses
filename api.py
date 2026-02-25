@@ -934,6 +934,52 @@ async def confirm_pdf_results(payload: dict):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/results/inbox")
+async def results_inbox():
+    """Return result_races with unattached entries plus matching sessions."""
+    unattached = _db.get_unattached_results()
+
+    # For each unique (track, date), find matching sessions
+    track_dates = set()
+    for r in unattached:
+        track_dates.add((r["track"], r["race_date"]))
+
+    matching_sessions: Dict[str, Any] = {}
+    for (track, race_date) in track_dates:
+        key = f"{track}_{race_date}"
+        matches = _db.get_sessions_for_track_date(track, race_date)
+        # Also check in-memory sessions dict
+        for sid, s in sessions.items():
+            if s.get("track", "") == track and s.get("date", "") == race_date:
+                if not any(m["session_id"] == sid for m in matches):
+                    matches.append({
+                        "session_id": sid,
+                        "track_name": s.get("track", ""),
+                        "race_date": s.get("date", ""),
+                        "created_at": s.get("created_at", ""),
+                        "parser_used": s.get("primary_pdf_type", ""),
+                        "horses_count": s.get("primary_horses_count", 0),
+                    })
+        matching_sessions[key] = matches
+
+    return {"unattached_races": unattached, "matching_sessions": matching_sessions}
+
+
+@app.post("/results/attach")
+async def attach_results(payload: dict):
+    """Attach result_entries to a session.
+
+    Body: {track, race_date, session_id}
+    """
+    track = payload.get("track", "")
+    race_date = payload.get("race_date", "")
+    session_id = payload.get("session_id", "")
+    if not track or not race_date or not session_id:
+        raise HTTPException(status_code=400, detail="track, race_date, session_id required")
+    result = _db.attach_results_to_session(track, race_date, session_id)
+    return {"success": True, **result}
+
+
 @app.post("/db/alias")
 async def add_alias(payload: dict):
     """Add a horse name alias. Body: {canonical: str, alias: str}"""

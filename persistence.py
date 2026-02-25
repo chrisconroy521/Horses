@@ -1838,6 +1838,65 @@ class Persistence:
             "roi_by_cycle": roi_by_cycle,
         }
 
+    # ------------------------------------------------------------------
+    # Results Inbox helpers
+    # ------------------------------------------------------------------
+
+    def get_unattached_results(self) -> List[Dict[str, Any]]:
+        """Return result_races rows where at least one entry has no session_id."""
+        rows = self.conn.execute("""
+            SELECT rr.track, rr.race_date, rr.race_number,
+                   rr.surface, rr.distance,
+                   COUNT(er.entry_result_id) AS total_entries,
+                   SUM(CASE WHEN er.session_id IS NOT NULL AND er.session_id != ''
+                            THEN 1 ELSE 0 END) AS attached,
+                   SUM(CASE WHEN er.session_id IS NULL OR er.session_id = ''
+                            THEN 1 ELSE 0 END) AS unattached
+            FROM result_races rr
+            LEFT JOIN result_entries er
+                ON rr.track = er.track AND rr.race_date = er.race_date
+                AND rr.race_number = er.race_number
+            GROUP BY rr.track, rr.race_date, rr.race_number
+            HAVING unattached > 0
+            ORDER BY rr.race_date DESC, rr.track, rr.race_number
+        """).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_sessions_for_track_date(
+        self, track: str, race_date: str,
+    ) -> List[Dict[str, Any]]:
+        """Find sessions matching a given track and date."""
+        track = self._normalize_track(track)
+        race_date = self._normalize_date(race_date)
+        rows = self.conn.execute("""
+            SELECT session_id, track_name, race_date, created_at,
+                   parser_used, horses_count
+            FROM sessions
+            WHERE track_name = ? AND race_date = ?
+            ORDER BY created_at DESC
+        """, (track, race_date)).fetchall()
+        return [dict(r) for r in rows]
+
+    def attach_results_to_session(
+        self, track: str, race_date: str, session_id: str,
+    ) -> Dict[str, Any]:
+        """Set session_id on unlinked result_entries and re-link."""
+        track = self._normalize_track(track)
+        race_date = self._normalize_date(race_date)
+        cur = self.conn.execute("""
+            UPDATE result_entries SET session_id = ?
+            WHERE track = ? AND race_date = ?
+              AND (session_id IS NULL OR session_id = '')
+        """, (session_id, track, race_date))
+        updated = cur.rowcount
+        self.conn.commit()
+
+        link_result = self.link_results_to_entries(
+            track=track, race_date=race_date, session_id=session_id,
+        )
+        self._propagate_predictions_to_results(track, race_date)
+        return {"updated_entries": updated, "link_result": link_result}
+
     def _calc_roi_by_rank(self, where: str, params: list) -> List[Dict]:
         """ROI for $2 win bets on each pick rank."""
         rows = self.conn.execute(

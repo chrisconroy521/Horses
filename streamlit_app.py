@@ -36,8 +36,8 @@ def main():
     # Sidebar
     st.sidebar.header("Navigation")
     pages = [
-        "Upload PDF", "Engine", "Results", "Bet Builder", "Daily Best WIN Bets",
-        "Database", "Horse Past Performance", "Horses Overview",
+        "Upload PDF", "Engine", "Results", "Results Inbox", "Bet Builder",
+        "Daily Best WIN Bets", "Database", "Horse Past Performance", "Horses Overview",
         "Individual Horse Analysis", "Race Analysis", "Statistics",
         "Manage Sheets", "API Status",
     ]
@@ -67,6 +67,8 @@ def main():
         results_page()
     elif page == "Bet Builder":
         bet_builder_page()
+    elif page == "Results Inbox":
+        results_inbox_page()
     elif page == "Daily Best WIN Bets":
         daily_wins_page()
     elif page == "Statistics":
@@ -2728,6 +2730,118 @@ def results_page():
                               label_key="cycle", label_col="Pattern")
         if not roi_rank and not roi_cycle:
             st.info("No predictions saved yet. Run the engine on a session, then upload results.")
+
+
+def results_inbox_page():
+    st.header("Results Inbox")
+    st.caption("Unattached race results awaiting session linkage. One-click attach to matching sessions.")
+
+    try:
+        resp = requests.get(f"{API_BASE_URL}/results/inbox", timeout=15)
+        if resp.status_code != 200:
+            st.error(f"Error: {resp.text}")
+            return
+        data = resp.json()
+    except requests.exceptions.ConnectionError:
+        st.error("Cannot connect to API. Is the backend running?")
+        return
+
+    unattached = data.get("unattached_races", [])
+    matching = data.get("matching_sessions", {})
+
+    if not unattached:
+        st.success("All results are attached to sessions. Nothing to do.")
+        return
+
+    # Group by (track, date)
+    from collections import defaultdict
+    groups = defaultdict(list)
+    for r in unattached:
+        groups[(r["track"], r["race_date"])].append(r)
+
+    st.metric("Unattached Race Groups", len(groups))
+
+    for (track, race_date), races in sorted(groups.items()):
+        key = f"{track}_{race_date}"
+        sessions_list = matching.get(key, [])
+        total_unattached = sum(r["unattached"] for r in races)
+        total_attached = sum(r["attached"] for r in races)
+
+        with st.expander(
+            f"{track} {race_date} -- {len(races)} races "
+            f"({total_unattached} unattached, {total_attached} attached)",
+            expanded=True,
+        ):
+            # Race details table
+            rows = []
+            for r in races:
+                rows.append({
+                    "Race": r["race_number"],
+                    "Surface": r.get("surface", ""),
+                    "Distance": r.get("distance", ""),
+                    "Entries": r["total_entries"],
+                    "Attached": r["attached"],
+                    "Unattached": r["unattached"],
+                })
+            st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+
+            if sessions_list:
+                if len(sessions_list) == 1:
+                    s = sessions_list[0]
+                    st.info(
+                        f"Matching session: {s['session_id'][:8]}... "
+                        f"({s.get('parser_used', '')} | {s.get('horses_count', 0)} horses)"
+                    )
+                    if st.button(
+                        f"Attach to {s['session_id'][:8]}...",
+                        key=f"attach_{track}_{race_date}",
+                    ):
+                        with st.spinner("Attaching..."):
+                            attach_resp = requests.post(
+                                f"{API_BASE_URL}/results/attach",
+                                json={"track": track, "race_date": race_date,
+                                      "session_id": s["session_id"]},
+                                timeout=30,
+                            )
+                            if attach_resp.status_code == 200:
+                                ar = attach_resp.json()
+                                st.success(
+                                    f"Attached {ar.get('updated_entries', 0)} entries."
+                                )
+                                st.rerun()
+                            else:
+                                st.error(f"Error: {attach_resp.text}")
+                else:
+                    st.info(f"{len(sessions_list)} matching sessions found. Choose one:")
+                    options = {
+                        f"{s['session_id'][:8]}... ({s.get('parser_used', '')} | "
+                        f"{s.get('horses_count', 0)} horses | {s.get('created_at', '')[:10]})":
+                        s["session_id"]
+                        for s in sessions_list
+                    }
+                    choice = st.selectbox(
+                        "Session", list(options.keys()),
+                        key=f"inbox_select_{track}_{race_date}",
+                    )
+                    if st.button("Attach", key=f"attach_{track}_{race_date}"):
+                        sid = options[choice]
+                        with st.spinner("Attaching..."):
+                            attach_resp = requests.post(
+                                f"{API_BASE_URL}/results/attach",
+                                json={"track": track, "race_date": race_date,
+                                      "session_id": sid},
+                                timeout=30,
+                            )
+                            if attach_resp.status_code == 200:
+                                ar = attach_resp.json()
+                                st.success(
+                                    f"Attached {ar.get('updated_entries', 0)} entries."
+                                )
+                                st.rerun()
+                            else:
+                                st.error(f"Error: {attach_resp.text}")
+            else:
+                st.warning("No matching session found. Upload sheets for this track and date first.")
 
 
 def daily_wins_page():
