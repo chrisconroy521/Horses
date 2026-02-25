@@ -342,6 +342,71 @@ def _persist_predictions(session_id, track, race_date, race_number, projections)
         pass  # best-effort; don't block the UI
 
 
+def _mark_engine_run(session_id: str, race_number: int):
+    """Record that the engine has been run for a session/race."""
+    store = st.session_state.setdefault("engine_outputs_by_session", {})
+    entry = store.setdefault(session_id, {"races_run": set(), "timestamp": None})
+    entry["races_run"].add(race_number)
+    from datetime import datetime
+    entry["timestamp"] = datetime.now().isoformat()
+    st.session_state["current_session_id"] = session_id
+
+
+def _run_engine_full_card(session_id: str, session_meta: dict):
+    """Run the engine on ALL races for a session, persist, and update session_state.
+
+    Returns True if at least one race produced projections, False otherwise.
+    """
+    track = session_meta.get('track') or session_meta.get('track_name', '')
+    date = session_meta.get('date') or session_meta.get('race_date', '')
+    is_session = 'session_id' in session_meta
+    has_secondary = session_meta.get('has_secondary', False)
+
+    # Load horse data
+    try:
+        if is_session and has_secondary:
+            h_resp = requests.get(
+                f"{API_BASE_URL}/sessions/{session_id}/races",
+                params={"source": "merged"}, timeout=30,
+            )
+            all_horses = h_resp.json().get("race_data", {}).get("horses", []) if h_resp.ok else []
+        else:
+            h_resp = api_get(f"/races/{session_id}/horses", timeout=30)
+            all_horses = h_resp.json().get("horses", []) if h_resp.ok else []
+    except Exception:
+        all_horses = []
+
+    if not all_horses:
+        return False
+
+    # Group by race
+    race_groups: dict = {}
+    for h in all_horses:
+        rn = h.get('race_number', 0) or 0
+        race_groups.setdefault(rn, []).append(h)
+
+    engine = HandicappingEngine()
+    bias = BiasInput()  # default bias (neutral)
+    any_produced = False
+    progress = st.progress(0)
+    race_keys = sorted(race_groups.keys())
+
+    for idx, rn in enumerate(race_keys):
+        rh = race_groups[rn]
+        if not rh:
+            progress.progress((idx + 1) / len(race_keys))
+            continue
+        projs, _audit = _run_race_projections(engine, rh, bias, [], rn)
+        if projs:
+            _persist_predictions(session_id, track, date, rn, projs)
+            _mark_engine_run(session_id, rn)
+            any_produced = True
+        progress.progress((idx + 1) / len(race_keys))
+
+    progress.empty()
+    return any_produced
+
+
 # ---------------------------------------------------------------------------
 # Shared display helpers (used by Engine + Dashboard)
 # ---------------------------------------------------------------------------
@@ -696,6 +761,37 @@ def _render_big_race_mode(key_prefix: str):
     mr_track = mr_sel.get('track') or mr_sel.get('track_name', '')
     mr_date = mr_sel.get('date') or mr_sel.get('race_date', '')
 
+    # Track session changes — clear stale plan when user switches sessions
+    prev_key = f"_mr_prev_sid_{key_prefix}"
+    if st.session_state.get(prev_key) != mr_sid:
+        st.session_state.pop(f"mr_plan_{key_prefix}", None)
+        st.session_state[prev_key] = mr_sid
+
+    # Check if engine has been run for this session
+    engine_store = st.session_state.get("engine_outputs_by_session", {})
+    session_entry = engine_store.get(mr_sid)
+    has_engine_output = session_entry and len(session_entry.get("races_run", set())) > 0
+
+    if not has_engine_output:
+        st.warning("No engine projections found for this session. Run the engine first.")
+        bc1, bc2 = st.columns(2)
+        with bc1:
+            if st.button("Run Engine Now", type="primary", key=f"mr_run_engine_{key_prefix}"):
+                with st.spinner("Running engine on all races..."):
+                    ok = _run_engine_full_card(mr_sid, mr_sel)
+                if ok:
+                    st.success("Engine complete. You can now build tickets.")
+                    st.rerun()
+                else:
+                    st.error("Engine produced no projections. Check session data.")
+                return
+        with bc2:
+            if st.button("Go to Engine Page", key=f"mr_goto_engine_{key_prefix}"):
+                st.session_state["active_session_id"] = mr_sid
+                st.session_state["_nav_target"] = "Engine"
+                st.rerun()
+        return
+
     # Settings row
     c1, c2, c3 = st.columns(3)
     with c1:
@@ -714,7 +810,19 @@ def _render_big_race_mode(key_prefix: str):
     is_dd = bet_type == "Daily Double"
     bt_code = "DAILY_DOUBLE" if is_dd else ("PICK3" if bet_type == "Pick 3" else "PICK6")
 
-    if st.button("Build Ticket", type="primary", key=f"mr_build_{key_prefix}"):
+    b1, b2 = st.columns([3, 1])
+    with b1:
+        build_clicked = st.button("Build Ticket", type="primary", key=f"mr_build_{key_prefix}")
+    with b2:
+        rerun_clicked = st.button("Re-run Engine", key=f"mr_rerun_{key_prefix}")
+
+    if rerun_clicked:
+        with st.spinner("Re-running engine on all races..."):
+            _run_engine_full_card(mr_sid, mr_sel)
+        st.success("Engine re-run complete.")
+        st.rerun()
+
+    if build_clicked:
         payload = {
             "session_id": mr_sid,
             "track": mr_track,
@@ -735,7 +843,7 @@ def _render_big_race_mode(key_prefix: str):
             if resp.ok:
                 st.session_state[f"mr_plan_{key_prefix}"] = resp.json()
             elif resp.status_code == 404:
-                st.warning("No predictions found. Run the engine on this session first.")
+                st.warning("No predictions found. Try clicking **Re-run Engine** above.")
             else:
                 st.error(f"Error: {resp.text}")
         except Exception as e:
@@ -1151,6 +1259,7 @@ def dashboard_page():
                             s_track = dash_sel.get('track') or dash_sel.get('track_name', '')
                             s_date = dash_sel.get('date') or dash_sel.get('race_date', '')
                             _persist_predictions(dash_sid, s_track, s_date, dash_race, projs)
+                            _mark_engine_run(dash_sid, dash_race)
 
                     # Display projections
                     d_projs = st.session_state.get("dash_projections")
@@ -1621,6 +1730,7 @@ def engine_page():
             s_track = selected.get('track') or selected.get('track_name', '')
             s_date = selected.get('date') or selected.get('race_date', '')
             _persist_predictions(sel_id, s_track, s_date, selected_race, projections)
+            _mark_engine_run(sel_id, selected_race)
 
     # =====================================================================
     # (C) Outputs
@@ -1704,6 +1814,7 @@ def engine_page():
             s_track = selected.get('track') or selected.get('track_name', '')
             s_date = selected.get('date') or selected.get('race_date', '')
             _persist_predictions(sel_id, s_track, s_date, rn, projs)
+            _mark_engine_run(sel_id, rn)
             progress.progress((idx + 1) / len(race_keys))
 
         progress.empty()
