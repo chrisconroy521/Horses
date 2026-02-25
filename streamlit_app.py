@@ -1598,7 +1598,7 @@ def database_page():
             st.warning(f"Collision warnings ({len(collisions)} names map to multiple horses): "
                         + ", ".join(collisions))
 
-        # --- Unmatched names ---
+        # --- Unmatched names with alias workflow ---
         um_sh = stats.get("unmatched_sheets", [])
         um_bh = stats.get("unmatched_brisnet", [])
         if um_sh or um_bh:
@@ -1618,6 +1618,86 @@ def database_page():
                         st.text(f"{h['name']}  {h['track']} {h['date']}")
                 else:
                     st.success("All BRISNET horses matched!")
+
+        # --- Alias resolution workflow ---
+        st.subheader("Alias Resolution")
+        st.caption("Create aliases to link unmatched BRISNET horses to their Sheets counterpart.")
+
+        # Fetch unmatched with suggestions
+        try:
+            um_resp = requests.get(f"{API_BASE_URL}/db/unmatched", timeout=15)
+            unmatched_data = um_resp.json() if um_resp.status_code == 200 else []
+        except Exception:
+            unmatched_data = []
+
+        if not unmatched_data:
+            st.success("No unmatched BRISNET horses!")
+        else:
+            for i, um in enumerate(unmatched_data):
+                bname = um["horse_name"]
+                suggs = um.get("suggestions", [])
+                with st.expander(
+                    f"R{um['race_number']} P{um['post']}  {bname}"
+                    + (f"  -- top suggestion: {suggs[0]['horse_name']} ({suggs[0]['score']}%)"
+                       if suggs else "  -- no suggestion"),
+                    expanded=False,
+                ):
+                    if suggs:
+                        st.markdown("**Suggested matches:**")
+                        for j, s in enumerate(suggs):
+                            c1, c2, c3 = st.columns([3, 1, 1])
+                            with c1:
+                                st.text(f"{s['horse_name']} (score {s['score']}%)")
+                            with c2:
+                                if st.button(
+                                    "Create alias",
+                                    key=f"alias_{i}_{j}",
+                                ):
+                                    try:
+                                        r = requests.post(
+                                            f"{API_BASE_URL}/db/alias",
+                                            json={
+                                                "canonical": s["horse_name"],
+                                                "alias": bname,
+                                            },
+                                            timeout=15,
+                                        )
+                                        if r.status_code == 200:
+                                            recon = r.json().get("reconciliation", {})
+                                            st.success(
+                                                f"Alias created: {bname} -> {s['horse_name']}. "
+                                                f"New matches: {recon.get('new_matches', 0)}"
+                                            )
+                                            st.rerun()
+                                        else:
+                                            st.error(r.text)
+                                    except Exception as e:
+                                        st.error(str(e))
+                    else:
+                        st.info("No fuzzy matches found in sheets data.")
+
+                    # Manual entry fallback
+                    manual = st.text_input(
+                        "Or type sheets horse name:",
+                        key=f"manual_{i}",
+                    )
+                    if manual and st.button("Link manually", key=f"manual_btn_{i}"):
+                        try:
+                            r = requests.post(
+                                f"{API_BASE_URL}/db/alias",
+                                json={"canonical": manual, "alias": bname},
+                                timeout=15,
+                            )
+                            if r.status_code == 200:
+                                recon = r.json().get("reconciliation", {})
+                                st.success(
+                                    f"Alias created. New matches: {recon.get('new_matches', 0)}"
+                                )
+                                st.rerun()
+                            else:
+                                st.error(r.text)
+                        except Exception as e:
+                            st.error(str(e))
 
     # --- Tracks ---
     tracks = stats.get("tracks", [])

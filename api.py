@@ -804,6 +804,12 @@ async def list_aliases():
     return _db.list_aliases()
 
 
+@app.get("/db/unmatched")
+async def unmatched_brisnet(track: str = "", date: str = ""):
+    """Unmatched brisnet horses with fuzzy match suggestions."""
+    return _db.get_unmatched_with_suggestions(track=track, race_date=date)
+
+
 @app.get("/sessions")
 async def list_sessions():
     """List all dual-upload sessions."""

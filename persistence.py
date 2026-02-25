@@ -270,6 +270,33 @@ class Persistence:
         if re_cols and "session_id" not in re_cols:
             self.conn.execute("ALTER TABLE result_entries ADD COLUMN session_id TEXT")
         self.conn.commit()
+        self._renormalize_names()
+
+    def _renormalize_names(self) -> None:
+        """Re-apply _normalize_name to all stored normalized_name columns.
+
+        Needed after updating the normalization rules (e.g. adding Unicode
+        quote stripping).  Idempotent — skips rows already correct.
+        """
+        for table, name_col, id_col in [
+            ("sheets_horses", "horse_name", "horse_id"),
+            ("brisnet_horses", "horse_name", "brisnet_id"),
+            ("result_entries", "horse_name", "entry_result_id"),
+        ]:
+            rows = self.conn.execute(
+                f"SELECT {id_col}, {name_col}, normalized_name FROM {table}"
+            ).fetchall()
+            updated = 0
+            for r in rows:
+                expected = self._normalize_name(r[name_col] or "")
+                if r["normalized_name"] != expected:
+                    self.conn.execute(
+                        f"UPDATE {table} SET normalized_name = ? WHERE {id_col} = ?",
+                        (expected, r[id_col]),
+                    )
+                    updated += 1
+            if updated:
+                self.conn.commit()
 
     # ------------------------------------------------------------------
     # Helpers
@@ -277,9 +304,10 @@ class Persistence:
 
     @staticmethod
     def _normalize_name(name: str) -> str:
-        """Uppercase, strip punctuation, collapse whitespace."""
+        """Uppercase, strip punctuation (incl. Unicode quotes), collapse whitespace."""
         n = (name or "").upper().strip()
-        n = re.sub(r"['\-.,()]", "", n)
+        # Strip ASCII and Unicode apostrophes/quotes and common punctuation
+        n = re.sub(r"[\u2018\u2019\u201C\u201D'\-.,()\"']", "", n)
         n = re.sub(r"\s+", " ", n)
         return n
 
@@ -390,6 +418,103 @@ class Persistence:
             "SELECT canonical_name, alias_name FROM horse_aliases ORDER BY canonical_name"
         ).fetchall()
         return [{"canonical_name": r[0], "alias_name": r[1]} for r in rows]
+
+    @staticmethod
+    def _fuzzy_strip(name: str) -> str:
+        """Extra-aggressive normalization for fuzzy matching.
+
+        Strips country suffixes (-FR, -IR, -GB, -JPN, etc.) in addition
+        to the standard normalization.
+        """
+        n = Persistence._normalize_name(name)
+        # Strip trailing country codes (common in Ragozin sheets)
+        n = re.sub(r"\s*-\s*[A-Z]{2,3}$", "", n)
+        return n
+
+    def suggest_matches(
+        self, brisnet_name: str, track: str, race_date: str,
+        race_number: int = 0, limit: int = 5,
+    ) -> List[Dict[str, Any]]:
+        """Suggest sheets_horses that might match a brisnet horse name.
+
+        Uses fuzzy-stripped names and substring matching. Returns a list
+        of ``{horse_name, normalized_name, horse_id, score}`` dicts
+        sorted by descending score.  Score meanings:
+          100 = exact fuzzy match (after stripping suffixes/quotes)
+           80 = one name contains the other
+           60 = shared-word overlap (Jaccard on words)
+        """
+        b_fuzzy = self._fuzzy_strip(brisnet_name)
+        b_words = set(b_fuzzy.split())
+
+        # Get candidate sheets horses from same track+date (optionally same race)
+        where = "track = ? AND race_date = ?"
+        params: list = [self._normalize_track(track), self._normalize_date(race_date)]
+        if race_number:
+            where += " AND race_number = ?"
+            params.append(race_number)
+
+        rows = self.conn.execute(
+            f"SELECT horse_id, horse_name, normalized_name FROM sheets_horses WHERE {where}",
+            params,
+        ).fetchall()
+
+        scored = []
+        for r in rows:
+            s_fuzzy = self._fuzzy_strip(r["horse_name"])
+            if b_fuzzy == s_fuzzy:
+                scored.append({**dict(r), "score": 100})
+            elif b_fuzzy in s_fuzzy or s_fuzzy in b_fuzzy:
+                scored.append({**dict(r), "score": 80})
+            else:
+                s_words = set(s_fuzzy.split())
+                overlap = b_words & s_words
+                union = b_words | s_words
+                if overlap and len(overlap) / len(union) >= 0.4:
+                    jaccard = int(len(overlap) / len(union) * 100)
+                    scored.append({**dict(r), "score": jaccard})
+
+        scored.sort(key=lambda x: x["score"], reverse=True)
+        return scored[:limit]
+
+    def get_unmatched_with_suggestions(
+        self, track: str = "", race_date: str = "",
+    ) -> List[Dict[str, Any]]:
+        """Return unmatched brisnet horses with fuzzy match suggestions."""
+        track = self._normalize_track(track) if track else ""
+        race_date = self._normalize_date(race_date) if race_date else ""
+
+        where = "bh.brisnet_id NOT IN (SELECT brisnet_id FROM reconciliation)"
+        params: list = []
+        if track:
+            where += " AND bh.track = ?"
+            params.append(track)
+        if race_date:
+            where += " AND bh.race_date = ?"
+            params.append(race_date)
+
+        rows = self.conn.execute(f"""
+            SELECT bh.brisnet_id, bh.horse_name, bh.normalized_name,
+                   bh.race_number, bh.post, bh.track, bh.race_date
+            FROM brisnet_horses bh WHERE {where}
+            ORDER BY bh.race_number, bh.post
+        """, params).fetchall()
+
+        result = []
+        for r in rows:
+            suggestions = self.suggest_matches(
+                r["horse_name"], r["track"], r["race_date"],
+                race_number=r["race_number"],
+            )
+            result.append({
+                "brisnet_id": r["brisnet_id"],
+                "horse_name": r["horse_name"],
+                "normalized_name": r["normalized_name"],
+                "race_number": r["race_number"],
+                "post": r["post"],
+                "suggestions": suggestions,
+            })
+        return result
 
     def _prepare_session_row(self, row: sqlite3.Row | None) -> Optional[Dict[str, Any]]:
         if row is None:
