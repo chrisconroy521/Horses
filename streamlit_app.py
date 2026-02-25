@@ -427,69 +427,127 @@ def _run_engine_full_card(session_id: str, session_meta: dict):
 # Shared display helpers (used by Engine + Dashboard)
 # ---------------------------------------------------------------------------
 
-_BUCKET_LABELS = {
-    "LAYOFF_0_15": "Fresh (0-15d)",
-    "LAYOFF_16_30": "Layoff 16-30d",
-    "LAYOFF_31_60": "Layoff 31-60d",
-    "LAYOFF_61_PLUS": "Long Layoff 61d+",
-    "SURFACE_SWITCH_TD": "Turf\u2192Dirt",
-    "SURFACE_SWITCH_DT": "Dirt\u2192Turf",
-    "SECOND_OFF_LAYOFF": "2nd Off Layoff",
-    "THIRD_OFF_LAYOFF": "3rd Off Layoff",
-    "CLASS_DROP": "Class Drop",
-    "FIRST_OFF_CLAIM": "1st Off Claim",
-}
+# --- Trainer Intent: parse angles from QuickPlay comments ---
+_RE_ANGLE_PCT = re.compile(r"(\d{1,3})%\s+trainer:\s+(.+)", re.IGNORECASE)
+_RE_POOR = re.compile(
+    r"Poor\s+'([^']+)'\s+trainer\s+record:\s+(\d{1,3})%\s+wins\s+(\d+)\s+sts",
+    re.IGNORECASE,
+)
+_RE_HOT = re.compile(
+    r"Hot\s+Trainer\s+in\s+last\s+\d+\s+days\s+\((\d+)\s+(\d+)-(\d+)-(\d+)\)",
+    re.IGNORECASE,
+)
 
 
-def _fetch_trainer_intents(race_horses):
-    """Batch-fetch trainer bucket stats and build intent dict keyed by horse name."""
-    trainers = {}
-    for h in race_horses:
-        t = h.get("trainer")
-        if t:
-            trainers.setdefault(t, []).append(h.get("horse_name", ""))
-    if not trainers:
-        return {}
-    try:
-        resp = _api_post("/trainer/stats/bulk", json={"trainers": list(trainers.keys())}, timeout=5)
-        if resp.status_code != 200:
-            return {}
-        bulk = resp.json().get("trainers", {})
-    except Exception:
-        return {}
-
+def _compute_trainer_intents(race_horses):
+    """Parse trainer angle data from QuickPlay comments.
+    Returns dict keyed by horse_name with intent info."""
     intents = {}
-    for trainer_name, horse_names in trainers.items():
-        buckets = bulk.get(trainer_name, [])
-        if not buckets:
-            for hn in horse_names:
-                intents[hn] = {}
-            continue
-        # Pick the bucket with highest sample size as the primary pattern
-        best = max(buckets, key=lambda b: b.get("starts", 0))
-        starts = best.get("starts", 0)
-        wins = best.get("wins", 0)
-        win_pct = best.get("win_pct", 0.0)
-        roi = best.get("roi", 0.0)
-        btype = best.get("bucket_type", "")
-        label = _BUCKET_LABELS.get(btype, btype.replace("_", " ").title())
-        # Badge rules
-        badge = None
-        badge_color = ""
-        if starts >= 25 and win_pct >= 0.18:
-            if roi >= 1.05:
-                badge = "TRAINER_EDGE"
-                badge_color = "green"
-            elif roi < 0.85:
-                badge = "OVERBET_WARNING"
-                badge_color = "orange"
-        intent = {
-            "pattern": btype, "label": label,
-            "win_pct": win_pct, "roi": roi, "sample_size": starts,
-            "badge": badge, "badge_color": badge_color,
-        }
-        for hn in horse_names:
-            intents[hn] = intent
+    for h in race_horses:
+        name = h.get("horse_name", "")
+        comments = list(h.get("quickplay_positive", []))
+        neg_comments = list(h.get("quickplay_negative", []))
+        # Also check notes_flags if present
+        comments += [f for f in h.get("notes_flags", []) if "trainer" in f.lower()]
+
+        best_intent = None
+
+        # --- Format A: "XX% trainer: <angle>" (positive) ---
+        for c in comments:
+            m = _RE_ANGLE_PCT.match(c)
+            if m:
+                wpct = int(m.group(1))
+                angle = m.group(2).strip()
+                badge = None
+                badge_color = ""
+                if wpct >= 25:
+                    badge = "TRAINER_EDGE"
+                    badge_color = "green"
+                candidate = {
+                    "pattern": angle.upper().replace(" ", "_"),
+                    "label": f"{wpct}% {angle}",
+                    "win_pct": wpct / 100.0,
+                    "roi": None, "sample_size": None,
+                    "badge": badge, "badge_color": badge_color,
+                    "_priority": 2,  # positive angle = priority 2
+                    "_wpct": wpct,
+                }
+                if best_intent is None or candidate["_priority"] > best_intent["_priority"]:
+                    best_intent = candidate
+                elif candidate["_priority"] == best_intent["_priority"] and candidate["_wpct"] > best_intent["_wpct"]:
+                    best_intent = candidate
+
+        # --- Format C: "Hot Trainer in last N days (N W-P-S)" ---
+        for c in comments:
+            m = _RE_HOT.match(c)
+            if m:
+                starts = int(m.group(1))
+                wins = int(m.group(2))
+                wpct = wins / starts if starts > 0 else 0
+                candidate = {
+                    "pattern": "HOT_TRAINER",
+                    "label": f"Hot Trainer ({wins}/{starts})",
+                    "win_pct": wpct,
+                    "roi": None, "sample_size": starts,
+                    "badge": "TRAINER_EDGE" if starts >= 5 else None,
+                    "badge_color": "green" if starts >= 5 else "",
+                    "_priority": 3,  # hot = highest priority
+                    "_wpct": wpct * 100,
+                }
+                if best_intent is None or candidate["_priority"] > best_intent["_priority"]:
+                    best_intent = candidate
+
+        # --- Format B: "Poor '<angle>' trainer record: X% wins N sts" (negative) ---
+        for c in neg_comments + comments:
+            m = _RE_POOR.match(c)
+            if m:
+                angle = m.group(1).strip()
+                wpct = int(m.group(2))
+                starts = int(m.group(3))
+                candidate = {
+                    "pattern": angle.upper().replace(" ", "_"),
+                    "label": f"Poor {angle} ({wpct}% n={starts})",
+                    "win_pct": wpct / 100.0,
+                    "roi": None, "sample_size": starts,
+                    "badge": "OVERBET_WARNING",
+                    "badge_color": "orange",
+                    "_priority": 1,  # poor = lowest priority (only if nothing better)
+                    "_wpct": wpct,
+                }
+                if best_intent is None or candidate["_priority"] > best_intent["_priority"]:
+                    best_intent = candidate
+
+        # --- Simple signals (no structured data) ---
+        if best_intent is None:
+            for c in comments:
+                cl = c.lower().strip()
+                if cl == "high % trainer" or cl == "switches to a high% trainer":
+                    best_intent = {
+                        "pattern": "HIGH_PCT_TRAINER", "label": "High % Trainer",
+                        "win_pct": None, "roi": None, "sample_size": None,
+                        "badge": None, "badge_color": "",
+                        "_priority": 0, "_wpct": 0,
+                    }
+                    break
+            for c in neg_comments:
+                cl = c.lower().strip()
+                if cl in ("poor trainer win%", "poor trainer win% this meet"):
+                    if best_intent is None:
+                        best_intent = {
+                            "pattern": "POOR_TRAINER", "label": "Poor trainer win%",
+                            "win_pct": None, "roi": None, "sample_size": None,
+                            "badge": "OVERBET_WARNING", "badge_color": "orange",
+                            "_priority": 0, "_wpct": 0,
+                        }
+                    break
+
+        if best_intent:
+            # Clean up internal keys
+            best_intent.pop("_priority", None)
+            best_intent.pop("_wpct", None)
+            intents[name] = best_intent
+        else:
+            intents[name] = {}
     return intents
 
 
@@ -696,12 +754,13 @@ def _render_ranked_table(display_projections, race_horses, show_odds,
         st.caption(f"Odds coverage: {odds_found}/{len(display_projections)} horses")
 
     rows = []
-    for p in display_projections:
-        rank_str = f"{p.sheets_rank}" if hasattr(p, 'sheets_rank') and p.sheets_rank else ""
-        if hasattr(p, 'tie_break_used') and p.tie_break_used:
-            rank_str += "*"
+    for idx, p in enumerate(display_projections):
+        sheets_rank = ""
+        if getattr(p, 'sheets_rank', None):
+            sheets_rank = f"{p.sheets_rank}{'*' if getattr(p, 'tie_break_used', False) else ''}"
         row = {
-            'Rank': rank_str,
+            'Rank': str(idx + 1),
+            'Sheets Rank': sheets_rank,
             'Horse': p.name,
             'Post': p.post,
             'Style': p.style,
@@ -725,12 +784,9 @@ def _render_ranked_table(display_projections, race_horses, show_odds,
         # Trainer intent column
         intent = trainer_intents.get(p.name, {})
         if intent.get("pattern"):
-            pct = f"{intent['win_pct']:.0%}" if intent.get("win_pct") is not None else "?"
-            roi_str = f"ROI {intent['roi']:.2f}" if intent.get("roi") is not None else ""
-            n_str = f"n={intent['sample_size']}" if intent.get("sample_size") else ""
             badge_icon = "\u2b50" if intent.get("badge") == "TRAINER_EDGE" else "\u26a0" if intent.get("badge") == "OVERBET_WARNING" else ""
-            parts = [s for s in [badge_icon, intent["label"], f"({pct}", roi_str, f"{n_str})"] if s]
-            row['Trainer Intent'] = " ".join(parts)
+            label = intent.get("label", "")
+            row['Trainer Intent'] = f"{badge_icon} {label}".strip() if label else "\u2014"
         else:
             row['Trainer Intent'] = "\u2014"
         # Workout grade column
@@ -1825,7 +1881,7 @@ def dashboard_page():
                         if d_last:
                             st.caption(f"Last computed at: {d_last}")
                         sorted_by_bias = sorted(d_projs, key=lambda p: p.bias_score, reverse=True)
-                        _dash_trainer_intents = _fetch_trainer_intents(race_horses)
+                        _dash_trainer_intents = _compute_trainer_intents(race_horses)
                         _dash_workout_grades = _compute_workout_grades(race_horses)
                         _render_top_picks(sorted_by_bias, dash_race,
                                           race_horses=race_horses,
@@ -2245,7 +2301,7 @@ def engine_page():
                 st.info("No New Top Setup horses found in this race.")
 
         # --- Trainer intent (batch fetch) ---
-        _trainer_intents = _fetch_trainer_intents(race_horses)
+        _trainer_intents = _compute_trainer_intents(race_horses)
         _workout_grades = _compute_workout_grades(race_horses)
 
         # --- Top 3 Picks ---
