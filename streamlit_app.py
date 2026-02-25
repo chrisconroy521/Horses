@@ -143,6 +143,36 @@ def _best_bet_score(p):
     return p.bias_score + (p.confidence * 10) - spread
 
 
+def _persist_predictions(session_id, track, race_date, race_number, projections):
+    """Save engine projections to the DB via the API."""
+    try:
+        payload = {
+            "session_id": session_id,
+            "track": track,
+            "race_date": race_date,
+            "race_number": race_number,
+            "projections": [
+                {
+                    "name": p.name,
+                    "projection_type": p.projection_type,
+                    "bias_score": p.bias_score,
+                    "raw_score": p.raw_score,
+                    "confidence": p.confidence,
+                    "projected_low": p.projected_low,
+                    "projected_high": p.projected_high,
+                    "tags": p.tags,
+                    "new_top_setup": p.new_top_setup,
+                    "bounce_risk": p.bounce_risk,
+                    "tossed": p.tossed,
+                }
+                for p in projections
+            ],
+        }
+        requests.post(f"{API_BASE_URL}/predictions/save", json=payload, timeout=10)
+    except Exception:
+        pass  # best-effort; don't block the UI
+
+
 def engine_page():
     st.header("Handicapping Engine")
     st.info("Picks are determined by Ragozin cycle patterns first. Use Secondary only to break ties (bias/pace/program #).")
@@ -370,6 +400,10 @@ def engine_page():
             st.session_state['last_projections'] = projections
             st.session_state['last_proj_race'] = selected_race
             st.session_state['last_audit'] = audit
+            # Persist predictions to DB
+            s_track = selected.get('track') or selected.get('track_name', '')
+            s_date = selected.get('date') or selected.get('race_date', '')
+            _persist_predictions(sel_id, s_track, s_date, selected_race, projections)
 
     # Display projections if available
     projections = st.session_state.get('last_projections')
@@ -651,6 +685,10 @@ def engine_page():
             projs, _audit = _run_race_projections(engine, rh, bias, rn_scratches, rn)
             for p in projs:
                 all_bets.append((rn, p))
+            # Persist predictions per race
+            s_track = selected.get('track') or selected.get('track_name', '')
+            s_date = selected.get('date') or selected.get('race_date', '')
+            _persist_predictions(sel_id, s_track, s_date, rn, projs)
             progress.progress((idx + 1) / len(race_keys))
 
         progress.empty()
@@ -1822,25 +1860,104 @@ def results_page():
 
     st.divider()
 
-    # ROI by Pick Rank
-    roi_rank = stats.get("roi_by_rank", [])
-    if roi_rank:
-        st.subheader("ROI by Pick Rank ($2 Win)")
-        rank_df = pd.DataFrame(roi_rank)
-        rank_df.columns = ["Rank", "Bets", "Wins", "Win%", "ROI%"]
-        st.dataframe(rank_df, hide_index=True, use_container_width=True)
+    # --- Prediction-based ROI (from result_predictions table) ---
+    try:
+        roi_params = {}
+        if r_track:
+            roi_params["track"] = r_track
+        if r_date:
+            roi_params["date"] = r_date
+        if chosen_sid:
+            roi_params["session_id"] = chosen_sid
+        roi_resp = requests.get(f"{API_BASE_URL}/predictions/roi", params=roi_params, timeout=15)
+        pred_roi = roi_resp.json() if roi_resp.status_code == 200 else {}
+    except Exception:
+        pred_roi = {}
 
-    # ROI by Cycle Type
-    roi_cycle = stats.get("roi_by_cycle", [])
-    if roi_cycle:
-        st.subheader("ROI by Cycle Pattern ($2 Win)")
-        cycle_df = pd.DataFrame(roi_cycle)
-        cycle_df.columns = ["Pattern", "Bets", "Wins", "Win%", "ROI%"]
-        st.dataframe(cycle_df, hide_index=True, use_container_width=True)
+    has_pred_roi = pred_roi.get("total_predictions", 0) > 0
 
-    if not roi_rank and not roi_cycle:
-        st.info("Results imported but no entries linked to picks yet. "
-                "Attach results to a session or ensure BRISNET data is uploaded for the same card.")
+    if has_pred_roi:
+        st.subheader("Predictions vs Results")
+        pm1, pm2, pm3 = st.columns(3)
+        with pm1:
+            st.metric("Predictions", pred_roi["total_predictions"])
+        with pm2:
+            st.metric("Matched w/ Results", pred_roi["matched_with_results"])
+        with pm3:
+            st.metric("Match Rate", f"{pred_roi['match_rate']:.1f}%")
+
+        # ROI by Pick Rank
+        roi_rank = pred_roi.get("roi_by_rank", [])
+        if roi_rank:
+            st.subheader("ROI by Pick Rank ($2 Win)")
+            rank_df = pd.DataFrame(roi_rank)
+            rank_df.columns = ["Rank", "Bets", "Wins", "Win%", "ROI%"]
+            st.dataframe(rank_df, hide_index=True, use_container_width=True)
+
+        # ROI by Cycle Type
+        roi_cycle = pred_roi.get("roi_by_cycle", [])
+        if roi_cycle:
+            st.subheader("ROI by Cycle Pattern ($2 Win)")
+            cycle_df = pd.DataFrame(roi_cycle)
+            cycle_df.columns = ["Pattern", "Bets", "Wins", "Win%", "ROI%"]
+            st.dataframe(cycle_df, hide_index=True, use_container_width=True)
+
+        # ROI by Confidence Bucket
+        roi_conf = pred_roi.get("roi_by_confidence", [])
+        if roi_conf:
+            st.subheader("ROI by Confidence ($2 Win)")
+            conf_df = pd.DataFrame(roi_conf)
+            conf_df.columns = ["Confidence", "Bets", "Wins", "Win%", "ROI%"]
+            st.dataframe(conf_df, hide_index=True, use_container_width=True)
+
+        # Detailed predictions vs results table
+        try:
+            pvr_resp = requests.get(
+                f"{API_BASE_URL}/predictions/vs-results",
+                params=roi_params, timeout=15,
+            )
+            pvr = pvr_resp.json() if pvr_resp.status_code == 200 else []
+        except Exception:
+            pvr = []
+
+        if pvr:
+            with st.expander(f"Full predictions table ({len(pvr)} entries)", expanded=False):
+                rows = []
+                for r in pvr:
+                    fp = r.get("finish_pos")
+                    win_p = r.get("win_payoff")
+                    rows.append({
+                        "Race": r["race_number"],
+                        "Horse": r["horse_name"],
+                        "Rank": r["pick_rank"],
+                        "Cycle": r["projection_type"],
+                        "Score": f"{r['bias_score']:.1f}" if r.get("bias_score") else "",
+                        "Conf": f"{r['confidence']:.0%}" if r.get("confidence") else "",
+                        "Odds": f"{r['odds']:.1f}" if r.get("odds") else "-",
+                        "Finish": fp if fp else "-",
+                        "Win$": f"${win_p:.2f}" if win_p else "",
+                    })
+                pvr_df = pd.DataFrame(rows)
+                st.dataframe(pvr_df, hide_index=True, use_container_width=True)
+
+    # Fallback: result_entries-based ROI (legacy, from pick_rank/projection_type on entries)
+    if not has_pred_roi:
+        roi_rank = stats.get("roi_by_rank", [])
+        if roi_rank:
+            st.subheader("ROI by Pick Rank ($2 Win)")
+            rank_df = pd.DataFrame(roi_rank)
+            rank_df.columns = ["Rank", "Bets", "Wins", "Win%", "ROI%"]
+            st.dataframe(rank_df, hide_index=True, use_container_width=True)
+
+        roi_cycle = stats.get("roi_by_cycle", [])
+        if roi_cycle:
+            st.subheader("ROI by Cycle Pattern ($2 Win)")
+            cycle_df = pd.DataFrame(roi_cycle)
+            cycle_df.columns = ["Pattern", "Bets", "Wins", "Win%", "ROI%"]
+            st.dataframe(cycle_df, hide_index=True, use_container_width=True)
+
+        if not roi_rank and not roi_cycle:
+            st.info("No predictions saved yet. Run the engine on a session, then upload results.")
 
 
 def statistics_page():

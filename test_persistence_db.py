@@ -628,5 +628,99 @@ class TestResults:
         assert row["sheets_horse_id"] is not None
 
 
+class TestPredictions:
+    """Tests for result_predictions persistence and ROI."""
+
+    def test_save_prediction_without_results(self, db):
+        """Predictions save even when no results exist yet."""
+        projections = [
+            {"name": "ALPHA", "projection_type": "PAIRED", "bias_score": 95.0,
+             "raw_score": 90.0, "confidence": 0.85, "projected_low": 5.0,
+             "projected_high": 7.0, "tags": ["PAIRED_TOP"], "new_top_setup": False,
+             "bounce_risk": False, "tossed": False},
+            {"name": "BETA", "projection_type": "IMPROVING", "bias_score": 88.0,
+             "raw_score": 85.0, "confidence": 0.65, "projected_low": 8.0,
+             "projected_high": 10.0, "tags": [], "new_top_setup": False,
+             "bounce_risk": False, "tossed": False},
+        ]
+        count = db.save_predictions("sess-1", "GP", "02/26/2026", 1, projections)
+        assert count == 2
+
+        rows = db.conn.execute(
+            "SELECT * FROM result_predictions WHERE session_id = 'sess-1'"
+        ).fetchall()
+        assert len(rows) == 2
+        assert rows[0]["pick_rank"] == 1
+        assert rows[0]["horse_name"] == "ALPHA"
+        assert rows[1]["pick_rank"] == 2
+
+    def test_predictions_join_after_results_upload(self, db):
+        """After results are uploaded, predictions join correctly by name."""
+        # Save predictions first (pre-race)
+        projections = [
+            {"name": "BOLD OPTION", "projection_type": "PAIRED", "bias_score": 92.0,
+             "raw_score": 88.0, "confidence": 0.80, "projected_low": 4.0,
+             "projected_high": 6.0, "tags": ["PAIRED_TOP"], "new_top_setup": False,
+             "bounce_risk": False, "tossed": False},
+            {"name": "FAST TRACKER", "projection_type": "TAIL_OFF", "bias_score": 70.0,
+             "raw_score": 65.0, "confidence": 0.40, "projected_low": 10.0,
+             "projected_high": 14.0, "tags": [], "new_top_setup": False,
+             "bounce_risk": False, "tossed": False},
+        ]
+        db.save_predictions("sess-2", "GP", "02/26/2026", 1, projections)
+
+        # Upload results after the race
+        db.insert_entry_result("GP", "02/26/2026", 1, 2, "Bold Option",
+                               finish_pos=1, odds=3.2, win_payoff=8.40)
+        db.insert_entry_result("GP", "02/26/2026", 1, 3, "Fast Tracker",
+                               finish_pos=5, odds=12.0)
+
+        pvr = db.get_predictions_vs_results(track="GP", race_date="02/26/2026")
+        assert len(pvr) == 2
+        winner = [r for r in pvr if r["horse_name"] == "BOLD OPTION"][0]
+        assert winner["finish_pos"] == 1
+        assert winner["win_payoff"] == 8.40
+        assert winner["pick_rank"] == 1
+
+    def test_roi_by_pick_rank_from_predictions(self, db):
+        """ROI by pick rank computes correctly on sample prediction+results set."""
+        # 3 races, each with a top pick
+        for rn in range(1, 4):
+            db.save_predictions("sess-3", "GP", "02/26/2026", rn, [
+                {"name": f"HORSE_R{rn}", "projection_type": "PAIRED",
+                 "bias_score": 90.0, "raw_score": 85.0, "confidence": 0.75,
+                 "projected_low": 5.0, "projected_high": 7.0, "tags": [],
+                 "new_top_setup": False, "bounce_risk": False, "tossed": False},
+            ])
+
+        # Race 1 winner (top pick wins)
+        db.insert_entry_result("GP", "02/26/2026", 1, 1, "Horse_R1",
+                               finish_pos=1, odds=3.0, win_payoff=8.00)
+        # Race 2 loser
+        db.insert_entry_result("GP", "02/26/2026", 2, 1, "Horse_R2",
+                               finish_pos=3, odds=4.0)
+        # Race 3 loser
+        db.insert_entry_result("GP", "02/26/2026", 3, 1, "Horse_R3",
+                               finish_pos=2, odds=5.0)
+
+        roi = db.get_prediction_roi(track="GP", race_date="02/26/2026")
+        assert roi["total_predictions"] == 3
+        assert roi["matched_with_results"] == 3
+        assert roi["match_rate"] == 100.0
+
+        rank_roi = roi["roi_by_rank"]
+        assert len(rank_roi) == 1
+        r = rank_roi[0]
+        assert r["rank"] == 1
+        assert r["bets"] == 3
+        assert r["wins"] == 1
+        # Cost = $6, payoff = $8, ROI = 33.3%
+        assert abs(r["roi_pct"] - 33.3) < 1.0
+
+        cycle_roi = roi["roi_by_cycle"]
+        assert len(cycle_roi) == 1
+        assert cycle_roi[0]["cycle"] == "PAIRED"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

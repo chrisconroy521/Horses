@@ -745,6 +745,42 @@ async def results_stats(track: str = "", date_from: str = "", date_to: str = "")
     return _db.get_results_stats(track=track, date_from=date_from, date_to=date_to)
 
 
+@app.post("/predictions/save")
+async def save_predictions(payload: dict):
+    """Save engine predictions for one race.
+
+    Body: {session_id, track, race_date, race_number, projections: [...]}
+    Each projection: {name, projection_type, bias_score, raw_score,
+                      confidence, projected_low, projected_high, tags,
+                      new_top_setup, bounce_risk, tossed}
+    """
+    sid = payload.get("session_id", "")
+    track = payload.get("track", "")
+    race_date = payload.get("race_date", "")
+    race_number = int(payload.get("race_number", 0))
+    projections = payload.get("projections", [])
+    if not sid or not track or not race_date or not race_number or not projections:
+        raise HTTPException(status_code=400, detail="Missing required fields")
+    count = _db.save_predictions(sid, track, race_date, race_number, projections)
+    return {"saved": count, "session_id": sid, "race_number": race_number}
+
+
+@app.get("/predictions/roi")
+async def prediction_roi(track: str = "", date: str = "", session_id: str = ""):
+    """ROI from predictions joined with results."""
+    return _db.get_prediction_roi(track=track, race_date=date, session_id=session_id)
+
+
+@app.get("/predictions/vs-results")
+async def predictions_vs_results(
+    track: str = "", date: str = "", session_id: str = "",
+):
+    """Predictions joined with results for a card."""
+    return _db.get_predictions_vs_results(
+        track=track, race_date=date, session_id=session_id,
+    )
+
+
 @app.post("/results/upload")
 async def upload_results(
     file: UploadFile = File(...), track: str = "", date: str = "",

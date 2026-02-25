@@ -246,6 +246,31 @@ class Persistence:
             CREATE INDEX IF NOT EXISTS idx_re_track_date ON result_entries(track, race_date);
             CREATE INDEX IF NOT EXISTS idx_re_name ON result_entries(normalized_name);
             CREATE INDEX IF NOT EXISTS idx_re_key ON result_entries(track, race_date, race_number, post);
+
+            CREATE TABLE IF NOT EXISTS result_predictions (
+                prediction_id   INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id      TEXT NOT NULL,
+                track           TEXT NOT NULL,
+                race_date       TEXT NOT NULL,
+                race_number     INTEGER NOT NULL,
+                horse_name      TEXT NOT NULL,
+                normalized_name TEXT NOT NULL,
+                pick_rank       INTEGER NOT NULL,
+                projection_type TEXT NOT NULL,
+                bias_score      REAL,
+                raw_score       REAL,
+                confidence      REAL,
+                projected_low   REAL,
+                projected_high  REAL,
+                tags            TEXT,
+                new_top_setup   INTEGER DEFAULT 0,
+                bounce_risk     INTEGER DEFAULT 0,
+                tossed          INTEGER DEFAULT 0,
+                saved_at        TEXT NOT NULL,
+                UNIQUE(session_id, track, race_date, race_number, normalized_name)
+            );
+            CREATE INDEX IF NOT EXISTS idx_rp_session ON result_predictions(session_id);
+            CREATE INDEX IF NOT EXISTS idx_rp_key ON result_predictions(track, race_date, race_number, normalized_name);
             """
         )
         self.conn.commit()
@@ -1834,3 +1859,221 @@ class Persistence:
                 "roi_pct": round(roi, 1),
             })
         return result
+
+    # ==================================================================
+    # Predictions
+    # ==================================================================
+
+    def save_predictions(
+        self, session_id: str, track: str, race_date: str,
+        race_number: int, projections: List[Dict[str, Any]],
+    ) -> int:
+        """Persist a batch of engine projections for one race.
+
+        *projections* is a list of dicts (already sorted by bias_score desc),
+        each with at least: name, projection_type, bias_score, raw_score,
+        confidence, projected_low, projected_high, tags (list),
+        new_top_setup (bool), bounce_risk (bool), tossed (bool).
+
+        Returns the number of rows inserted/updated.
+        """
+        track = self._normalize_track(track)
+        race_date = self._normalize_date(race_date)
+        now = datetime.utcnow().isoformat()
+        count = 0
+        for rank, p in enumerate(projections, 1):
+            norm = self._normalize_name(p["name"])
+            tags_json = json.dumps(p.get("tags", []))
+            self.conn.execute(
+                """
+                INSERT INTO result_predictions(
+                    session_id, track, race_date, race_number,
+                    horse_name, normalized_name, pick_rank, projection_type,
+                    bias_score, raw_score, confidence,
+                    projected_low, projected_high, tags,
+                    new_top_setup, bounce_risk, tossed, saved_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(session_id, track, race_date, race_number, normalized_name)
+                DO UPDATE SET
+                    pick_rank=excluded.pick_rank,
+                    projection_type=excluded.projection_type,
+                    bias_score=excluded.bias_score,
+                    raw_score=excluded.raw_score,
+                    confidence=excluded.confidence,
+                    projected_low=excluded.projected_low,
+                    projected_high=excluded.projected_high,
+                    tags=excluded.tags,
+                    new_top_setup=excluded.new_top_setup,
+                    bounce_risk=excluded.bounce_risk,
+                    tossed=excluded.tossed,
+                    saved_at=excluded.saved_at
+                """,
+                (
+                    session_id, track, race_date, race_number,
+                    p["name"], norm, rank, p.get("projection_type", "NEUTRAL"),
+                    p.get("bias_score", 0), p.get("raw_score", 0),
+                    p.get("confidence", 0),
+                    p.get("projected_low", 0), p.get("projected_high", 0),
+                    tags_json,
+                    int(bool(p.get("new_top_setup"))),
+                    int(bool(p.get("bounce_risk"))),
+                    int(bool(p.get("tossed"))),
+                    now,
+                ),
+            )
+            count += 1
+        self.conn.commit()
+
+        # Propagate pick_rank + projection_type into result_entries when
+        # results already exist for this card.
+        self._propagate_predictions_to_results(track, race_date)
+        return count
+
+    def _propagate_predictions_to_results(
+        self, track: str, race_date: str,
+    ) -> int:
+        """Copy pick_rank/projection_type from predictions into result_entries
+        by joining on normalized_name + race_number."""
+        cur = self.conn.execute("""
+            UPDATE result_entries SET
+                pick_rank = (
+                    SELECT rp.pick_rank FROM result_predictions rp
+                    WHERE rp.normalized_name = result_entries.normalized_name
+                      AND rp.track = result_entries.track
+                      AND rp.race_date = result_entries.race_date
+                      AND rp.race_number = result_entries.race_number
+                    LIMIT 1
+                ),
+                projection_type = (
+                    SELECT rp.projection_type FROM result_predictions rp
+                    WHERE rp.normalized_name = result_entries.normalized_name
+                      AND rp.track = result_entries.track
+                      AND rp.race_date = result_entries.race_date
+                      AND rp.race_number = result_entries.race_number
+                    LIMIT 1
+                )
+            WHERE track = ? AND race_date = ?
+              AND normalized_name IN (
+                  SELECT rp2.normalized_name FROM result_predictions rp2
+                  WHERE rp2.track = ? AND rp2.race_date = ?
+              )
+        """, (track, race_date, track, race_date))
+        self.conn.commit()
+        return cur.rowcount
+
+    def get_predictions_vs_results(
+        self, track: str = "", race_date: str = "", session_id: str = "",
+    ) -> List[Dict[str, Any]]:
+        """Join predictions with results for display."""
+        where_parts = ["1=1"]
+        params: list = []
+        if track:
+            where_parts.append("rp.track = ?")
+            params.append(self._normalize_track(track))
+        if race_date:
+            where_parts.append("rp.race_date = ?")
+            params.append(self._normalize_date(race_date))
+        if session_id:
+            where_parts.append("rp.session_id = ?")
+            params.append(session_id)
+        where = " AND ".join(where_parts)
+
+        rows = self.conn.execute(f"""
+            SELECT rp.race_number, rp.horse_name, rp.pick_rank,
+                   rp.projection_type, rp.bias_score, rp.confidence,
+                   rp.projected_low, rp.projected_high, rp.tags,
+                   rp.new_top_setup, rp.bounce_risk, rp.tossed,
+                   er.finish_pos, er.odds, er.win_payoff,
+                   er.place_payoff, er.show_payoff, er.post
+            FROM result_predictions rp
+            LEFT JOIN result_entries er
+                ON rp.track = er.track
+                AND rp.race_date = er.race_date
+                AND rp.race_number = er.race_number
+                AND rp.normalized_name = er.normalized_name
+            WHERE {where}
+            ORDER BY rp.race_number, rp.pick_rank
+        """, params).fetchall()
+
+        return [dict(r) for r in rows]
+
+    def get_prediction_roi(
+        self, track: str = "", race_date: str = "", session_id: str = "",
+    ) -> Dict[str, Any]:
+        """ROI stats from predictions table joined with results."""
+        where_parts = ["1=1"]
+        params: list = []
+        if track:
+            where_parts.append("rp.track = ?")
+            params.append(self._normalize_track(track))
+        if race_date:
+            where_parts.append("rp.race_date = ?")
+            params.append(self._normalize_date(race_date))
+        if session_id:
+            where_parts.append("rp.session_id = ?")
+            params.append(session_id)
+        where = " AND ".join(where_parts)
+
+        def _roi_query(group_col, group_alias):
+            return self.conn.execute(f"""
+                SELECT {group_col} as grp,
+                       COUNT(*) as bets,
+                       SUM(CASE WHEN er.finish_pos = 1 THEN 1 ELSE 0 END) as wins,
+                       SUM(CASE WHEN er.finish_pos = 1 AND er.win_payoff IS NOT NULL
+                                THEN er.win_payoff ELSE 0 END) as payoff
+                FROM result_predictions rp
+                JOIN result_entries er
+                    ON rp.track = er.track AND rp.race_date = er.race_date
+                    AND rp.race_number = er.race_number
+                    AND rp.normalized_name = er.normalized_name
+                WHERE {where}
+                GROUP BY grp ORDER BY grp
+            """, params).fetchall()
+
+        def _build_roi(rows, label_key):
+            out = []
+            for r in rows:
+                b = r["bets"]
+                cost = b * 2.0
+                pay = r["payoff"] or 0
+                roi = ((pay - cost) / cost * 100) if cost > 0 else 0
+                out.append({
+                    label_key: r["grp"],
+                    "bets": b, "wins": r["wins"],
+                    "win_pct": round(r["wins"] / b * 100, 1) if b else 0,
+                    "roi_pct": round(roi, 1),
+                })
+            return out
+
+        roi_rank = _build_roi(_roi_query("rp.pick_rank", "rank"), "rank")
+        roi_cycle = _build_roi(_roi_query("rp.projection_type", "cycle"), "cycle")
+        roi_conf = _build_roi(
+            _roi_query(
+                """CASE WHEN rp.confidence >= 0.8 THEN 'HIGH (80%+)'
+                        WHEN rp.confidence >= 0.5 THEN 'MED (50-79%)'
+                        ELSE 'LOW (<50%)' END""",
+                "bucket",
+            ),
+            "bucket",
+        )
+
+        total_preds = self.conn.execute(
+            f"SELECT COUNT(*) FROM result_predictions rp WHERE {where}", params
+        ).fetchone()[0]
+        matched = self.conn.execute(f"""
+            SELECT COUNT(*) FROM result_predictions rp
+            JOIN result_entries er
+                ON rp.track = er.track AND rp.race_date = er.race_date
+                AND rp.race_number = er.race_number
+                AND rp.normalized_name = er.normalized_name
+            WHERE {where}
+        """, params).fetchone()[0]
+
+        return {
+            "total_predictions": total_preds,
+            "matched_with_results": matched,
+            "match_rate": round(matched / total_preds * 100, 1) if total_preds else 0,
+            "roi_by_rank": roi_rank,
+            "roi_by_cycle": roi_cycle,
+            "roi_by_confidence": roi_conf,
+        }
