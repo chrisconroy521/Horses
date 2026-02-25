@@ -1875,5 +1875,45 @@ async def evaluate_bet_plan(plan_id: int):
     return result
 
 
+@app.post("/bets/commander-save")
+async def save_commander_plan(payload: dict):
+    """Persist a finalised Bet Commander slip.
+
+    Body: {session_id, track, race_date, slip_entries, total_cost, bankroll}
+    """
+    sid = payload.get("session_id", "")
+    track = payload.get("track", "")
+    race_date = payload.get("race_date", "")
+    if not sid or not track or not race_date:
+        raise HTTPException(status_code=400, detail="session_id, track, race_date required")
+
+    slip_entries = payload.get("slip_entries", [])
+    if not slip_entries:
+        raise HTTPException(status_code=400, detail="slip_entries required")
+
+    total_cost = float(payload.get("total_cost", 0))
+    bankroll = float(payload.get("bankroll", 0))
+
+    plan_dict = {
+        "slip_entries": slip_entries,
+        "total_cost": total_cost,
+        "bankroll": bankroll,
+        "bet_count": len(slip_entries),
+    }
+    settings_dict = {
+        "bankroll": bankroll,
+        "source": "bet_commander",
+    }
+
+    plan_id = _db.save_bet_plan(
+        session_id=sid, track=track, race_date=race_date,
+        settings_dict=settings_dict, plan_dict=plan_dict,
+        total_risk=total_cost, paper_mode=True,
+        engine_version=_ENGINE_VERSION,
+        plan_type="commander",
+    )
+    return {"plan_id": plan_id, "total_cost": total_cost}
+
+
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

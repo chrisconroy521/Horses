@@ -166,6 +166,32 @@ def _normalize_name(name: str) -> str:
     return n
 
 
+def projection_to_dict(proj, odds: float = None, odds_raw: str = "") -> Dict[str, Any]:
+    """Convert a HorseProjection dataclass to dict for bet builders.
+
+    Handles both HorseProjection objects (from engine_outputs_by_session)
+    and dicts (already converted or from API). This is the bridge between
+    canonical session_state storage and bet builder functions.
+    """
+    if isinstance(proj, dict):
+        return proj
+    return {
+        "horse_name": proj.name, "name": proj.name, "post": proj.post,
+        "style": proj.style, "projection_type": proj.projection_type,
+        "confidence": proj.confidence, "bias_score": proj.bias_score,
+        "raw_score": proj.raw_score, "projected_low": proj.projected_low,
+        "projected_high": proj.projected_high, "proj_mid": proj.proj_mid,
+        "spread": proj.spread, "cycle_priority": proj.cycle_priority,
+        "sheets_rank": proj.sheets_rank, "bounce_risk": proj.bounce_risk,
+        "tossed": proj.tossed,
+        "toss_reasons": getattr(proj, "toss_reasons", []),
+        "tags": proj.tags, "new_top_setup": proj.new_top_setup,
+        "tie_break_used": proj.tie_break_used,
+        "dev_pattern": getattr(proj, "dev_pattern", ""),
+        "odds": odds, "odds_raw": odds_raw,
+    }
+
+
 def kelly_fraction(odds: float, win_prob: float) -> float:
     """Fractional Kelly criterion for a $2 win bet.
 
@@ -525,6 +551,94 @@ def build_exacta_tickets(
                         "horses": {n: horse_ids.get(n, {}) for n in saver_names + [names[0]]},
                     },
                 ))
+
+    return tickets
+
+
+def build_trifecta_tickets(
+    ranked: List[Dict[str, Any]],
+    grade: str,
+    race_budget: float,
+    overrides: Optional["CountOverrides"] = None,
+) -> List[Ticket]:
+    """Build TRIFECTA tickets for A or B grade races.
+
+    Key tri: A1 WITH (A2,B1) WITH (A2,B1,B2,B3)
+    Cost = first × second × third × $2
+    """
+    if grade not in ("A", "B") or len(ranked) < 4:
+        return []
+
+    if overrides:
+        ranked = apply_overrides(ranked, overrides)
+
+    non_tossed = [p for p in ranked if not p.get("tossed", False)]
+    if len(non_tossed) < 4:
+        non_tossed = ranked[:4]
+
+    names = [_horse_name(p) for p in non_tossed]
+    horse_ids = {
+        _horse_name(p): {
+            "post": p.get("post", ""),
+            "horse_name": _horse_name(p),
+            "normalized_name": _normalize_name(_horse_name(p)),
+            "odds_raw": p.get("odds_raw", ""),
+            "odds_decimal": p.get("odds"),
+        }
+        for p in non_tossed
+    }
+
+    tri_budget = race_budget * 0.40  # 40% of race budget for trifecta
+
+    # Determine counts
+    if overrides:
+        a_ct = min(overrides.a_count, len(non_tossed))
+        b_ct = min(overrides.b_count, max(len(non_tossed) - a_ct, 0))
+    else:
+        a_ct = 1
+        b_ct = min(2, len(non_tossed) - 1)
+
+    first_pos = names[:a_ct]
+    second_pos = names[:a_ct + b_ct]
+    third_ct = min(a_ct + b_ct + 2, len(non_tossed))
+    third_pos = names[:third_ct]
+
+    # Remove duplicate combos: first != second != third
+    combo_count = len(first_pos) * (len(second_pos) - 1) * max(len(third_pos) - 2, 1)
+    cost = combo_count * _BET_BASE
+    if cost > tri_budget and combo_count > 0:
+        # Scale down third_pos
+        while cost > tri_budget and len(third_pos) > len(second_pos):
+            third_pos = third_pos[:-1]
+            combo_count = len(first_pos) * (len(second_pos) - 1) * max(len(third_pos) - 2, 1)
+            cost = combo_count * _BET_BASE
+
+    if combo_count <= 0:
+        return []
+
+    cost = combo_count * _BET_BASE
+
+    tickets = []
+    top_odds = _fmt_odds(non_tossed[0])
+    top_label = f"{names[0]} @ {top_odds}" if top_odds else names[0]
+    tickets.append(Ticket(
+        bet_type="TRIFECTA",
+        selections=first_pos + second_pos + third_pos,
+        cost=cost,
+        rationale=(
+            f"TRI KEY {top_label} / "
+            f"{','.join(second_pos)} / {','.join(third_pos)} — "
+            f"{combo_count} combos ${cost:.0f}"
+        ),
+        details={
+            "structure": "key_tri",
+            "first": first_pos,
+            "second": second_pos,
+            "third": third_pos,
+            "combo_count": combo_count,
+            "horses": {n: horse_ids.get(n, {}) for n in set(first_pos + second_pos + third_pos)},
+        },
+    ))
 
     return tickets
 
@@ -931,6 +1045,35 @@ class MultiRaceStrategy:
     a_count: int = 1            # A-leg: single (1)
     b_count: int = 3            # B-leg: 2-3 horses
     c_count: int = 5            # C-leg: 4-6 horses
+
+
+@dataclass
+class CountOverrides:
+    """Per-bet-type horse count overrides. Used by Bet Commander."""
+    a_count: int = 1
+    b_count: int = 2
+    c_count: int = 0
+    c_cap: int = 2
+    pinned_a: List[str] = field(default_factory=list)
+    excluded: List[str] = field(default_factory=list)
+
+
+def apply_overrides(
+    ranked: List[Dict[str, Any]],
+    overrides: CountOverrides,
+) -> List[Dict[str, Any]]:
+    """Apply pin/toss overrides to a ranked projection list.
+
+    - Excluded horses are removed entirely
+    - Pinned-A horses are moved to front (preserving relative order)
+    - Remaining horses follow in original sheets-first order
+    """
+    excl = {n.upper() for n in overrides.excluded}
+    pinned = {n.upper() for n in overrides.pinned_a}
+    filtered = [p for p in ranked if _horse_name(p).upper() not in excl]
+    pins = [p for p in filtered if _horse_name(p).upper() in pinned]
+    rest = [p for p in filtered if _horse_name(p).upper() not in pinned]
+    return pins + rest
 
 
 @dataclass
@@ -2052,3 +2195,434 @@ def dual_mode_plan_to_text(plan: DualModeDayPlan) -> str:
             lines.append(f"  - {w}")
 
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Bet Commander — Race Analysis & Recommender
+# ---------------------------------------------------------------------------
+
+@dataclass
+class RaceAnalysis:
+    """Per-race analysis for Bet Commander card summary."""
+    race_number: int
+    grade: str
+    grade_reasons: List[str]
+    edge_score: float          # 0-100
+    chaos_index: float         # 0.0-1.0
+    has_true_single: bool
+    top_overlay: Optional[float]
+    figure_quality_pct: float
+    field_size: int
+    top_horse: str
+    top_confidence: float
+    top_cycle: str
+    a_horses: List[str]
+    b_horses: List[str]
+    probs: List[Dict]
+
+
+@dataclass
+class BetRecommendation:
+    """Auto-recommended play from the recommender engine."""
+    bet_type: str              # WIN, EXACTA, TRIFECTA, DD, PICK3
+    races: List[int]
+    confidence: float          # 0-1
+    reason_codes: List[str]
+    reason_text: str
+    key_horse: Optional[str]
+    suggested_counts: Dict[int, "CountOverrides"]  # {race_num: overrides}
+
+
+def analyze_race_for_commander(
+    race_number: int,
+    projs: List[Dict],
+    settings: "BetSettings",
+    quality: float,
+) -> RaceAnalysis:
+    """Compute edge_score and chaos_index for a single race.
+
+    Parameters
+    ----------
+    projs : list of projection dicts (already sorted sheets-first)
+    settings : BetSettings with odds/overlay info
+    quality : figure_quality_pct for this race (0-1)
+    """
+    if not projs:
+        return RaceAnalysis(
+            race_number=race_number, grade="D",
+            grade_reasons=["no projections"], edge_score=0,
+            chaos_index=1.0, has_true_single=False,
+            top_overlay=None, figure_quality_pct=quality,
+            field_size=0, top_horse="", top_confidence=0,
+            top_cycle="", a_horses=[], b_horses=[], probs=[],
+        )
+
+    grade, reasons = grade_race(projs, quality)
+    non_tossed = [p for p in projs if not p.get("tossed", False)]
+    if not non_tossed:
+        non_tossed = projs
+
+    top = non_tossed[0]
+    top_name = _horse_name(top)
+    top_conf = top.get("confidence", 0)
+    top_cycle = top.get("projection_type", "NEUTRAL")
+    top_cycle_pri = top.get("cycle_priority", 2)
+
+    single = is_true_single(projs)
+
+    # overlay
+    top_odds = top.get("odds")
+    top_overlay = None
+    if top_odds and top_odds > 0:
+        probs_list = _compute_race_probs(projs)
+        if probs_list:
+            fair = 1.0 / probs_list[0]["model_prob"] if probs_list[0]["model_prob"] > 0 else 99
+            top_overlay = top_odds / fair if fair > 0 else None
+    else:
+        probs_list = _compute_race_probs(projs)
+
+    # A/B horses
+    a_horses = []
+    b_horses = []
+    for i, p in enumerate(non_tossed):
+        nm = _horse_name(p)
+        if i == 0:
+            a_horses.append(nm)
+        elif p.get("cycle_priority", 0) >= 4:
+            a_horses.append(nm)
+        elif p.get("cycle_priority", 0) >= 2:
+            b_horses.append(nm)
+        if len(a_horses) + len(b_horses) >= 6:
+            break
+
+    # --- edge_score (0-100) ---
+    edge = 0.0
+    if single:
+        edge += 30
+    edge += 20 * top_conf
+    if top_cycle_pri >= 5:  # PAIRED or PAIRED_TOP
+        edge += 15
+    elif top_cycle_pri == 4:  # REBOUND
+        edge += 10
+    if grade == "A":
+        edge += 10
+    elif grade == "B":
+        edge += 5
+    if top_overlay and top_overlay > 1.0:
+        edge += 15 * min((top_overlay - 1.0) / 1.0, 1.0)
+    if quality >= 0.90:
+        edge += 10
+    edge = min(edge, 100.0)
+
+    # --- chaos_index (0-1) ---
+    chaos = 0.0
+    if quality < 0.80:
+        chaos += 0.25
+    if top_conf < 0.50:
+        chaos += 0.20
+    if len(non_tossed) >= 2:
+        gap_1_2 = abs(non_tossed[0].get("bias_score", 0) - non_tossed[1].get("bias_score", 0))
+        if gap_1_2 < 1.0:
+            chaos += 0.15
+    # cluster: >3 within 2.0 pts of #1
+    top_mid = non_tossed[0].get("proj_mid", 0)
+    cluster = sum(1 for p in non_tossed[1:] if abs(p.get("proj_mid", 0) - top_mid) <= 2.0)
+    if cluster > 3:
+        chaos += 0.15
+    if top.get("bounce_risk", False):
+        chaos += 0.10
+    if top.get("tossed", False):
+        chaos += 0.10
+    if len(projs) >= 12:
+        chaos += 0.05
+    chaos = min(chaos, 1.0)
+
+    return RaceAnalysis(
+        race_number=race_number,
+        grade=grade,
+        grade_reasons=reasons,
+        edge_score=round(edge, 1),
+        chaos_index=round(chaos, 2),
+        has_true_single=single,
+        top_overlay=round(top_overlay, 2) if top_overlay else None,
+        figure_quality_pct=round(quality, 2),
+        field_size=len(projs),
+        top_horse=top_name,
+        top_confidence=round(top_conf, 2),
+        top_cycle=top_cycle,
+        a_horses=a_horses,
+        b_horses=b_horses,
+        probs=probs_list if probs_list else [],
+    )
+
+
+def recommend_bets_for_card(
+    race_projections: Dict[int, List[Dict]],
+    race_quality: Dict[int, float],
+    settings: "BetSettings",
+) -> Tuple[Dict[int, RaceAnalysis], List[BetRecommendation]]:
+    """Analyze all races and produce ordered bet recommendations.
+
+    Returns
+    -------
+    analyses : {race_number: RaceAnalysis}
+    recommendations : list of BetRecommendation sorted by confidence desc
+    """
+    analyses: Dict[int, RaceAnalysis] = {}
+    for rn in sorted(race_projections.keys()):
+        projs = race_projections[rn]
+        q = race_quality.get(rn, 0.0)
+        analyses[rn] = analyze_race_for_commander(rn, projs, settings, q)
+
+    recs: List[BetRecommendation] = []
+    race_nums = sorted(analyses.keys())
+
+    for rn in race_nums:
+        a = analyses[rn]
+
+        # --- WIN ---
+        if ((a.has_true_single or (len(a.a_horses) >= 1 and a.top_confidence >= 0.60))
+                and a.top_overlay is not None and a.top_overlay >= 1.25
+                and a.chaos_index <= 0.55):
+            reasons = []
+            if a.has_true_single:
+                reasons.append("TRUE_SINGLE")
+            if a.top_overlay >= 1.25:
+                reasons.append(f"OVERLAY_{a.top_overlay:.2f}")
+            if a.top_confidence >= 0.60:
+                reasons.append(f"CONF_{a.top_confidence:.0%}")
+            recs.append(BetRecommendation(
+                bet_type="WIN",
+                races=[rn],
+                confidence=round(min(a.edge_score / 100, 0.95), 2),
+                reason_codes=reasons,
+                reason_text=f"R{rn} {a.top_horse}: {', '.join(reasons)}",
+                key_horse=a.top_horse,
+                suggested_counts={rn: CountOverrides(a_count=1, b_count=0, c_count=0)},
+            ))
+
+        # --- EXACTA ---
+        if (len(a.a_horses) >= 1 and len(a.a_horses) + len(a.b_horses) >= 2
+                and a.chaos_index <= 0.55):
+            top2_prob = sum(p["model_prob"] for p in a.probs[:2]) if len(a.probs) >= 2 else 0
+            if top2_prob >= 0.45:
+                recs.append(BetRecommendation(
+                    bet_type="EXACTA",
+                    races=[rn],
+                    confidence=round(top2_prob * 0.85, 2),
+                    reason_codes=["TOP2_STRONG", f"PROB_{top2_prob:.0%}"],
+                    reason_text=f"R{rn} exacta: top-2 combined prob {top2_prob:.0%}",
+                    key_horse=a.top_horse,
+                    suggested_counts={rn: CountOverrides(a_count=1, b_count=3, c_count=0)},
+                ))
+
+        # --- TRIFECTA ---
+        if (a.chaos_index <= 0.45 and len(a.probs) >= 4):
+            top3_prob = sum(p["model_prob"] for p in a.probs[:3])
+            gap_3_4 = 0
+            if len(a.probs) >= 4:
+                gap_3_4 = a.probs[2].get("model_prob", 0) - a.probs[3].get("model_prob", 0)
+            if top3_prob >= 0.55 and gap_3_4 >= 0.02:
+                recs.append(BetRecommendation(
+                    bet_type="TRIFECTA",
+                    races=[rn],
+                    confidence=round(top3_prob * 0.75, 2),
+                    reason_codes=["TOP3_SEPARATION", f"PROB_{top3_prob:.0%}"],
+                    reason_text=f"R{rn} tri: top-3 prob {top3_prob:.0%}, clear separation",
+                    key_horse=a.top_horse,
+                    suggested_counts={rn: CountOverrides(a_count=1, b_count=2, c_count=2)},
+                ))
+
+    # --- DD (adjacent pairs) ---
+    for i in range(len(race_nums) - 1):
+        r1, r2 = race_nums[i], race_nums[i + 1]
+        a1, a2 = analyses[r1], analyses[r2]
+        if r2 - r1 != 1:
+            continue
+        has_anchor = a1.has_true_single or a2.has_true_single
+        both_decent = a1.figure_quality_pct >= 0.70 and a2.figure_quality_pct >= 0.70
+        if has_anchor and both_decent and min(a1.chaos_index, a2.chaos_index) <= 0.55:
+            anchor_race = r1 if a1.edge_score >= a2.edge_score else r2
+            anchor_a = analyses[anchor_race]
+            conf = round((a1.edge_score + a2.edge_score) / 200 * 0.9, 2)
+            recs.append(BetRecommendation(
+                bet_type="DD",
+                races=[r1, r2],
+                confidence=conf,
+                reason_codes=["ANCHOR_SINGLE" if has_anchor else "STRONG_PAIR"],
+                reason_text=f"DD R{r1}-R{r2}: anchor {anchor_a.top_horse}",
+                key_horse=anchor_a.top_horse,
+                suggested_counts={
+                    r1: CountOverrides(a_count=1, b_count=2, c_count=0),
+                    r2: CountOverrides(a_count=1, b_count=2, c_count=0),
+                },
+            ))
+
+    # --- PICK3 (3 consecutive, exactly 1 chaos leg) ---
+    for i in range(len(race_nums) - 2):
+        r1, r2, r3 = race_nums[i], race_nums[i + 1], race_nums[i + 2]
+        if r3 - r1 != 2:
+            continue
+        trio = [analyses[r1], analyses[r2], analyses[r3]]
+        chaos_legs = [a for a in trio if a.chaos_index > 0.55]
+        single_legs = [a for a in trio if a.has_true_single]
+        if len(chaos_legs) == 1 and len(single_legs) >= 1:
+            conf = round(sum(a.edge_score for a in trio) / 300 * 0.85, 2)
+            chaos_rn = chaos_legs[0].race_number
+            counts = {}
+            for a in trio:
+                if a.race_number == chaos_rn:
+                    counts[a.race_number] = CountOverrides(a_count=1, b_count=2, c_count=3)
+                else:
+                    counts[a.race_number] = CountOverrides(a_count=1, b_count=2, c_count=0)
+            recs.append(BetRecommendation(
+                bet_type="PICK3",
+                races=[r1, r2, r3],
+                confidence=conf,
+                reason_codes=["1_CHAOS_LEG", f"SINGLES_{len(single_legs)}"],
+                reason_text=f"P3 R{r1}-R{r3}: spread R{chaos_rn}, anchor elsewhere",
+                key_horse=single_legs[0].top_horse if single_legs else None,
+                suggested_counts=counts,
+            ))
+
+    recs.sort(key=lambda r: r.confidence, reverse=True)
+    return analyses, recs
+
+
+# ---------------------------------------------------------------------------
+# Override-Aware Wrappers
+# ---------------------------------------------------------------------------
+
+def build_daily_double_with_overrides(
+    race_projections: Dict[int, List[Dict[str, Any]]],
+    start_race: int,
+    budget: float,
+    settings: "BetSettings",
+    strategy: MultiRaceStrategy,
+    per_leg_overrides: Dict[int, CountOverrides],
+    race_quality: Optional[Dict[int, float]] = None,
+) -> "DailyDoublePlan":
+    """Build DD with per-leg CountOverrides applied."""
+    modified = {}
+    for rn, projs in race_projections.items():
+        if rn in per_leg_overrides:
+            ov = per_leg_overrides[rn]
+            modified[rn] = apply_overrides(projs, ov)
+        else:
+            modified[rn] = projs
+
+    # Build a strategy that reflects the overrides for the two legs
+    r1, r2 = start_race, start_race + 1
+    ov1 = per_leg_overrides.get(r1)
+    ov2 = per_leg_overrides.get(r2)
+    # Use the max of override counts across legs for the strategy
+    mod_strategy = MultiRaceStrategy(
+        a_count=max(ov1.a_count if ov1 else strategy.a_count,
+                    ov2.a_count if ov2 else strategy.a_count),
+        b_count=max(ov1.b_count if ov1 else strategy.b_count,
+                    ov2.b_count if ov2 else strategy.b_count),
+        c_count=max(ov1.c_count if ov1 else strategy.c_count,
+                    ov2.c_count if ov2 else strategy.c_count),
+    )
+
+    return build_daily_double_plan(
+        modified, start_race, budget, settings, mod_strategy, race_quality,
+    )
+
+
+def build_multi_race_with_overrides(
+    race_projections: Dict[int, List[Dict[str, Any]]],
+    start_race: int,
+    bet_type: str,
+    budget: float,
+    strategy: MultiRaceStrategy,
+    per_leg_overrides: Dict[int, CountOverrides],
+    settings: "BetSettings",
+    race_quality: Optional[Dict[int, float]] = None,
+) -> "MultiRacePlan":
+    """Build multi-race plan (P3/P4/P5/P6) with per-leg overrides."""
+    modified = {}
+    for rn, projs in race_projections.items():
+        if rn in per_leg_overrides:
+            ov = per_leg_overrides[rn]
+            modified[rn] = apply_overrides(projs, ov)
+        else:
+            modified[rn] = projs
+
+    # Strategy from max of all leg overrides
+    a_counts = [per_leg_overrides[rn].a_count for rn in per_leg_overrides if rn in per_leg_overrides]
+    b_counts = [per_leg_overrides[rn].b_count for rn in per_leg_overrides if rn in per_leg_overrides]
+    c_counts = [per_leg_overrides[rn].c_count for rn in per_leg_overrides if rn in per_leg_overrides]
+    mod_strategy = MultiRaceStrategy(
+        a_count=max(a_counts) if a_counts else strategy.a_count,
+        b_count=max(b_counts) if b_counts else strategy.b_count,
+        c_count=max(c_counts) if c_counts else strategy.c_count,
+    )
+
+    return build_multi_race_plan(
+        modified, start_race, bet_type, budget, mod_strategy, settings, race_quality,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Commander Export
+# ---------------------------------------------------------------------------
+
+def commander_slip_to_text(slip_entries: List[Dict]) -> str:
+    """Format bet slip as printable text."""
+    lines = ["=" * 50, "BET COMMANDER — TICKET SLIP", "=" * 50, ""]
+    total = 0.0
+    for i, entry in enumerate(slip_entries, 1):
+        bt = entry.get("bet_type", "?")
+        races = entry.get("races", [])
+        race_str = "-".join(str(r) for r in races)
+        cost = entry.get("total_cost", 0)
+        total += cost
+        lines.append(f"{i}. {bt}  R{race_str}  ${cost:.2f}")
+        for t in entry.get("computed_tickets", []):
+            if isinstance(t, Ticket):
+                lines.append(f"   {t.rationale}")
+            elif isinstance(t, dict):
+                lines.append(f"   {t.get('rationale', '')}")
+        lines.append("")
+    lines.append("-" * 50)
+    lines.append(f"TOTAL: ${total:.2f}")
+    lines.append("=" * 50)
+    return "\n".join(lines)
+
+
+def commander_slip_to_json(slip_entries: List[Dict]) -> str:
+    """Export bet slip as JSON string."""
+    import json
+
+    export = []
+    for entry in slip_entries:
+        tickets_out = []
+        for t in entry.get("computed_tickets", []):
+            if isinstance(t, Ticket):
+                tickets_out.append({
+                    "bet_type": t.bet_type,
+                    "selections": t.selections,
+                    "cost": t.cost,
+                    "rationale": t.rationale,
+                    "details": t.details,
+                })
+            elif isinstance(t, dict):
+                tickets_out.append(t)
+        export.append({
+            "bet_type": entry.get("bet_type"),
+            "races": entry.get("races", []),
+            "base_wager": entry.get("base_wager", 2),
+            "total_cost": entry.get("total_cost", 0),
+            "tickets": tickets_out,
+            "leg_overrides": {
+                str(rn): {
+                    "a_count": ov.a_count, "b_count": ov.b_count,
+                    "c_count": ov.c_count,
+                    "pinned_a": ov.pinned_a, "excluded": ov.excluded,
+                }
+                for rn, ov in entry.get("leg_overrides", {}).items()
+                if isinstance(ov, CountOverrides)
+            },
+        })
+    return json.dumps(export, indent=2)
