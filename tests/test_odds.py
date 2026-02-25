@@ -257,3 +257,107 @@ class TestTicketTextIncludesOdds:
             key_ticket = next((t for t in ex_tickets if "KEY" in t.rationale), None)
             if key_ticket:
                 assert "5/1" in key_ticket.rationale
+                # horses dict should carry odds for renderer display
+                horses = key_ticket.details.get("horses", {})
+                assert horses["Stubold"]["odds_raw"] == "5/1"
+                assert horses["Stubold"]["odds_decimal"] == 5.0
+                assert horses["Runner"]["odds_raw"] == "8/1"
+                assert horses["Runner"]["odds_decimal"] == 8.0
+
+
+class TestRankedTableOddsDisplay:
+    """Test ranked-table row building logic: odds column + NO_ODDS tag."""
+
+    @staticmethod
+    def _fmt_odds_display(odds_entry):
+        """Mirror streamlit_app._fmt_odds_display (can't import streamlit)."""
+        if not odds_entry:
+            return "\u2014"
+        raw = odds_entry.get("odds_raw") or ""
+        dec = odds_entry.get("odds_decimal")
+        if raw:
+            return raw
+        if dec is not None:
+            return f"{dec:.1f}-1"
+        return "\u2014"
+
+    @staticmethod
+    def _normalize(name):
+        import re
+        n = (name or "").upper().strip()
+        n = re.sub(r"[\u2018\u2019\u201C\u201D'\-.,()\"']", "", n)
+        n = re.sub(r"\s+", " ", n)
+        return n
+
+    def _build_lookup(self, full_rows):
+        odds_data, odds_by_post = {}, {}
+        for snap in full_rows:
+            key_name = (snap["race_number"], snap["normalized_name"])
+            key_post = (snap["race_number"], snap["post"])
+            entry = {"odds_raw": snap.get("odds_raw", ""), "odds_decimal": snap.get("odds_decimal")}
+            odds_data[key_name] = entry
+            if snap.get("post") is not None:
+                odds_by_post[key_post] = entry
+        return odds_data, odds_by_post
+
+    def _lookup(self, race_number, horse_name, post, odds_data, odds_by_post):
+        if post is not None:
+            try:
+                key_post = (int(race_number), int(post))
+                if key_post in odds_by_post:
+                    return odds_by_post[key_post]
+            except (ValueError, TypeError):
+                pass
+        norm = self._normalize(horse_name)
+        return odds_data.get((int(race_number), norm))
+
+    def test_ranked_row_odds_populated(self, tmp_path):
+        """Ranked table row has 'Odds (ML)' with raw string when snapshot exists."""
+        db = Persistence(tmp_path / "test.db")
+        db.save_odds_snapshots("s1", "GP", "2026-02-26", [
+            {"race_number": 1, "post": 3, "horse_name": "Alpha", "odds_raw": "5/1", "odds_decimal": 5.0},
+            {"race_number": 1, "post": 5, "horse_name": "Beta", "odds_raw": "9/5", "odds_decimal": 1.8},
+        ])
+        full = db.get_odds_snapshots_full("GP", "2026-02-26")
+        odds_data, odds_by_post = self._build_lookup(full)
+
+        # Simulate row building for horse Alpha (post 3)
+        o = self._lookup(1, "Alpha", 3, odds_data, odds_by_post)
+        assert o is not None
+        display = self._fmt_odds_display(o)
+        assert display == "5/1"
+        assert o["odds_decimal"] == 5.0
+
+        # Simulate row building for horse Beta (post 5)
+        o2 = self._lookup(1, "Beta", 5, odds_data, odds_by_post)
+        assert o2 is not None
+        assert self._fmt_odds_display(o2) == "9/5"
+        assert abs(o2["odds_decimal"] - 1.8) < 1e-9
+
+    def test_no_odds_tag_applied(self, tmp_path):
+        """When a horse has no odds snapshot, display shows dash and NO_ODDS tag is set."""
+        db = Persistence(tmp_path / "test.db")
+        # Only Alpha has odds; Gamma does not
+        db.save_odds_snapshots("s1", "GP", "2026-02-26", [
+            {"race_number": 1, "post": 3, "horse_name": "Alpha", "odds_raw": "5/1", "odds_decimal": 5.0},
+        ])
+        full = db.get_odds_snapshots_full("GP", "2026-02-26")
+        odds_data, odds_by_post = self._build_lookup(full)
+
+        # Simulate row building for missing horse Gamma (post 7)
+        o = self._lookup(1, "Gamma", 7, odds_data, odds_by_post)
+        assert o is None
+        assert self._fmt_odds_display(o) == "\u2014"
+
+        # Simulate NO_ODDS tag logic (mirrors streamlit_app.py lines 634-636)
+        tags = "BOUNCE_RISK"
+        if not o or (o and o.get("odds_decimal") is None):
+            tags = f"{tags}, NO_ODDS" if tags != "-" else "NO_ODDS"
+        assert "NO_ODDS" in tags
+        assert tags == "BOUNCE_RISK, NO_ODDS"
+
+        # When tags start as '-', NO_ODDS replaces it
+        tags2 = "-"
+        if not o or (o and o.get("odds_decimal") is None):
+            tags2 = f"{tags2}, NO_ODDS" if tags2 != "-" else "NO_ODDS"
+        assert tags2 == "NO_ODDS"

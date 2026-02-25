@@ -333,12 +333,14 @@ def build_exacta_tickets(
     tickets = []
 
     names = [_horse_name(p) for p in ranked]
-    # Build identifier lookup for each horse
+    # Build identifier lookup for each horse (includes odds for display)
     horse_ids = {
         _horse_name(p): {
             "post": p.get("post", ""),
             "horse_name": _horse_name(p),
             "normalized_name": _normalize_name(_horse_name(p)),
+            "odds_raw": p.get("odds_raw", ""),
+            "odds_decimal": p.get("odds"),
         }
         for p in ranked
     }

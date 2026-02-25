@@ -847,6 +847,14 @@ def engine_page():
         st.caption(f"Showing top {top_n} of {len(best_bets)} entries")
 
         bb_show_odds = st.checkbox("Show Odds", value=True, key=f"bb_show_odds_{sel_id}")
+        if bb_show_odds:
+            bb_odds_found = sum(
+                1 for _rn, _p in best_bets[:top_n]
+                if _lookup_odds(_rn, _p.name, _p.post, _odds_data, _odds_by_post)
+                and _lookup_odds(_rn, _p.name, _p.post, _odds_data, _odds_by_post).get("odds_decimal") is not None
+            )
+            st.caption(f"Odds coverage: {bb_odds_found}/{top_n} horses")
+
         rows = []
         for rn, p in best_bets[:top_n]:
             score = _best_bet_score(p)
@@ -872,6 +880,9 @@ def engine_page():
             if bb_show_odds:
                 o = _lookup_odds(rn, p.name, p.post, _odds_data, _odds_by_post)
                 row['Odds (ML)'] = _fmt_odds_display(o)
+                if not o or o.get("odds_decimal") is None:
+                    existing = row.get('Tags', '-')
+                    row['Tags'] = f"{existing}, NO_ODDS" if existing != '-' else "NO_ODDS"
             rows.append(row)
 
         df = pd.DataFrame(rows)
@@ -1016,6 +1027,27 @@ def engine_page():
                 f"**{g}**: {grade_counts.get(g, 0)}" for g in ["A", "B", "C"])
             st.markdown(f"Grade breakdown: {grades_str}")
 
+            # Odds toggle + coverage for tickets
+            bb_ticket_show_odds = st.checkbox(
+                "Show Odds", value=True, key=f"bb_ticket_show_odds_{sel_id}")
+            if bb_ticket_show_odds:
+                _ticket_horses_total = 0
+                _ticket_horses_with_odds = 0
+                for _rp in race_plans:
+                    for _t in _rp.get("tickets", []):
+                        _d = _t.get("details", {})
+                        if _t["bet_type"] == "WIN":
+                            _ticket_horses_total += 1
+                            if _d.get("odds_raw") or _d.get("odds"):
+                                _ticket_horses_with_odds += 1
+                        elif _t["bet_type"] == "EXACTA":
+                            for _hdata in _d.get("horses", {}).values():
+                                _ticket_horses_total += 1
+                                if _hdata.get("odds_raw") or _hdata.get("odds_decimal"):
+                                    _ticket_horses_with_odds += 1
+                st.caption(
+                    f"Odds coverage: {_ticket_horses_with_odds}/{_ticket_horses_total} horses in tickets")
+
             if total_tickets > 0:
                 # Show tickets
                 for rp in race_plans:
@@ -1026,12 +1058,61 @@ def engine_page():
                         f"(${rp['total_cost']:.0f})", expanded=True
                     ):
                         for t in rp.get("tickets", []):
-                            sels = " / ".join(t["selections"])
-                            odds_val = t.get("details", {}).get("odds")
-                            odds_str = f" @ {odds_val:.1f}-1" if odds_val else ""
+                            details = t.get("details", {})
+                            bet_type = t["bet_type"]
+
+                            if bet_type == "WIN":
+                                name = t["selections"][0] if t["selections"] else ""
+                                if bb_ticket_show_odds:
+                                    raw = details.get("odds_raw") or ""
+                                    dec = details.get("odds")
+                                    if raw:
+                                        odds_tag = f" @ {raw}"
+                                    elif dec:
+                                        odds_tag = f" @ {dec:.1f}-1"
+                                    else:
+                                        odds_tag = ""
+                                else:
+                                    odds_tag = ""
+                                header = f"**WIN** {name}{odds_tag}"
+
+                            elif bet_type == "EXACTA":
+                                horses = details.get("horses", {})
+                                structure = details.get("structure", "")
+
+                                def _horse_odds_label(hname):
+                                    if not bb_ticket_show_odds:
+                                        return hname
+                                    h = horses.get(hname, {})
+                                    raw = h.get("odds_raw") or ""
+                                    dec = h.get("odds_decimal")
+                                    if raw:
+                                        return f"{hname} @ {raw}"
+                                    if dec is not None:
+                                        return f"{hname} @ {dec:.1f}-1"
+                                    return hname
+
+                                if structure == "key":
+                                    top = details.get("top", "")
+                                    unders = details.get("unders", [])
+                                    top_lbl = _horse_odds_label(top)
+                                    under_lbls = [_horse_odds_label(u) for u in unders]
+                                    header = f"**EXACTA** KEY {top_lbl} over {', '.join(under_lbls)}"
+                                elif structure == "saver":
+                                    overs = details.get("overs", [])
+                                    under = details.get("under", "")
+                                    over_lbls = [_horse_odds_label(o) for o in overs]
+                                    header = f"**EXACTA** SAVER {', '.join(over_lbls)} / {under}"
+                                else:
+                                    sels = " / ".join(t["selections"])
+                                    header = f"**EXACTA** {sels}"
+
+                            else:
+                                sels = " / ".join(t["selections"])
+                                header = f"**{bet_type}** {sels}"
+
                             st.markdown(
-                                f"**{t['bet_type']}** {sels}{odds_str} — "
-                                f"${t['cost']:.0f}  \n"
+                                f"{header} — ${t['cost']:.0f}  \n"
                                 f"{t.get('rationale', '')}")
             else:
                 # No bets — show diagnostics
