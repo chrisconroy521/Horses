@@ -306,3 +306,114 @@ class TestEstimateWinProb:
         p_small = _estimate_win_prob(0.80, 10.0, 4)
         p_large = _estimate_win_prob(0.80, 10.0, 12)
         assert p_small > p_large
+
+
+# ---------------------------------------------------------------------------
+# Ticket → Result linking tests (require persistence)
+# ---------------------------------------------------------------------------
+
+import json
+import tempfile
+from persistence import Persistence
+
+
+def _setup_db_with_results():
+    """Create a temp DB with result_entries for GP 02/26/2026 race 1."""
+    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    tmp.close()
+    db = Persistence(Path(tmp.name))
+    db.insert_race_result(
+        track="GP", race_date="02/26/2026", race_number=1,
+        surface="Dirt", distance="6f",
+    )
+    # Post 8 = winner (ALPHA HORSE), post 4 = 2nd (BETA HORSE)
+    db.insert_entry_result(
+        track="GP", race_date="02/26/2026", race_number=1,
+        post=8, horse_name="Alpha Horse", finish_pos=1,
+        odds=5.0, win_payoff=12.00,
+    )
+    db.insert_entry_result(
+        track="GP", race_date="02/26/2026", race_number=1,
+        post=4, horse_name="Beta Horse", finish_pos=2,
+        odds=8.0,
+    )
+    db.insert_entry_result(
+        track="GP", race_date="02/26/2026", race_number=1,
+        post=5, horse_name="Gamma Horse", finish_pos=3,
+        odds=12.0,
+    )
+    return db
+
+
+class TestTicketResultLinking:
+    """Test that evaluate_bet_plan_roi resolves tickets against results."""
+
+    def test_resolve_by_post(self):
+        """HIGH tier: match ticket to result by (track, date, race_number, post)."""
+        db = _setup_db_with_results()
+        # Save a plan with a WIN ticket that has post=8
+        plan_dict = {
+            "race_plans": [{
+                "race_number": 1,
+                "grade": "A",
+                "passed": False,
+                "total_cost": 10.0,
+                "tickets": [{
+                    "bet_type": "WIN",
+                    "selections": ["Alpha Horse"],
+                    "cost": 10.0,
+                    "rationale": "test",
+                    "details": {
+                        "post": 8,
+                        "horse_name": "Alpha Horse",
+                        "normalized_name": "ALPHA HORSE",
+                    },
+                }],
+            }],
+        }
+        plan_id = db.save_bet_plan(
+            session_id="test-sess", track="GP", race_date="02/26/2026",
+            settings_dict={"bankroll": 1000}, plan_dict=plan_dict,
+            total_risk=10.0, paper_mode=True,
+        )
+        result = db.evaluate_bet_plan_roi(plan_id)
+        assert result["resolved"] == 1
+        assert result["unresolved"] == 0
+        tr = result["ticket_results"][0]
+        assert tr["outcome"] == "won"
+        assert tr["returned"] > 0  # $10/$2 * $12 = $60
+        assert tr["match_tier"] == "high"
+
+    def test_resolve_by_name_fallback(self):
+        """LOW tier: match by normalized horse name when post is missing."""
+        db = _setup_db_with_results()
+        # Save a plan where post is missing but horse_name matches
+        plan_dict = {
+            "race_plans": [{
+                "race_number": 1,
+                "grade": "B",
+                "passed": False,
+                "total_cost": 6.0,
+                "tickets": [{
+                    "bet_type": "WIN",
+                    "selections": ["Beta Horse"],
+                    "cost": 6.0,
+                    "rationale": "test",
+                    "details": {
+                        "post": None,
+                        "horse_name": "Beta Horse",
+                        "normalized_name": "",
+                    },
+                }],
+            }],
+        }
+        plan_id = db.save_bet_plan(
+            session_id="test-sess", track="GP", race_date="02/26/2026",
+            settings_dict={"bankroll": 1000}, plan_dict=plan_dict,
+            total_risk=6.0, paper_mode=True,
+        )
+        result = db.evaluate_bet_plan_roi(plan_id)
+        assert result["resolved"] == 1
+        tr = result["ticket_results"][0]
+        assert tr["outcome"] == "lost"  # Beta Horse finished 2nd
+        assert tr["match_tier"] == "low"  # fell through to selection name

@@ -2518,6 +2518,18 @@ def bet_builder_page():
                 er = requests.get(f"{API_BASE_URL}/bets/evaluate/{int(eval_id)}", timeout=15)
                 if er.status_code == 200:
                     ev = er.json()
+
+                    # Resolution stats
+                    resolved = ev.get("resolved", 0)
+                    total_tk = ev.get("total_tickets", 0)
+                    unresolved = ev.get("unresolved", 0)
+                    if total_tk > 0:
+                        if unresolved == 0:
+                            st.success(f"Results linked: {resolved}/{total_tk} tickets resolved")
+                        else:
+                            st.warning(f"Results linked: {resolved}/{total_tk} tickets resolved "
+                                       f"({unresolved} unresolved)")
+
                     e1, e2, e3 = st.columns(3)
                     with e1:
                         st.metric("Wagered", f"${ev['total_wagered']:.2f}")
@@ -2527,6 +2539,7 @@ def bet_builder_page():
                         st.metric("ROI", f"{ev['roi_pct']:.1f}%")
 
                     tr_rows = []
+                    unresolved_rows = []
                     for tr in ev.get("ticket_results", []):
                         tr_rows.append({
                             "Race": tr["race_number"],
@@ -2535,9 +2548,21 @@ def bet_builder_page():
                             "Cost": f"${tr['cost']:.0f}",
                             "Outcome": tr["outcome"],
                             "Returned": f"${tr['returned']:.2f}" if tr["returned"] else "-",
+                            "Match": tr.get("match_tier", ""),
                         })
+                        if tr.get("outcome") == "no_result":
+                            unresolved_rows.append({
+                                "Race": tr["race_number"],
+                                "Type": tr["bet_type"],
+                                "Selections": " / ".join(tr["selections"]),
+                                "Reason": tr.get("match_reason", "unknown"),
+                            })
                     if tr_rows:
                         st.dataframe(pd.DataFrame(tr_rows), hide_index=True, use_container_width=True)
+                    if unresolved_rows:
+                        with st.expander(f"Unresolved tickets ({len(unresolved_rows)})"):
+                            st.dataframe(pd.DataFrame(unresolved_rows), hide_index=True,
+                                         use_container_width=True)
                 else:
                     st.error(f"Error: {er.text}")
             except Exception as e:

@@ -103,6 +103,23 @@ def _risk_multiplier(profile: str) -> float:
     return {"conservative": 0.6, "standard": 1.0, "aggressive": 1.4}.get(profile, 1.0)
 
 
+def _horse_name(p: Dict[str, Any]) -> str:
+    """Extract horse name from a projection dict.
+
+    Predictions from persistence use 'horse_name'; engine dicts use 'name'.
+    """
+    return p.get("horse_name") or p.get("name") or "?"
+
+
+def _normalize_name(name: str) -> str:
+    """Uppercase, strip punctuation, collapse whitespace (same logic as Persistence)."""
+    import re as _re
+    n = (name or "").upper().strip()
+    n = _re.sub(r"[\u2018\u2019\u201C\u201D'\-.,()\"']", "", n)
+    n = _re.sub(r"\s+", " ", n)
+    return n
+
+
 def kelly_fraction(odds: float, win_prob: float) -> float:
     """Fractional Kelly criterion for a $2 win bet.
 
@@ -165,7 +182,7 @@ def grade_race(projections: List[Dict[str, Any]], settings: BetSettings) -> tupl
     top_type = top.get("projection_type", "NEUTRAL")
     top_tossed = top.get("tossed", False)
     top_bounce = top.get("bounce_risk", False)
-    top_name = top.get("name", "?")
+    top_name = _horse_name(top)
 
     # Effective min confidence
     min_conf_a = settings.min_confidence if settings.min_confidence > 0 else _DEFAULT_MIN_CONFIDENCE_A
@@ -224,7 +241,13 @@ def build_win_ticket(
         return None
 
     top = ranked[0]
+    name = _horse_name(top)
+    norm = _normalize_name(name)
+    post = top.get("post", "")
     odds = top.get("odds")  # may be None if not yet available
+
+    # Common identifier block stored on every ticket
+    _ids = {"post": post, "horse_name": name, "normalized_name": norm}
 
     min_odds = settings.min_odds_a if grade == "A" else settings.min_odds_b
 
@@ -235,10 +258,10 @@ def build_win_ticket(
         stake = min(stake, race_budget)
         return Ticket(
             bet_type="WIN",
-            selections=[top.get("name", "?")],
+            selections=[name],
             cost=stake,
-            rationale=f"WIN #{top.get('name', '?')} — no odds, flat {stake:.0f}",
-            details={"post": top.get("post", ""), "odds": None, "method": "flat"},
+            rationale=f"WIN #{name} — no odds, flat {stake:.0f}",
+            details={**_ids, "odds": None, "method": "flat"},
         )
 
     if odds < min_odds:
@@ -262,14 +285,14 @@ def build_win_ticket(
 
     return Ticket(
         bet_type="WIN",
-        selections=[top.get("name", "?")],
+        selections=[name],
         cost=stake,
         rationale=(
-            f"WIN #{top.get('name', '?')} @ {odds:.1f}-1 — "
+            f"WIN #{name} @ {odds:.1f}-1 — "
             f"Kelly={kf:.3f}, stake=${stake:.0f}"
         ),
         details={
-            "post": top.get("post", ""),
+            **_ids,
             "odds": odds,
             "kelly_fraction": round(kf, 4),
             "win_prob_est": round(win_prob, 3),
@@ -292,8 +315,16 @@ def build_exacta_tickets(
     exacta_budget = race_budget * _EXACTA_BUDGET_PCT
     tickets = []
 
-    top = ranked[0]
-    names = [p.get("name", "?") for p in ranked]
+    names = [_horse_name(p) for p in ranked]
+    # Build identifier lookup for each horse
+    horse_ids = {
+        _horse_name(p): {
+            "post": p.get("post", ""),
+            "horse_name": _horse_name(p),
+            "normalized_name": _normalize_name(_horse_name(p)),
+        }
+        for p in ranked
+    }
 
     # Key: 1 over 2,3,4
     key_count = min(len(ranked) - 1, 3)
@@ -305,7 +336,10 @@ def build_exacta_tickets(
             selections=[names[0]] + under_names,
             cost=key_cost,
             rationale=f"EX KEY {names[0]} / {','.join(under_names)} — ${key_cost:.0f}",
-            details={"structure": "key", "top": names[0], "unders": under_names},
+            details={
+                "structure": "key", "top": names[0], "unders": under_names,
+                "horses": {n: horse_ids.get(n, {}) for n in [names[0]] + under_names},
+            },
         ))
         exacta_budget -= key_cost
 
@@ -321,7 +355,10 @@ def build_exacta_tickets(
                     selections=saver_names + [names[0]],
                     cost=saver_cost,
                     rationale=f"EX SAVER {','.join(saver_names)} / {names[0]} — ${saver_cost:.0f}",
-                    details={"structure": "saver", "overs": saver_names, "under": names[0]},
+                    details={
+                        "structure": "saver", "overs": saver_names, "under": names[0],
+                        "horses": {n: horse_ids.get(n, {}) for n in saver_names + [names[0]]},
+                    },
                 ))
 
     return tickets

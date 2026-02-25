@@ -2335,10 +2335,16 @@ class Persistence:
 
     def evaluate_bet_plan_roi(self, plan_id: int) -> Dict[str, Any]:
         """Compute realized ROI for a stored bet plan by joining tickets
-        against result_entries.
+        against result_entries using tiered matching.
+
+        Match priority per horse:
+          HIGH — (track, race_date, race_number, post)
+          MED  — (track, race_date, race_number, normalized_name)
+          LOW  — normalized horse_name from selection text
 
         Returns dict with plan_id, total_wagered, total_returned, roi_pct,
-        ticket_results (list of per-ticket outcomes), and evaluated_at.
+        ticket_results (list of per-ticket outcomes), resolved/unresolved
+        counts, and evaluated_at.
         """
         row = self.conn.execute(
             "SELECT * FROM bet_plans WHERE plan_id = ?", (plan_id,)
@@ -2350,9 +2356,66 @@ class Persistence:
         track = row["track"]
         race_date = row["race_date"]
 
+        # Pre-load all result entries for this card for efficient lookups
+        all_entries = self.conn.execute(
+            """SELECT post, horse_name, normalized_name, finish_pos, odds,
+                      win_payoff, race_number
+               FROM result_entries
+               WHERE track = ? AND race_date = ?""",
+            (track, race_date),
+        ).fetchall()
+
+        # Build lookup structures per race
+        # by_post:  {race_number: {post: entry_dict}}
+        # by_name:  {race_number: {normalized_name: entry_dict}}
+        by_post: Dict[int, Dict[int, dict]] = {}
+        by_name: Dict[int, Dict[str, dict]] = {}
+        for e in all_entries:
+            rn = e["race_number"]
+            ed = dict(e)
+            if rn not in by_post:
+                by_post[rn] = {}
+                by_name[rn] = {}
+            if e["post"] is not None:
+                by_post[rn][e["post"]] = ed
+            if e["normalized_name"]:
+                by_name[rn][e["normalized_name"]] = ed
+
+        def _resolve_horse(race_num: int, details: dict, sel_name: str):
+            """Resolve a single horse selection to a result entry.
+
+            Returns (entry_dict_or_None, match_tier: str, reason: str).
+            """
+            post = details.get("post")
+            stored_norm = details.get("normalized_name", "")
+            sel_norm = self._normalize_name(sel_name)
+
+            race_posts = by_post.get(race_num, {})
+            race_names = by_name.get(race_num, {})
+
+            # No results for this race at all
+            if not race_posts and not race_names:
+                return None, "none", "no results for race"
+
+            # HIGH: match by post
+            if post and isinstance(post, int) and post in race_posts:
+                return race_posts[post], "high", "matched by post"
+
+            # MED: match by normalized_name from ticket details
+            if stored_norm and stored_norm in race_names:
+                return race_names[stored_norm], "med", "matched by normalized_name"
+
+            # LOW: normalize the selection text itself
+            if sel_norm and sel_norm in race_names:
+                return race_names[sel_norm], "low", "matched by selection name"
+
+            return None, "none", "unresolved"
+
         total_wagered = 0.0
         total_returned = 0.0
         ticket_results = []
+        resolved_count = 0
+        unresolved_count = 0
 
         for rp in plan_data.get("race_plans", []):
             race_num = rp.get("race_number", 0)
@@ -2361,67 +2424,91 @@ class Persistence:
                 total_wagered += cost
                 bet_type = t.get("bet_type", "")
                 selections = t.get("selections", [])
+                details = t.get("details", {})
                 returned = 0.0
-                outcome = "pending"
+                outcome = "no_result"
+                match_tier = "none"
+                match_reason = ""
 
                 if bet_type == "WIN" and selections:
-                    norm = self._normalize_name(selections[0])
-                    entry = self.conn.execute(
-                        """SELECT finish_pos, win_payoff, odds
-                           FROM result_entries
-                           WHERE track = ? AND race_date = ?
-                             AND race_number = ? AND normalized_name = ?""",
-                        (track, race_date, race_num, norm),
-                    ).fetchone()
-                    if entry and entry["finish_pos"] is not None:
+                    entry, match_tier, match_reason = _resolve_horse(
+                        race_num, details, selections[0],
+                    )
+                    if entry and entry.get("finish_pos") is not None:
                         if entry["finish_pos"] == 1:
-                            payoff = entry["win_payoff"] or 0
+                            payoff = entry.get("win_payoff") or 0
                             returned = (cost / 2.0) * payoff if payoff else 0
                             outcome = "won"
                         else:
                             outcome = "lost"
+                        resolved_count += 1
                     elif entry:
-                        outcome = "lost"
+                        # Entry exists but no finish position
+                        outcome = "no_result"
+                        match_reason = "entry found but no finish_pos"
+                        unresolved_count += 1
+                    else:
+                        unresolved_count += 1
 
                 elif bet_type == "EXACTA" and len(selections) >= 2:
-                    structure = t.get("details", {}).get("structure", "key")
-                    entries = self.conn.execute(
-                        """SELECT horse_name, normalized_name, finish_pos
-                           FROM result_entries
-                           WHERE track = ? AND race_date = ?
-                             AND race_number = ?""",
-                        (track, race_date, race_num),
-                    ).fetchall()
-                    if entries:
-                        finish_map = {
-                            self._normalize_name(e["horse_name"] or ""): e["finish_pos"]
-                            for e in entries
-                        }
+                    structure = details.get("structure", "key")
+                    horses_ids = details.get("horses", {})
+
+                    # Resolve each selection to finish position
+                    resolved_finishes = {}
+                    all_matched = True
+                    for sel in selections:
+                        h_ids = horses_ids.get(sel, {})
+                        entry, tier, reason = _resolve_horse(race_num, h_ids, sel)
+                        if entry and entry.get("finish_pos") is not None:
+                            resolved_finishes[sel] = entry["finish_pos"]
+                        else:
+                            all_matched = False
+
+                    if not resolved_finishes:
+                        outcome = "no_result"
+                        match_tier = "none"
+                        match_reason = "no horses resolved"
+                        unresolved_count += 1
+                    else:
+                        match_tier = "high"
                         if structure == "key":
-                            top_fin = finish_map.get(self._normalize_name(selections[0]))
+                            top_name = selections[0]
+                            top_fin = resolved_finishes.get(top_name)
                             if top_fin == 1:
                                 for u in selections[1:]:
-                                    if finish_map.get(self._normalize_name(u)) == 2:
+                                    if resolved_finishes.get(u) == 2:
                                         outcome = "won"
                                         break
                                 else:
                                     outcome = "lost"
                             elif top_fin is not None:
                                 outcome = "lost"
+                            else:
+                                outcome = "no_result"
+                                match_reason = "top horse unresolved"
                         else:  # saver
-                            under_name = t.get("details", {}).get("under", "")
-                            under_fin = finish_map.get(self._normalize_name(under_name))
+                            under_name = details.get("under", "")
+                            under_fin = resolved_finishes.get(under_name)
                             if under_fin == 2:
-                                for o in t.get("details", {}).get("overs", []):
-                                    if finish_map.get(self._normalize_name(o)) == 1:
+                                for o in details.get("overs", []):
+                                    if resolved_finishes.get(o) == 1:
                                         outcome = "won"
                                         break
                                 else:
                                     outcome = "lost"
                             elif under_fin is not None:
                                 outcome = "lost"
+                            else:
+                                outcome = "no_result"
+                                match_reason = "under horse unresolved"
 
-                    # Exacta payoff not tracked per combination in result_entries
+                        if outcome in ("won", "lost"):
+                            resolved_count += 1
+                        else:
+                            unresolved_count += 1
+
+                    # Exacta payoff not tracked per combination
                     if outcome == "won":
                         returned = 0
 
@@ -2433,8 +2520,11 @@ class Persistence:
                     "cost": cost,
                     "outcome": outcome,
                     "returned": returned,
+                    "match_tier": match_tier,
+                    "match_reason": match_reason,
                 })
 
+        total_tickets = resolved_count + unresolved_count
         roi_pct = ((total_returned - total_wagered) / total_wagered * 100) if total_wagered > 0 else 0
 
         return {
@@ -2444,6 +2534,9 @@ class Persistence:
             "total_wagered": round(total_wagered, 2),
             "total_returned": round(total_returned, 2),
             "roi_pct": round(roi_pct, 1),
+            "resolved": resolved_count,
+            "unresolved": unresolved_count,
+            "total_tickets": total_tickets,
             "ticket_results": ticket_results,
             "evaluated_at": datetime.utcnow().isoformat(),
         }
