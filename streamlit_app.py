@@ -493,8 +493,147 @@ def _fetch_trainer_intents(race_horses):
     return intents
 
 
+def _parse_workout_date(date_str):
+    """Parse BRISNET workout date like '08Feb' or \"08Feb'25\" into a date."""
+    if not date_str:
+        return None
+    try:
+        m = re.match(r"(\d{1,2})([A-Za-z]{3})(?:'(\d{2}))?", date_str)
+        if not m:
+            return None
+        day, mon, yr2 = int(m.group(1)), m.group(2), m.group(3)
+        today = datetime.now().date()
+        if yr2:
+            year = 2000 + int(yr2)
+        else:
+            # Assume current year; if parsed date is in the future, use previous year
+            year = today.year
+        from datetime import date as _date
+        dt = datetime.strptime(f"{day}{mon}{year}", "%d%b%Y").date()
+        if dt > today and not yr2:
+            dt = dt.replace(year=year - 1)
+        return dt
+    except (ValueError, TypeError):
+        return None
+
+
+def _parse_work_distance(dist_str):
+    """Parse workout distance like '5f' into furlongs as float. Returns None on failure."""
+    if not dist_str:
+        return None
+    s = dist_str.strip().lower()
+    if s.endswith("f"):
+        try:
+            return float(s[:-1])
+        except ValueError:
+            return None
+    return None
+
+
+def _compute_workout_grades(race_horses):
+    """Compute workout grade (A/B/C/D) for each horse from BRISNET workout data.
+    Returns dict keyed by horse_name."""
+    from datetime import date as _date
+    today = datetime.now().date()
+    grades = {}
+
+    for h in race_horses:
+        name = h.get("horse_name", "")
+        workouts = h.get("workouts") or []
+        if not workouts:
+            grades[name] = {
+                "grade": "D", "days_since": None, "works_30": 0,
+                "progression": "FLAT", "bullet_pct": 0.0,
+                "sharp_recent": False, "gate_work": False,
+                "detail": "No works",
+            }
+            continue
+
+        # Parse dates and sort most recent first
+        parsed = []
+        for w in workouts:
+            dt = _parse_workout_date(w.get("date") or w.get("workout_date", ""))
+            parsed.append({**w, "_date": dt})
+        parsed = [p for p in parsed if p["_date"] is not None]
+        parsed.sort(key=lambda x: x["_date"], reverse=True)
+
+        if not parsed:
+            grades[name] = {
+                "grade": "D", "days_since": None, "works_30": 0,
+                "progression": "FLAT", "bullet_pct": 0.0,
+                "sharp_recent": False, "gate_work": False,
+                "detail": "No works",
+            }
+            continue
+
+        # Metrics
+        days_since = (today - parsed[0]["_date"]).days
+        works_30 = sum(1 for p in parsed if (today - p["_date"]).days <= 30)
+        bullets = sum(1 for p in parsed if (p.get("rank_letter") or "").lower() == "b")
+        bullet_pct = bullets / len(parsed) if parsed else 0.0
+        gate_work = any((p.get("rank_letter") or "").lower() == "g" for p in parsed)
+
+        # Sharp recent: work in last 7 days with rank percentile <= 20%
+        sharp_recent = False
+        for p in parsed:
+            if (today - p["_date"]).days <= 7:
+                rank_str = p.get("rank", "")
+                if "/" in rank_str:
+                    try:
+                        r, t = rank_str.split("/")
+                        if int(t) > 0 and int(r) / int(t) <= 0.20:
+                            sharp_recent = True
+                            break
+                    except (ValueError, ZeroDivisionError):
+                        pass
+
+        # Distance progression (last 3 works, chronological order)
+        recent3 = parsed[:3][::-1]  # oldest first among last 3
+        dists = [_parse_work_distance(p.get("distance", "")) for p in recent3]
+        dists = [d for d in dists if d is not None]
+        progression = "FLAT"
+        if len(dists) >= 2:
+            if all(dists[i] < dists[i + 1] for i in range(len(dists) - 1)):
+                progression = "UP"
+            elif all(dists[i] > dists[i + 1] for i in range(len(dists) - 1)):
+                progression = "DOWN"
+
+        # Grade assignment
+        if sharp_recent and (progression == "UP" or bullet_pct >= 0.30):
+            grade = "A"
+        elif works_30 >= 3 and days_since <= 14:
+            grade = "B"
+        elif works_30 >= 1 and days_since <= 30:
+            grade = "C"
+        else:
+            grade = "D"
+
+        # Detail string
+        parts = []
+        parts.append(f"{days_since}d ago")
+        parts.append(f"{works_30}w/30d")
+        if progression == "UP":
+            parts.append("\u2191dist")
+        elif progression == "DOWN":
+            parts.append("\u2193dist")
+        if bullet_pct >= 0.20:
+            parts.append(f"bullet {bullet_pct:.0%}")
+        if sharp_recent:
+            parts.append("sharp")
+        if gate_work:
+            parts.append("gate")
+
+        grades[name] = {
+            "grade": grade, "days_since": days_since, "works_30": works_30,
+            "progression": progression, "bullet_pct": bullet_pct,
+            "sharp_recent": sharp_recent, "gate_work": gate_work,
+            "detail": " | ".join(parts),
+        }
+    return grades
+
+
 def _render_top_picks(display_projections, race_number, race_horses=None,
-                      trainer_intents=None, key_prefix="eng"):
+                      trainer_intents=None, workout_grades=None, key_prefix="eng"):
     """Render top 3 pick cards for a race."""
     top3 = display_projections[:3]
     trainer_intents = trainer_intents or {}
@@ -521,6 +660,12 @@ def _render_top_picks(display_projections, race_number, race_horses=None,
             if intent.get("badge"):
                 color = "green" if intent["badge"] == "TRAINER_EDGE" else "orange"
                 st.markdown(f":{color}[{intent['badge']}]")
+            wg = (workout_grades or {}).get(p.name, {})
+            if wg.get("grade") in ("A", "B"):
+                wg_color = "green" if wg["grade"] == "A" else "blue"
+                st.markdown(f":{wg_color}[WORK_{wg['grade']}]")
+            elif wg.get("grade") == "D":
+                st.markdown(":red[WORK_D]")
             st.caption(p.summary)
             if p.new_top_setup:
                 st.caption(
@@ -531,9 +676,11 @@ def _render_top_picks(display_projections, race_number, race_horses=None,
 
 def _render_ranked_table(display_projections, race_horses, show_odds,
                          odds_data, odds_by_post, race_num,
-                         trainer_intents=None, key_prefix="eng"):
+                         trainer_intents=None, workout_grades=None,
+                         key_prefix="eng"):
     """Render the full ranked table with optional odds column."""
     trainer_intents = trainer_intents or {}
+    workout_grades = workout_grades or {}
     is_brisnet_data = any(
         h.get('figure_source') == 'brisnet' or h.get('quickplay_positive')
         for h in race_horses
@@ -561,6 +708,7 @@ def _render_ranked_table(display_projections, race_horses, show_odds,
             'Cycle': p.projection_type,
             'Setup': '',
             'Trainer Intent': '',
+            'Workout Grade': '',
             'Proj Mid': f"{p.proj_mid:.1f}" if hasattr(p, 'proj_mid') else '',
             'Proj Low': f"{p.projected_low:.1f}",
             'Proj High': f"{p.projected_high:.1f}",
@@ -585,6 +733,12 @@ def _render_ranked_table(display_projections, race_horses, show_odds,
             row['Trainer Intent'] = " ".join(parts)
         else:
             row['Trainer Intent'] = "\u2014"
+        # Workout grade column
+        wg = workout_grades.get(p.name, {})
+        if wg.get("grade"):
+            row['Workout Grade'] = f"{wg['grade']} \u2014 {wg.get('detail', '')}"
+        else:
+            row['Workout Grade'] = "\u2014"
         if is_brisnet_data:
             matching = [h for h in race_horses if h.get('horse_name') == p.name]
             if matching:
@@ -1667,14 +1821,17 @@ def dashboard_page():
                             st.caption(f"Last computed at: {d_last}")
                         sorted_by_bias = sorted(d_projs, key=lambda p: p.bias_score, reverse=True)
                         _dash_trainer_intents = _fetch_trainer_intents(race_horses)
+                        _dash_workout_grades = _compute_workout_grades(race_horses)
                         _render_top_picks(sorted_by_bias, dash_race,
                                           race_horses=race_horses,
                                           trainer_intents=_dash_trainer_intents,
+                                          workout_grades=_dash_workout_grades,
                                           key_prefix="dash")
                         show_odds = st.checkbox("Show Odds", value=True, key=f"dash_show_odds_{dash_race}")
                         _render_ranked_table(sorted_by_bias, race_horses, show_odds,
                                              _d_odds_data, _d_odds_by_post, dash_race,
                                              trainer_intents=_dash_trainer_intents,
+                                             workout_grades=_dash_workout_grades,
                                              key_prefix="dash")
                         _render_analysis_expanders(sorted_by_bias, d_audit, race_horses,
                                                    key_prefix="dash")
@@ -2091,10 +2248,12 @@ def engine_page():
 
         # --- Trainer intent (batch fetch) ---
         _trainer_intents = _fetch_trainer_intents(race_horses)
+        _workout_grades = _compute_workout_grades(race_horses)
 
         # --- Top 3 Picks ---
         _render_top_picks(display_projections, selected_race,
                           race_horses=race_horses, trainer_intents=_trainer_intents,
+                          workout_grades=_workout_grades,
                           key_prefix=f"eng_{sel_id}")
 
         # --- Full Ranked Table ---
@@ -2102,6 +2261,7 @@ def engine_page():
         _render_ranked_table(display_projections, race_horses, show_odds,
                              _odds_data, _odds_by_post, selected_race,
                              trainer_intents=_trainer_intents,
+                             workout_grades=_workout_grades,
                              key_prefix=f"eng_{sel_id}")
 
         # --- Analysis expanders ---
