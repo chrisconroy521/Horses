@@ -1572,6 +1572,18 @@ async def build_daily_wins_endpoint(payload: dict):
     if not predictions_by_track:
         raise HTTPException(status_code=404, detail="No predictions found for this date")
 
+    # Optional session/track filtering
+    _sid = payload.get("session_id")
+    _tf = payload.get("track_filter")
+    if _sid:
+        predictions_by_track = {t: [p for p in ps if p.get("session_id") == _sid]
+                                for t, ps in predictions_by_track.items()}
+        predictions_by_track = {t: ps for t, ps in predictions_by_track.items() if ps}
+    if _tf:
+        predictions_by_track = {t: ps for t, ps in predictions_by_track.items() if t == _tf}
+    if not predictions_by_track:
+        raise HTTPException(status_code=404, detail="No predictions found for this session/track")
+
     odds_by_key = _db.get_all_odds_for_date(race_date)
 
     # Build daily WIN candidates
@@ -1640,6 +1652,18 @@ async def build_daily_exotics_endpoint(payload: dict):
     predictions_by_track = _db.get_all_predictions_for_date(race_date)
     if not predictions_by_track:
         raise HTTPException(status_code=404, detail="No predictions found for this date")
+
+    # Optional session/track filtering
+    _sid = payload.get("session_id")
+    _tf = payload.get("track_filter")
+    if _sid:
+        predictions_by_track = {t: [p for p in ps if p.get("session_id") == _sid]
+                                for t, ps in predictions_by_track.items()}
+        predictions_by_track = {t: ps for t, ps in predictions_by_track.items() if ps}
+    if _tf:
+        predictions_by_track = {t: ps for t, ps in predictions_by_track.items() if t == _tf}
+    if not predictions_by_track:
+        raise HTTPException(status_code=404, detail="No predictions found for this session/track")
 
     odds_by_key = _db.get_all_odds_for_date(race_date)
 

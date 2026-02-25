@@ -102,12 +102,12 @@ def main():
     # Sidebar
     st.sidebar.header("Navigation")
     pages = [
-        "Bet Commander", "Daily Best WIN Bets", "Dual Mode Betting", "Dashboard",
-        "Upload PDF", "Engine",
-        "Results", "Results Inbox", "Bet Builder", "Calibration",
-        "Database", "Horse Past Performance", "Horses Overview",
+        "Daily Best WIN Bets", "Bet Commander", "Dual Mode Betting", "Dashboard",
+        "Upload PDF", "Engine", "Bet Builder",
+        "Results", "Results Inbox", "Calibration",
+        "Horse Past Performance", "Horses Overview",
         "Individual Horse Analysis", "Race Analysis", "Statistics",
-        "Manage Sheets", "API Status",
+        "Database", "Manage Sheets", "API Status",
     ]
 
     # Apply programmatic navigation (e.g. "Open in Engine" button)
@@ -1222,57 +1222,57 @@ def dashboard_page():
     st.header("Dashboard")
     st.caption("Unified workflow: upload \u2192 analyze \u2192 bet \u2192 evaluate.")
 
-    # ===== Section A: Upload =====
-    with st.expander("Upload", expanded=False):
-        ucol1, ucol2 = st.columns(2)
-        with ucol1:
-            st.markdown("**Primary (Ragozin / BRISNET)**")
-            primary_file = st.file_uploader(
-                "Upload primary PDF", type=["pdf"], key="dash_primary_upload")
-            if primary_file and st.button("Upload Primary", key="dash_btn_primary"):
-                with st.spinner("Uploading primary..."):
-                    try:
-                        files = {"file": (primary_file.name, primary_file.getvalue(), "application/pdf")}
-                        resp = api_post(f"/upload_primary", files=files, timeout=60)
-                        if resp.ok:
-                            data = resp.json()
-                            sid = data.get("session_id", "")
-                            st.success(f"Session: {sid}")
-                            st.session_state["dash_session_id"] = sid
-                        else:
-                            st.error(f"Upload error: {resp.text}")
-                    except Exception as e:
-                        st.error(f"Error: {e}")
+    # ===== Section A: Session + Run Controls =====
+    st.subheader("Session + Run Controls")
+    ucol1, ucol2 = st.columns(2)
+    with ucol1:
+        st.markdown("**Primary (Ragozin / BRISNET)**")
+        primary_file = st.file_uploader(
+            "Upload primary PDF", type=["pdf"], key="dash_primary_upload")
+        if primary_file and st.button("Upload Primary", key="dash_btn_primary"):
+            with st.spinner("Uploading primary..."):
+                try:
+                    files = {"file": (primary_file.name, primary_file.getvalue(), "application/pdf")}
+                    resp = api_post(f"/upload_primary", files=files, timeout=60)
+                    if resp.ok:
+                        data = resp.json()
+                        sid = data.get("session_id", "")
+                        st.success(f"Session: {sid}")
+                        st.session_state["dash_session_id"] = sid
+                    else:
+                        st.error(f"Upload error: {resp.text}")
+                except Exception as e:
+                    st.error(f"Error: {e}")
 
-        with ucol2:
-            st.markdown("**Secondary (add to existing session)**")
-            sec_file = st.file_uploader(
-                "Upload secondary PDF", type=["pdf"], key="dash_sec_upload")
-            dash_sec_sid = st.text_input("Session ID:", key="dash_sec_sid",
-                                          value=st.session_state.get("dash_session_id", ""))
-            if sec_file and dash_sec_sid and st.button("Upload Secondary", key="dash_btn_sec"):
-                with st.spinner("Uploading secondary..."):
-                    try:
-                        files = {"file": (sec_file.name, sec_file.getvalue(), "application/pdf")}
-                        resp = requests.post(
-                            f"{API_BASE_URL}/upload_secondary",
-                            files=files,
-                            params={"session_id": dash_sec_sid},
-                            timeout=60,
-                        )
-                        if resp.ok:
-                            st.success("Secondary merged.")
-                        else:
-                            st.error(f"Upload error: {resp.text}")
-                    except Exception as e:
-                        st.error(f"Error: {e}")
+    with ucol2:
+        st.markdown("**Secondary (add to existing session)**")
+        sec_file = st.file_uploader(
+            "Upload secondary PDF", type=["pdf"], key="dash_sec_upload")
+        dash_sec_sid = st.text_input("Session ID:", key="dash_sec_sid",
+                                      value=st.session_state.get("dash_session_id", ""))
+        if sec_file and dash_sec_sid and st.button("Upload Secondary", key="dash_btn_sec"):
+            with st.spinner("Uploading secondary..."):
+                try:
+                    files = {"file": (sec_file.name, sec_file.getvalue(), "application/pdf")}
+                    resp = requests.post(
+                        f"{API_BASE_URL}/upload_secondary",
+                        files=files,
+                        params={"session_id": dash_sec_sid},
+                        timeout=60,
+                    )
+                    if resp.ok:
+                        st.success("Secondary merged.")
+                    else:
+                        st.error(f"Upload error: {resp.text}")
+                except Exception as e:
+                    st.error(f"Error: {e}")
 
-        # Quick link to Engine
-        if st.session_state.get("dash_session_id"):
-            if st.button("Open in Engine", key="dash_open_engine"):
-                st.session_state["active_session_id"] = st.session_state["dash_session_id"]
-                st.session_state["_nav_target"] = "Engine"
-                st.rerun()
+    # Quick link to Engine
+    if st.session_state.get("dash_session_id"):
+        if st.button("Open in Engine", key="dash_open_engine"):
+            st.session_state["active_session_id"] = st.session_state["dash_session_id"]
+            st.session_state["_nav_target"] = "Engine"
+            st.rerun()
 
     # ===== Section B: Daily Best WIN Bets =====
     with st.expander("Daily Best WIN Bets", expanded=True):
@@ -1354,7 +1354,88 @@ def dashboard_page():
             else:
                 st.info("No qualifying bets found.")
 
-    # ===== Section C: Engine Drilldown =====
+    # ===== Section C: Bet Slip =====
+    with st.expander("Bet Slip", expanded=True):
+        # Need a session with best bets
+        try:
+            sess_resp2 = api_get(f"/races", timeout=15)
+            races2 = sess_resp2.json().get("races", []) if sess_resp2.ok else []
+        except Exception:
+            races2 = []
+
+        if not races2:
+            st.info("No sessions available. Upload a PDF first.")
+        else:
+            def _bb_label(x):
+                name = x.get('primary_pdf_filename') or x.get('original_filename', 'unknown')
+                track = x.get('track') or x.get('track_name', '')
+                return f"{name} | {track}"
+
+            bb_sel = st.selectbox("Session:", options=races2, format_func=_bb_label, key="dash_bb_sess")
+            if bb_sel:
+                bb_sid = bb_sel.get('session_id') or bb_sel.get('id')
+                bb_track = bb_sel.get('track') or bb_sel.get('track_name', '')
+                bb_date = bb_sel.get('date') or bb_sel.get('race_date', '')
+
+                bc1, bc2, bc3 = st.columns(3)
+                with bc1:
+                    bb_bankroll = st.number_input("Bankroll ($)", value=1000, min_value=100, step=100, key="dash_bb_bankroll")
+                with bc2:
+                    bb_risk = st.selectbox("Risk Profile", ["conservative", "standard", "aggressive"],
+                                           index=1, key="dash_bb_risk")
+                with bc3:
+                    bb_paper = st.checkbox("Paper mode", value=True, key="dash_bb_paper")
+
+                if st.button("Generate Plan", type="primary", key="dash_bb_generate"):
+                    payload = {
+                        "session_id": bb_sid,
+                        "track": bb_track,
+                        "race_date": bb_date,
+                        "bankroll": bb_bankroll,
+                        "risk_profile": bb_risk,
+                        "paper_mode": bb_paper,
+                        "save": True,
+                    }
+                    try:
+                        resp = api_post(f"/bets/build", json=payload, timeout=30)
+                        if resp.ok:
+                            st.session_state["dash_bb_plan"] = resp.json()
+                        else:
+                            st.error(f"Error: {resp.text}")
+                    except Exception as e:
+                        st.error(f"Error: {e}")
+
+                plan_data = st.session_state.get("dash_bb_plan")
+                if plan_data:
+                    plan = plan_data.get("plan", {})
+                    race_plans = plan.get("race_plans", [])
+                    diag = plan.get("diagnostics", {})
+
+                    pm1, pm2, pm3, pm4 = st.columns(4)
+                    pm1.metric("Total Risk", f"${plan.get('total_risk', 0):.0f}")
+                    pm2.metric("Tickets", diag.get("total_tickets", 0))
+                    pm3.metric("Races", len(race_plans))
+                    pm4.metric("Passed", diag.get("total_passed", 0))
+
+                    if plan_data.get("plan_id"):
+                        st.caption(f"Plan saved (ID {plan_data['plan_id']})")
+
+                    for rp in race_plans:
+                        if rp.get("passed"):
+                            continue
+                        tickets = rp.get("tickets", [])
+                        ticket_lines = []
+                        for t in tickets:
+                            sels = " / ".join(t.get("selections", []))
+                            ticket_lines.append(f"{t['bet_type']} {sels} — ${t['cost']:.0f}")
+                        with st.expander(
+                            f"R{rp['race_number']} Grade {rp['grade']} (${rp['total_cost']:.0f})",
+                            expanded=True,
+                        ):
+                            for tl in ticket_lines:
+                                st.markdown(f"- {tl}")
+
+    # ===== Section D: Engine Drilldown =====
     with st.expander("Engine Drilldown", expanded=True):
         engine = HandicappingEngine()
 
@@ -1509,88 +1590,7 @@ def dashboard_page():
                     else:
                         st.info("Click **Run Projections** to analyze this race.")
 
-    # ===== Section D: Bet Builder =====
-    with st.expander("Bet Builder", expanded=False):
-        # Need a session with best bets
-        try:
-            sess_resp2 = api_get(f"/races", timeout=15)
-            races2 = sess_resp2.json().get("races", []) if sess_resp2.ok else []
-        except Exception:
-            races2 = []
-
-        if not races2:
-            st.info("No sessions available. Upload a PDF first.")
-        else:
-            def _bb_label(x):
-                name = x.get('primary_pdf_filename') or x.get('original_filename', 'unknown')
-                track = x.get('track') or x.get('track_name', '')
-                return f"{name} | {track}"
-
-            bb_sel = st.selectbox("Session:", options=races2, format_func=_bb_label, key="dash_bb_sess")
-            if bb_sel:
-                bb_sid = bb_sel.get('session_id') or bb_sel.get('id')
-                bb_track = bb_sel.get('track') or bb_sel.get('track_name', '')
-                bb_date = bb_sel.get('date') or bb_sel.get('race_date', '')
-
-                bc1, bc2, bc3 = st.columns(3)
-                with bc1:
-                    bb_bankroll = st.number_input("Bankroll ($)", value=1000, min_value=100, step=100, key="dash_bb_bankroll")
-                with bc2:
-                    bb_risk = st.selectbox("Risk Profile", ["conservative", "standard", "aggressive"],
-                                           index=1, key="dash_bb_risk")
-                with bc3:
-                    bb_paper = st.checkbox("Paper mode", value=True, key="dash_bb_paper")
-
-                if st.button("Generate Plan", type="primary", key="dash_bb_generate"):
-                    payload = {
-                        "session_id": bb_sid,
-                        "track": bb_track,
-                        "race_date": bb_date,
-                        "bankroll": bb_bankroll,
-                        "risk_profile": bb_risk,
-                        "paper_mode": bb_paper,
-                        "save": True,
-                    }
-                    try:
-                        resp = api_post(f"/bets/build", json=payload, timeout=30)
-                        if resp.ok:
-                            st.session_state["dash_bb_plan"] = resp.json()
-                        else:
-                            st.error(f"Error: {resp.text}")
-                    except Exception as e:
-                        st.error(f"Error: {e}")
-
-                plan_data = st.session_state.get("dash_bb_plan")
-                if plan_data:
-                    plan = plan_data.get("plan", {})
-                    race_plans = plan.get("race_plans", [])
-                    diag = plan.get("diagnostics", {})
-
-                    pm1, pm2, pm3, pm4 = st.columns(4)
-                    pm1.metric("Total Risk", f"${plan.get('total_risk', 0):.0f}")
-                    pm2.metric("Tickets", diag.get("total_tickets", 0))
-                    pm3.metric("Races", len(race_plans))
-                    pm4.metric("Passed", diag.get("total_passed", 0))
-
-                    if plan_data.get("plan_id"):
-                        st.caption(f"Plan saved (ID {plan_data['plan_id']})")
-
-                    for rp in race_plans:
-                        if rp.get("passed"):
-                            continue
-                        tickets = rp.get("tickets", [])
-                        ticket_lines = []
-                        for t in tickets:
-                            sels = " / ".join(t.get("selections", []))
-                            ticket_lines.append(f"{t['bet_type']} {sels} — ${t['cost']:.0f}")
-                        with st.expander(
-                            f"R{rp['race_number']} Grade {rp['grade']} (${rp['total_cost']:.0f})",
-                            expanded=True,
-                        ):
-                            for tl in ticket_lines:
-                                st.markdown(f"- {tl}")
-
-    # ===== Section D2: Bet Commander =====
+    # ===== Section E: Bet Commander =====
     with st.expander("Bet Commander", expanded=False):
         st.markdown("Full-card betting workflow with recommender, per-leg overrides, and export.")
         if st.button("Open Bet Commander", key="dash_open_commander"):
@@ -4240,6 +4240,62 @@ def daily_wins_page():
     dw_date = st.date_input("Race Date", value=_date.today(), key="dw_date")
     dw_date_str = dw_date.strftime("%m/%d/%Y") if dw_date else ""
 
+    # --- Source / Session selector ---
+    st.subheader("Source")
+    source_mode = st.radio(
+        "Source",
+        ["All Sessions (cross-track)", "Specific PDF Session"],
+        horizontal=True,
+        key="dw_source_mode",
+        label_visibility="collapsed",
+    )
+
+    dw_session_id = None
+    dw_track_filter = None
+
+    if source_mode == "Specific PDF Session":
+        try:
+            _sr = api_get("/sessions", timeout=10)
+            _all_sess = _sr.json().get("sessions", []) if _sr.ok else []
+        except Exception:
+            _all_sess = []
+
+        if not _all_sess:
+            st.warning("No sessions found. Upload a PDF first.")
+        else:
+            def _dw_sess_label(s):
+                name = s.get("primary_pdf_filename") or "unknown"
+                trk = s.get("track", "")
+                dt = s.get("date", "")
+                return f"{name} | {trk} | {dt}"
+
+            sel_sess = st.selectbox(
+                "Session:", options=_all_sess,
+                format_func=_dw_sess_label, key="dw_session_sel",
+            )
+            if sel_sess:
+                dw_session_id = sel_sess.get("session_id")
+                _trk = sel_sess.get("track", "")
+                _cnt = sel_sess.get("primary_horses_count") or "?"
+                _created = (sel_sess.get("created_at") or "")[:19]
+                st.caption(f"Session: {dw_session_id[:8]}... | Track: {_trk} | Horses: {_cnt} | Uploaded: {_created}")
+    else:
+        # All Sessions — optional track filter
+        try:
+            _sr = api_get("/sessions", timeout=10)
+            _all_sess = _sr.json().get("sessions", []) if _sr.ok else []
+        except Exception:
+            _all_sess = []
+
+        available_tracks = sorted(set(
+            s.get("track", "") for s in _all_sess if s.get("track")
+        ))
+        if available_tracks:
+            track_options = ["All Tracks"] + available_tracks
+            sel_track = st.selectbox("Track filter:", track_options, key="dw_track_filter")
+            if sel_track != "All Tracks":
+                dw_track_filter = sel_track
+
     # --- Settings ---
     st.subheader("Settings")
     c1, c2, c3 = st.columns(3)
@@ -4279,6 +4335,10 @@ def daily_wins_page():
                     "min_overlay": min_overlay,
                     "save": True,
                 }
+                if dw_session_id:
+                    payload["session_id"] = dw_session_id
+                if dw_track_filter:
+                    payload["track_filter"] = dw_track_filter
                 try:
                     resp = api_post(f"/bets/daily-wins", json=payload, timeout=30)
                     if resp.status_code == 200:
@@ -4296,7 +4356,10 @@ def daily_wins_page():
                         except Exception:
                             st.session_state["dw_exotics"] = None
                     elif resp.status_code == 404:
-                        st.warning("No predictions found for this date. Run the engine on sessions first.")
+                        st.warning("No predictions found for this date/session. Run the engine first.")
+                        if st.button("Open Engine", key="dw_open_engine"):
+                            st.session_state["_nav_target"] = "Engine"
+                            st.rerun()
                     else:
                         st.error(f"Error: {resp.text}")
                 except requests.exceptions.ConnectionError:
