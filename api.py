@@ -16,7 +16,7 @@ from dataclasses import asdict
 from ragozin_parser import RagozinParser, RaceData
 from gpt_parser_alternative import GPTRagozinParserAlternative
 from merge import merge_parsed_sessions, merge_primary_secondary
-from brisnet_parser import BrisnetParser, to_pipeline_json as brisnet_to_pipeline
+from brisnet_parser import BrisnetParser, to_pipeline_json as brisnet_to_pipeline, parse_odds_decimal
 from persistence import Persistence
 from bet_builder import (
     BetSettings, build_day_plan, day_plan_to_dict, day_plan_to_text, day_plan_to_csv,
@@ -734,6 +734,28 @@ async def upload_secondary(session_id: str, file: UploadFile = File(...)):
         )
         _db.ingest_brisnet_card(sec_upload_id, output_dict, {})
         recon_result = _db.reconcile(sec_upload_id)
+
+        # Save morning line odds snapshots from BRISNET data
+        odds_snapshots = []
+        for h in horses_list:
+            odds_dec = parse_odds_decimal(h.get('odds', ''))
+            if odds_dec is not None:
+                odds_snapshots.append({
+                    'race_number': h.get('race_number', 0),
+                    'post': h.get('post'),
+                    'horse_name': h.get('horse_name', ''),
+                    'odds_raw': h.get('odds', ''),
+                    'odds_decimal': odds_dec,
+                })
+        if odds_snapshots:
+            _db.save_odds_snapshots(
+                session_id=session_id,
+                track=session.get("track", ""),
+                race_date=session.get("date", ""),
+                snapshots=odds_snapshots,
+                source='morning_line',
+            )
+            logger.info(f"Saved {len(odds_snapshots)} ML odds snapshots for {session_id}")
     except Exception as db_err:
         logger.warning(f"DB ingestion (secondary) failed (non-fatal): {db_err}")
 
@@ -1251,6 +1273,20 @@ async def build_bets(payload: dict):
     preds = _db.get_predictions_vs_results(track=track, race_date=race_date, session_id=sid)
     if not preds:
         raise HTTPException(status_code=404, detail="No predictions found for this card")
+
+    # Inject morning line odds where result odds are missing
+    ml_odds = _db.get_odds_snapshots(track=track, race_date=race_date, source='morning_line')
+    for p in preds:
+        if p.get('odds') is None:
+            key = (p.get('race_number', 0), _db._normalize_name(p.get('horse_name', '')))
+            ml = ml_odds.get(key)
+            if ml is not None:
+                p['odds'] = ml
+                p['odds_source'] = 'morning_line'
+            else:
+                p['odds_source'] = 'missing'
+        else:
+            p['odds_source'] = 'result'
 
     # Group by race_number
     race_projections: Dict[int, list] = {}

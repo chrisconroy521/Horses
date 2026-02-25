@@ -116,6 +116,38 @@ class BrisnetHorse:
     raw_block: str = ''
 
 
+def parse_odds_decimal(raw: str) -> Optional[float]:
+    """Convert ML odds string to decimal (profit per $1 wagered).
+
+    '3/1' → 3.0, '9/5' → 1.8, '5.0' → 5.0, '*6.5' → 6.5,
+    '4-1' → 4.0, 'even' → 1.0. Returns None for unparseable input.
+    """
+    if not raw:
+        return None
+    s = raw.strip().lstrip('*')  # strip MTP asterisk
+    if not s:
+        return None
+    if s.lower() in ('even', 'evs', 'evens'):
+        return 1.0
+    if '/' in s:
+        parts = s.split('/', 1)
+        try:
+            return float(parts[0]) / float(parts[1])
+        except (ValueError, ZeroDivisionError):
+            return None
+    if '-' in s and s[0].isdigit():
+        parts = s.split('-', 1)
+        try:
+            den = float(parts[1])
+            return float(parts[0]) / den if den > 0 else float(parts[0])
+        except (ValueError, ZeroDivisionError):
+            return None
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
 @dataclass
 class BrisnetRace:
     track: str = ''
@@ -707,6 +739,7 @@ def to_pipeline_json(card: BrisnetCard) -> Dict[str, Any]:
                 'breeder': h.breeder,
                 'weight': h.weight,
                 'odds': h.odds,
+                'odds_decimal': parse_odds_decimal(h.odds),
                 'life_starts': h.life_starts,
                 'life_record': h.life_record,
                 'life_earnings': h.life_earnings,

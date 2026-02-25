@@ -300,7 +300,7 @@ class TestBlockersDiagnostics:
         settings = BetSettings(bankroll=1000, allow_missing_odds=False)
         plan = build_race_plan(1, no_odds_race, settings, 15.0)
         assert plan.passed is True
-        assert any("no odds" in b.lower() for b in plan.blockers)
+        assert any("no brisnet ml odds" in b.lower() for b in plan.blockers)
 
     def test_odds_too_low_blocker(self):
         """Odds below min reports blocker."""

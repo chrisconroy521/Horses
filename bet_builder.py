@@ -418,7 +418,7 @@ def build_race_plan(
         min_odds = settings.min_odds_a if grade == "A" else settings.min_odds_b
         if odds is None:
             if not settings.allow_missing_odds:
-                blockers.append(f"No odds for {top_name} — enable 'Allow missing odds' for flat-stake bet")
+                blockers.append(f"No BRISNET ML odds found for {top_name} — enable 'Allow missing odds' for flat-stake bet")
             else:
                 blockers.append(f"No odds for {top_name} — budget too small for flat-stake")
         elif odds < min_odds:

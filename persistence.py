@@ -286,6 +286,24 @@ class Persistence:
             );
             CREATE INDEX IF NOT EXISTS idx_bp_session ON bet_plans(session_id);
             CREATE INDEX IF NOT EXISTS idx_bp_track_date ON bet_plans(track, race_date);
+
+            CREATE TABLE IF NOT EXISTS odds_snapshots (
+                snapshot_id     INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id      TEXT NOT NULL,
+                track           TEXT NOT NULL,
+                race_date       TEXT NOT NULL,
+                race_number     INTEGER NOT NULL,
+                post            INTEGER,
+                horse_name      TEXT NOT NULL,
+                normalized_name TEXT NOT NULL,
+                odds_raw        TEXT,
+                odds_decimal    REAL,
+                source          TEXT NOT NULL DEFAULT 'morning_line',
+                captured_at     TEXT NOT NULL,
+                UNIQUE(session_id, track, race_date, race_number, normalized_name, source)
+            );
+            CREATE INDEX IF NOT EXISTS idx_os_lookup
+                ON odds_snapshots(track, race_date, race_number, normalized_name, source);
             """
         )
         self.conn.commit()
@@ -2332,6 +2350,69 @@ class Persistence:
             d["paper_mode"] = bool(d["paper_mode"])
             results.append(d)
         return results
+
+    # ------------------------------------------------------------------
+    # Odds snapshots
+    # ------------------------------------------------------------------
+
+    def save_odds_snapshots(
+        self, session_id: str, track: str, race_date: str,
+        snapshots: List[Dict[str, Any]], source: str = "morning_line",
+    ) -> int:
+        """Persist ML odds from BRISNET upload.
+
+        Each snapshot dict: {race_number, post, horse_name, odds_raw, odds_decimal}
+        Returns row count.
+        """
+        track = self._normalize_track(track)
+        race_date = self._normalize_date(race_date)
+        now = datetime.utcnow().isoformat()
+        count = 0
+        for s in snapshots:
+            norm = self._normalize_name(s.get("horse_name", ""))
+            self.conn.execute(
+                """
+                INSERT INTO odds_snapshots(
+                    session_id, track, race_date, race_number, post,
+                    horse_name, normalized_name, odds_raw, odds_decimal,
+                    source, captured_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(session_id, track, race_date, race_number, normalized_name, source)
+                DO UPDATE SET
+                    odds_raw=excluded.odds_raw,
+                    odds_decimal=excluded.odds_decimal,
+                    post=excluded.post,
+                    captured_at=excluded.captured_at
+                """,
+                (
+                    session_id, track, race_date,
+                    s.get("race_number", 0), s.get("post"),
+                    s.get("horse_name", ""), norm,
+                    s.get("odds_raw", ""), s.get("odds_decimal"),
+                    source, now,
+                ),
+            )
+            count += 1
+        self.conn.commit()
+        return count
+
+    def get_odds_snapshots(
+        self, track: str, race_date: str,
+        source: str = "morning_line",
+    ) -> Dict[Tuple[int, str], float]:
+        """Return {(race_number, normalized_name): odds_decimal} for quick lookup."""
+        track = self._normalize_track(track)
+        race_date = self._normalize_date(race_date)
+        rows = self.conn.execute(
+            """
+            SELECT race_number, normalized_name, odds_decimal
+            FROM odds_snapshots
+            WHERE track = ? AND race_date = ? AND source = ?
+              AND odds_decimal IS NOT NULL
+            """,
+            (track, race_date, source),
+        ).fetchall()
+        return {(r["race_number"], r["normalized_name"]): r["odds_decimal"] for r in rows}
 
     def evaluate_bet_plan_roi(self, plan_id: int) -> Dict[str, Any]:
         """Compute realized ROI for a stored bet plan by joining tickets

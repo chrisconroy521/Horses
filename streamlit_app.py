@@ -844,6 +844,7 @@ def engine_page():
     # =====================================================================
     st.divider()
     st.subheader("Bet Builder")
+    st.caption("Odds source: BRISNET morning line")
 
     if not best_bets:
         st.info("Generate Best Bets above first to use the Bet Builder.")
@@ -949,8 +950,10 @@ def engine_page():
                     ):
                         for t in rp.get("tickets", []):
                             sels = " / ".join(t["selections"])
+                            odds_val = t.get("details", {}).get("odds")
+                            odds_str = f" @ {odds_val:.1f}-1" if odds_val else ""
                             st.markdown(
-                                f"**{t['bet_type']}** {sels} — "
+                                f"**{t['bet_type']}** {sels}{odds_str} — "
                                 f"${t['cost']:.0f}  \n"
                                 f"{t.get('rationale', '')}")
             else:
