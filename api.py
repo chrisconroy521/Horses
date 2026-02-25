@@ -1226,6 +1226,7 @@ async def build_bets(payload: dict):
         min_odds_a=float(payload.get("min_odds_a", 2.0)),
         min_odds_b=float(payload.get("min_odds_b", 4.0)),
         paper_mode=bool(payload.get("paper_mode", True)),
+        allow_missing_odds=bool(payload.get("allow_missing_odds", False)),
     )
 
     # Load predictions for this card

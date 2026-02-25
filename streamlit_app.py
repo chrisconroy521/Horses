@@ -777,6 +777,163 @@ def engine_page():
                 st.markdown(f"Tags: {tags_str}")
                 st.caption(p.summary)
 
+    # =====================================================================
+    # (C) Bet Builder — inline on Engine page
+    # =====================================================================
+    st.divider()
+    st.subheader("Bet Builder")
+
+    if not best_bets:
+        st.info("Generate Best Bets above first to use the Bet Builder.")
+    else:
+        s_track = selected.get('track') or selected.get('track_name', '')
+        s_date = selected.get('date') or selected.get('race_date', '')
+
+        with st.expander("Bet Settings", expanded=False):
+            bb_c1, bb_c2, bb_c3 = st.columns(3)
+            with bb_c1:
+                bb_bankroll = st.number_input(
+                    "Bankroll ($)", min_value=100, max_value=100000,
+                    value=1000, step=100, key="bb_bankroll")
+                bb_risk_profile = st.selectbox(
+                    "Risk Profile", ["conservative", "standard", "aggressive"],
+                    index=1, key="bb_risk_profile")
+            with bb_c2:
+                bb_max_race = st.number_input(
+                    "Max risk/race (%)", min_value=0.5, max_value=10.0,
+                    value=1.5, step=0.5, key="bb_max_race")
+                bb_max_day = st.number_input(
+                    "Max risk/day (%)", min_value=1.0, max_value=20.0,
+                    value=6.0, step=1.0, key="bb_max_day")
+            with bb_c3:
+                bb_min_odds_a = st.number_input(
+                    "Min odds A-grade", min_value=0.5, max_value=20.0,
+                    value=2.0, step=0.5, key="bb_min_odds_a")
+                bb_min_odds_b = st.number_input(
+                    "Min odds B-grade", min_value=0.5, max_value=20.0,
+                    value=4.0, step=0.5, key="bb_min_odds_b")
+            bb_c4, bb_c5 = st.columns(2)
+            with bb_c4:
+                bb_min_conf = st.number_input(
+                    "Min confidence (0 = defaults per grade)", min_value=0.0,
+                    max_value=1.0, value=0.75, step=0.05, key="bb_min_conf",
+                    help="Default 75%. Set to 0 to use built-in A/B thresholds.")
+            with bb_c5:
+                bb_allow_missing = st.checkbox(
+                    "Allow missing odds (flat-stake WIN)", value=False,
+                    key="bb_allow_missing",
+                    help="When ON, places a flat-stake WIN bet even if track odds are unavailable.")
+
+        if st.button("Generate Bet Plan (Paper Mode)", key="bb_generate"):
+            payload = {
+                "session_id": sel_id,
+                "track": s_track,
+                "race_date": s_date,
+                "bankroll": bb_bankroll,
+                "risk_profile": bb_risk_profile,
+                "max_risk_per_race_pct": bb_max_race,
+                "max_risk_per_day_pct": bb_max_day,
+                "min_confidence": bb_min_conf,
+                "min_odds_a": bb_min_odds_a,
+                "min_odds_b": bb_min_odds_b,
+                "paper_mode": True,
+                "allow_missing_odds": bb_allow_missing,
+                "save": True,
+            }
+            try:
+                resp = requests.post(
+                    f"{API_BASE_URL}/bets/build", json=payload, timeout=30)
+                if resp.ok:
+                    st.session_state['bb_engine_plan'] = resp.json()
+                else:
+                    st.error(f"Bet Builder error: {resp.text}")
+            except Exception as e:
+                st.error(f"API connection error: {e}")
+
+        # ----- Display plan / diagnostics -----
+        plan_data = st.session_state.get('bb_engine_plan')
+        if plan_data:
+            plan = plan_data.get("plan", {})
+            diag = plan.get("diagnostics", {})
+            race_plans = plan.get("race_plans", [])
+            total_risk = plan.get("total_risk", 0)
+            total_tickets = diag.get("total_tickets", 0)
+            grade_counts = diag.get("grade_counts", {})
+            blocker_list = diag.get("blockers", [])
+
+            # Summary metrics
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Total Risk", f"${total_risk:.0f}")
+            m2.metric("Tickets", total_tickets)
+            m3.metric("Races", len(race_plans))
+            m4.metric("Passed", diag.get("total_passed", 0))
+
+            if plan_data.get("plan_id"):
+                st.caption(f"Plan saved (ID {plan_data['plan_id']}) — PAPER MODE")
+
+            # Grade breakdown
+            grades_str = "  |  ".join(
+                f"**{g}**: {grade_counts.get(g, 0)}" for g in ["A", "B", "C"])
+            st.markdown(f"Grade breakdown: {grades_str}")
+
+            if total_tickets > 0:
+                # Show tickets
+                for rp in race_plans:
+                    if rp.get("passed"):
+                        continue
+                    with st.expander(
+                        f"R{rp['race_number']} — Grade {rp['grade']} "
+                        f"(${rp['total_cost']:.0f})", expanded=True
+                    ):
+                        for t in rp.get("tickets", []):
+                            sels = " / ".join(t["selections"])
+                            st.markdown(
+                                f"**{t['bet_type']}** {sels} — "
+                                f"${t['cost']:.0f}  \n"
+                                f"{t.get('rationale', '')}")
+            else:
+                # No bets — show diagnostics
+                st.warning("No bets generated. See blockers below.")
+
+            # Blockers section (always show if any)
+            if blocker_list:
+                with st.expander(
+                    f"Blockers ({len(blocker_list)})", expanded=total_tickets == 0
+                ):
+                    for b in blocker_list:
+                        st.markdown(
+                            f"- **R{b['race']}** (Grade {b['grade']}): "
+                            f"{b['reason']}")
+
+                # "Relax rules" quick-buttons
+                if total_tickets == 0:
+                    st.markdown("**Relax rules:**")
+                    rx1, rx2, rx3 = st.columns(3)
+                    with rx1:
+                        if st.button("Lower min confidence by 5%",
+                                     key="bb_relax_conf"):
+                            new_val = max(
+                                0, st.session_state.get("bb_min_conf", 0.75) - 0.05)
+                            st.session_state["bb_min_conf"] = round(new_val, 2)
+                            st.rerun()
+                    with rx2:
+                        if st.button("Lower min odds by 0.5",
+                                     key="bb_relax_odds"):
+                            new_a = max(
+                                0.5,
+                                st.session_state.get("bb_min_odds_a", 2.0) - 0.5)
+                            new_b = max(
+                                0.5,
+                                st.session_state.get("bb_min_odds_b", 4.0) - 0.5)
+                            st.session_state["bb_min_odds_a"] = new_a
+                            st.session_state["bb_min_odds_b"] = new_b
+                            st.rerun()
+                    with rx3:
+                        if st.button("Allow missing odds",
+                                     key="bb_relax_missing"):
+                            st.session_state["bb_allow_missing"] = True
+                            st.rerun()
+
 
 def upload_page():
     st.header("Upload Racing Sheet")

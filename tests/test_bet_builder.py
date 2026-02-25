@@ -154,10 +154,16 @@ class TestBuildWinTicket:
 
     def test_no_odds_flat_stake(self):
         no_odds = [_make_proj("NOPRICES", 10.0, 0.80, "PAIRED", odds=None)]
-        settings = BetSettings(bankroll=1000)
+        settings = BetSettings(bankroll=1000, allow_missing_odds=True)
         ticket = build_win_ticket(no_odds, "A", settings, 15.0)
         assert ticket is not None
         assert ticket.details["method"] == "flat"
+
+    def test_no_odds_blocked_by_default(self):
+        no_odds = [_make_proj("NOPRICES", 10.0, 0.80, "PAIRED", odds=None)]
+        settings = BetSettings(bankroll=1000)  # allow_missing_odds=False
+        ticket = build_win_ticket(no_odds, "A", settings, 15.0)
+        assert ticket is None
 
     def test_stake_rounded_to_two(self):
         settings = BetSettings(bankroll=1000)
@@ -281,6 +287,50 @@ class TestSerialization:
         lines = csv.strip().split("\n")
         assert lines[0].startswith("race,grade")
         assert len(lines) >= 2  # header + at least one row
+
+
+class TestBlockersDiagnostics:
+    def test_missing_odds_blocker(self):
+        """No-odds race reports blocker when allow_missing_odds=False."""
+        # B-grade so no EXACTA fallback either
+        no_odds_race = [
+            _make_proj("NOPRICES", 9.0, 0.60, "IMPROVING", odds=None),
+            _make_proj("SECOND", 7.5, 0.50, "NEUTRAL", odds=None),
+        ]
+        settings = BetSettings(bankroll=1000, allow_missing_odds=False)
+        plan = build_race_plan(1, no_odds_race, settings, 15.0)
+        assert plan.passed is True
+        assert any("no odds" in b.lower() for b in plan.blockers)
+
+    def test_odds_too_low_blocker(self):
+        """Odds below min reports blocker."""
+        low_odds_race = [
+            _make_proj("CHEAP", 10.0, 0.80, "PAIRED", odds=1.5),
+            _make_proj("SECOND", 7.0, 0.50, "NEUTRAL", odds=3.0),
+        ]
+        settings = BetSettings(bankroll=1000, min_odds_a=3.0)
+        plan = build_race_plan(1, low_odds_race, settings, 15.0)
+        assert any("below min" in b for b in plan.blockers)
+
+    def test_diagnostics_in_day_plan_dict(self):
+        """day_plan_to_dict includes diagnostics with grade_counts and blockers."""
+        race_projs = {1: A_RACE, 2: C_RACE_TOSSED}
+        settings = BetSettings(bankroll=1000)
+        plan = build_day_plan(race_projs, settings)
+        d = day_plan_to_dict(plan)
+        assert "diagnostics" in d
+        assert "grade_counts" in d["diagnostics"]
+        assert "blockers" in d["diagnostics"]
+        assert d["diagnostics"]["grade_counts"]["C"] >= 1
+
+    def test_blockers_in_race_plan_dict(self):
+        """Race plan dict includes blockers list."""
+        race_projs = {1: C_RACE_LOW_CONF}
+        settings = BetSettings(bankroll=1000)
+        plan = build_day_plan(race_projs, settings)
+        d = day_plan_to_dict(plan)
+        rp = d["race_plans"][0]
+        assert "blockers" in rp
 
 
 class TestRiskMultiplier:

@@ -52,6 +52,7 @@ class BetSettings:
     min_odds_a: float = 2.0                 # minimum odds for A-race WIN bet
     min_odds_b: float = 4.0                 # minimum odds for B-race WIN bet
     paper_mode: bool = True                 # paper bets (no real money implied)
+    allow_missing_odds: bool = False         # allow flat-stake WIN when odds absent
 
     @property
     def max_risk_per_race(self) -> float:
@@ -83,6 +84,7 @@ class RacePlan:
     rationale: str = ""
     passed: bool = False       # True if grade=C → no bets
     warnings: List[str] = field(default_factory=list)
+    blockers: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -251,8 +253,10 @@ def build_win_ticket(
 
     min_odds = settings.min_odds_a if grade == "A" else settings.min_odds_b
 
-    # If no odds available, use flat stake
+    # If no odds available, use flat stake only if allowed
     if odds is None:
+        if not settings.allow_missing_odds:
+            return None
         stake = round(race_budget * 0.5 / _BET_BASE) * _BET_BASE
         stake = max(stake, _BET_BASE)
         stake = min(stake, race_budget)
@@ -399,12 +403,30 @@ def build_race_plan(
 
     ranked = sorted(projections, key=lambda p: p.get("bias_score", 0), reverse=True)
     tickets = []
+    blockers = []
 
     # WIN ticket
     win_ticket = build_win_ticket(ranked, grade, settings, race_budget)
     if win_ticket:
         tickets.append(win_ticket)
         race_budget -= win_ticket.cost
+    elif ranked:
+        # Diagnose why no WIN ticket
+        top = ranked[0]
+        top_name = _horse_name(top)
+        odds = top.get("odds")
+        min_odds = settings.min_odds_a if grade == "A" else settings.min_odds_b
+        if odds is None:
+            if not settings.allow_missing_odds:
+                blockers.append(f"No odds for {top_name} — enable 'Allow missing odds' for flat-stake bet")
+            else:
+                blockers.append(f"No odds for {top_name} — budget too small for flat-stake")
+        elif odds < min_odds:
+            blockers.append(f"{top_name} odds {odds:.1f} below min {min_odds:.1f} for grade {grade}")
+        else:
+            conf = top.get("confidence", 0.5)
+            win_prob = _estimate_win_prob(conf, top.get("bias_score", 0), len(ranked))
+            blockers.append(f"Negative edge for {top_name} at {odds:.1f}-1 (est win prob {win_prob:.0%}) — Kelly says no bet")
 
     # EXACTA tickets (A only)
     if grade == "A" and race_budget >= _BET_BASE:
@@ -413,6 +435,8 @@ def build_race_plan(
             if t.cost <= race_budget:
                 tickets.append(t)
                 race_budget -= t.cost
+    elif grade != "A" and len(ranked) >= 2:
+        blockers.append(f"Exactas only for A-grade races (this is grade {grade})")
 
     total_cost = sum(t.cost for t in tickets)
     rationale_parts = [f"Grade {grade}"]
@@ -427,6 +451,7 @@ def build_race_plan(
         total_cost=total_cost,
         rationale=" | ".join(rationale_parts),
         passed=len(tickets) == 0,
+        blockers=blockers,
     )
 
 
@@ -481,10 +506,24 @@ def build_day_plan(
 
 def day_plan_to_dict(plan: DayPlan) -> dict:
     """Convert DayPlan to JSON-serializable dict."""
+    # Build diagnostics summary
+    grade_counts = {"A": 0, "B": 0, "C": 0}
+    all_blockers = []
+    for rp in plan.race_plans:
+        grade_counts[rp.grade] = grade_counts.get(rp.grade, 0) + 1
+        for b in rp.blockers:
+            all_blockers.append({"race": rp.race_number, "grade": rp.grade, "reason": b})
+
     return {
         "total_risk": plan.total_risk,
         "warnings": plan.warnings,
         "settings": plan.settings,
+        "diagnostics": {
+            "grade_counts": grade_counts,
+            "total_tickets": sum(len(rp.tickets) for rp in plan.race_plans),
+            "total_passed": sum(1 for rp in plan.race_plans if rp.passed),
+            "blockers": all_blockers,
+        },
         "race_plans": [
             {
                 "race_number": rp.race_number,
@@ -493,6 +532,7 @@ def day_plan_to_dict(plan: DayPlan) -> dict:
                 "passed": rp.passed,
                 "total_cost": rp.total_cost,
                 "rationale": rp.rationale,
+                "blockers": rp.blockers,
                 "tickets": [
                     {
                         "bet_type": t.bet_type,
@@ -522,6 +562,8 @@ def day_plan_to_text(plan: DayPlan) -> str:
     for rp in plan.race_plans:
         if rp.passed:
             lines.append(f"Race {rp.race_number}: PASS (Grade {rp.grade}) — {rp.rationale}")
+            for b in rp.blockers:
+                lines.append(f"  [blocker] {b}")
         else:
             lines.append(f"Race {rp.race_number}: Grade {rp.grade} — ${rp.total_cost:.0f}")
             for t in rp.tickets:
