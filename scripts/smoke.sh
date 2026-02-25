@@ -75,7 +75,7 @@ SESS_DETAIL=$(curl -sf "$API_URL/sessions" 2>/dev/null || echo '{"sessions":[]}'
 TRACK=$(echo "$SESS_DETAIL" | jq -r ".sessions[] | select(.session_id==\"$SESSION_ID\") | .track // \"\"")
 DATE=$(echo "$SESS_DETAIL" | jq -r ".sessions[] | select(.session_id==\"$SESSION_ID\") | .date // \"\"")
 
-PLAN_RESP=$(curl -sf -X POST "$API_URL/bets/build" \
+PLAN_HTTP=$(curl -s -o /tmp/smoke_plan.json -w "%{http_code}" -X POST "$API_URL/bets/build" \
     -H "Content-Type: application/json" \
     -d "{
         \"session_id\": \"$SESSION_ID\",
@@ -85,10 +85,13 @@ PLAN_RESP=$(curl -sf -X POST "$API_URL/bets/build" \
         \"paper_mode\": true,
         \"allow_missing_odds\": true,
         \"save\": false
-    }" 2>/dev/null || echo "")
+    }" 2>/dev/null || echo "000")
+PLAN_RESP=$(cat /tmp/smoke_plan.json 2>/dev/null || echo "")
 
-if [ -z "$PLAN_RESP" ]; then
-    fail "POST /bets/build — no response"
+if [ "$PLAN_HTTP" = "404" ]; then
+    echo "  SKIP: No predictions saved for this session (run projections first)"
+elif [ -z "$PLAN_RESP" ] || [ "$PLAN_HTTP" = "000" ]; then
+    fail "POST /bets/build — no response (HTTP $PLAN_HTTP)"
 else
     HAS_DIAG=$(echo "$PLAN_RESP" | jq 'has("plan") and (.plan | has("diagnostics"))' 2>/dev/null || echo "false")
     if [ "$HAS_DIAG" = "true" ]; then

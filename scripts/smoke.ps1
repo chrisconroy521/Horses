@@ -122,7 +122,13 @@ try {
         Write-Fail "Neither tickets nor blockers found"
     }
 } catch {
-    Write-Fail "POST /bets/build — $($_.Exception.Message)"
+    $statusCode = $null
+    if ($_.Exception.Response) { $statusCode = [int]$_.Exception.Response.StatusCode }
+    if ($statusCode -eq 404) {
+        Write-Host "  SKIP: No predictions saved for this session (run projections first)"
+    } else {
+        Write-Fail "POST /bets/build — $($_.Exception.Message)"
+    }
 }
 
 # ------------------------------------------------------------------
