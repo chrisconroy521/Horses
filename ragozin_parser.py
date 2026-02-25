@@ -104,6 +104,16 @@ _DAM_RE = re.compile(r'^[A-Z].*\s{2,}[A-Z]{2}\d{4}\s*$')
 # Detect 2+ consecutive uppercase letters (track/race codes in data lines)
 _HAS_TRACK_CODE = re.compile(r'[A-Z]{2,}')
 
+# Concatenated figure+data on one line (PyMuPDF extraction artifact):
+#   "F✧31+ QT[AWGPMYs"  →  figure="F✧31+" + data="QT[AWGPMYs"
+#   "v12 GP12"           →  figure="v12"   + data="GP12"
+_CONCAT_FIGURE_DATA_RE = re.compile(
+    r'^([^0-9]*?\d+(?:\.\d+)?\s*[+\-"]*)'   # figure part (prefix + digits + suffix)
+    r'\s+'                                     # whitespace separator
+    r'([A-Za-z].*)'                            # data part (starts with letter)
+    r'$'
+)
+
 
 def _is_figure_line(line: str) -> bool:
     """True if line is a Ragozin figure line (not a data/header/noise line)."""
@@ -377,6 +387,24 @@ class RagozinParser:
             if re.match(r'^0\s*\^?\s*6\s*0\s*6\s*2', line):
                 continue
 
+            # Try to split concatenated figure+data lines
+            # (PyMuPDF sometimes merges them: "F✧31+ QT[AWGPMYs")
+            cm = _CONCAT_FIGURE_DATA_RE.match(line)
+            if cm:
+                fig_part = cm.group(1).strip()
+                data_part = cm.group(2).strip()
+                if _is_figure_line(fig_part) and _HAS_TRACK_CODE.search(data_part):
+                    if pending_figure is not None:
+                        past_performances.append(pending_figure)
+                    pending_figure = _parse_figure_line(fig_part)
+                    data = _parse_data_line(data_part)
+                    pending_figure['surface'] = data['surface']
+                    pending_figure['track'] = data.get('track', '')
+                    pending_figure['data_text'] = data_part
+                    past_performances.append(pending_figure)
+                    pending_figure = None
+                    continue
+
             # Try as figure line
             if _is_figure_line(line):
                 if pending_figure is not None:
@@ -506,6 +534,93 @@ class RagozinParser:
             f"{race_numbers} from {len(sections)} pages"
         )
         return race_data
+
+    # ------------------------------------------------------------------
+    # Parser diagnostic mode
+    # ------------------------------------------------------------------
+
+    def diagnose_race(self, pdf_path: str, target_race: int) -> Dict[str, Any]:
+        """Dump raw extracted text and parsing details for a specific race.
+
+        Returns per-page diagnostic dict for every horse in *target_race*.
+        """
+        text = self.extract_text_from_pdf(pdf_path)
+        sections = self._split_into_pages(text)
+        if not sections:
+            return {"race_number": target_race, "error": "no page markers", "pages": []}
+
+        pages = []
+        for tc, page_num, section_text in sections:
+            raw_lines = [l for l in section_text.split('\n') if l.strip()]
+            # Quick check: does this page belong to the target race?
+            race_match = False
+            for rl in raw_lines[:10]:
+                rm = _RACE_LINE_RE.match(rl.strip())
+                if rm and int(rm.group(2)) == target_race:
+                    race_match = True
+                    break
+            if not race_match:
+                continue
+
+            # Clean lines (same logic as _parse_page)
+            cleaned = []
+            for line in [l.strip() for l in raw_lines if l.strip()]:
+                if line.startswith('Ragozin --') or line.startswith('TM'):
+                    continue
+                if line.startswith('These Sheets are') or line.startswith('copied or'):
+                    continue
+                if line.startswith('The Sheets:'):
+                    continue
+                if re.match(r'^(DE|NO|OC|SE|AU|JL|JU|MA|AP|FE|JA|6062|N|C|V|T|P|G|Y|R|B)$', line):
+                    continue
+                if line.startswith('top:') or re.match(r'^spr\s+dst\s+turf$', line):
+                    continue
+                if re.match(r'^\d+yo>\s+', line):
+                    continue
+                if re.match(r'^0\s*\^?\s*6\s*0\s*6\s*2\s*$', line):
+                    continue
+                cleaned.append(line)
+
+            # Find horse name
+            horse_name = "?"
+            for cl in cleaned[:8]:
+                hm = _HORSE_LINE_RE.match(cl)
+                if hm:
+                    horse_name = hm.group(1).strip()
+                    break
+
+            # Classify each cleaned line
+            classified = []
+            for cl in cleaned:
+                kind = "noise"
+                if _HORSE_LINE_RE.match(cl):
+                    kind = "horse_name"
+                elif _RACE_LINE_RE.match(cl):
+                    kind = "race_header"
+                elif _CONDITIONS_RE.match(cl):
+                    kind = "conditions"
+                elif _YEAR_SUMMARY_RE.match(cl):
+                    kind = "year_summary"
+                elif _is_figure_line(cl):
+                    kind = "figure"
+                elif _HAS_TRACK_CODE.search(cl):
+                    cm = _CONCAT_FIGURE_DATA_RE.match(cl)
+                    if cm and _is_figure_line(cm.group(1).strip()):
+                        kind = "concat_figure_data"
+                    else:
+                        kind = "data"
+                classified.append({"text": cl, "kind": kind})
+
+            pages.append({
+                "page_num": page_num,
+                "track_code": tc,
+                "horse_name": horse_name,
+                "raw_line_count": len(raw_lines),
+                "cleaned_line_count": len(cleaned),
+                "classified_lines": classified,
+            })
+
+        return {"race_number": target_race, "pages": pages}
 
     # ------------------------------------------------------------------
     # Legacy fallback (old blob-regex approach, kept as safety net)

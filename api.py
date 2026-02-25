@@ -1196,6 +1196,24 @@ async def get_stats():
     }
 
 # ---------------------------------------------------------------------------
+# Parser diagnostics
+# ---------------------------------------------------------------------------
+
+@app.get("/parser/diagnose/{session_id}/{race_number}")
+async def parser_diagnose(session_id: str, race_number: int):
+    """Dump raw parser diagnostics for a single race.
+
+    Returns per-page classified lines showing how each line was interpreted
+    by the Ragozin parser (figure, data, concat_figure_data, noise, etc.).
+    """
+    pdf_path = Path("uploads") / f"{session_id}_primary.pdf"
+    if not pdf_path.exists():
+        raise HTTPException(status_code=404, detail="PDF not found for session")
+    parser = RagozinParser()
+    return parser.diagnose_race(str(pdf_path), race_number)
+
+
+# ---------------------------------------------------------------------------
 # Bet Builder endpoints
 # ---------------------------------------------------------------------------
 

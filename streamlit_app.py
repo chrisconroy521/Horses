@@ -307,24 +307,86 @@ def engine_page():
 
     # --- Figure quality sanity check ---
     figure_warnings: dict = {}  # race_number -> pct_missing
+    _race_detail: dict = {}     # race_number -> list of per-horse detail dicts
     _temp_groups: dict = {}
     for h in all_horses:
         rn = h.get('race_number', 0) or 0
         _temp_groups.setdefault(rn, []).append(h)
     for rn, horses_in_race in _temp_groups.items():
         missing = 0
+        first_timers = 0
+        details = []
         for h in horses_in_race:
-            figs = [_extract_figure(ln) for ln in h.get('lines', [])]
-            if not figs or max(figs) == 0:
+            name = h.get('horse_name', '?')
+            lines = h.get('lines', [])
+            figs = [_extract_figure(ln) for ln in lines]
+            max_fig = max(figs) if figs else 0
+            is_stub = (len(lines) == 1 and not lines[0].get('raw_text', ''))
+            if is_stub:
+                first_timers += 1
+                details.append({
+                    'name': name, 'lines': len(lines), 'max_fig': 0,
+                    'status': 'First-timer', 'raw': []})
+            elif not figs or max_fig == 0:
                 missing += 1
-        pct = missing / len(horses_in_race) if horses_in_race else 0
+                raw_texts = [ln.get('raw_text', '') for ln in lines]
+                details.append({
+                    'name': name, 'lines': len(lines), 'max_fig': 0,
+                    'status': 'Missing', 'raw': raw_texts})
+            else:
+                details.append({
+                    'name': name, 'lines': len(lines), 'max_fig': max_fig,
+                    'status': 'OK', 'raw': []})
+        scoreable = len(horses_in_race) - first_timers
+        pct = missing / scoreable if scoreable > 0 else 0
         if pct > 0.3:
             figure_warnings[rn] = pct
+        _race_detail[rn] = details
 
     figures_ok = len(figure_warnings) == 0
     if not figures_ok:
         warn_parts = [f"R{rn}: {pct:.0%} missing" for rn, pct in sorted(figure_warnings.items())]
         st.warning(f"Figure quality issue — {', '.join(warn_parts)}. Projections may be unreliable.")
+
+        # Race completeness details expander
+        for rn in sorted(figure_warnings.keys()):
+            with st.expander(f"Race {rn} completeness details"):
+                details = _race_detail.get(rn, [])
+                rows = []
+                for d in details:
+                    rows.append({
+                        'Horse': d['name'],
+                        'Lines': d['lines'],
+                        'Max Figure': d['max_fig'] if d['max_fig'] else '-',
+                        'Status': d['status'],
+                    })
+                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+                # Show raw text for missing horses
+                miss_list = [d for d in details if d['status'] == 'Missing']
+                if miss_list:
+                    st.caption("Missing horses — raw line text:")
+                    for d in miss_list:
+                        st.code('\n'.join(d['raw']) if d['raw'] else '(empty)', language=None)
+
+                # Parser diagnostic dump
+                try:
+                    diag_resp = requests.get(
+                        f"{API_BASE_URL}/parser/diagnose/{sel_id}/{rn}", timeout=15)
+                    if diag_resp.ok:
+                        diag = diag_resp.json()
+                        for pg in diag.get('pages', []):
+                            st.markdown(f"**{pg['horse_name']}** (page {pg['page_num']})")
+                            for cl in pg.get('classified_lines', []):
+                                kind = cl['kind']
+                                marker = {'figure': 'FIG', 'data': 'DAT',
+                                          'concat_figure_data': 'FIG+DAT',
+                                          'horse_name': 'HDR', 'race_header': 'HDR',
+                                          'conditions': 'HDR', 'year_summary': 'YR',
+                                          'noise': '...'}.get(kind, kind)
+                                st.text(f"  [{marker:7s}] {cl['text']}")
+                except Exception:
+                    pass
 
     # Group horses by race_number
     race_groups: dict = {}
