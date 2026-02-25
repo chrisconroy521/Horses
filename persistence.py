@@ -271,6 +271,20 @@ class Persistence:
             );
             CREATE INDEX IF NOT EXISTS idx_rp_session ON result_predictions(session_id);
             CREATE INDEX IF NOT EXISTS idx_rp_key ON result_predictions(track, race_date, race_number, normalized_name);
+
+            CREATE TABLE IF NOT EXISTS bet_plans (
+                plan_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id   TEXT NOT NULL,
+                track        TEXT NOT NULL,
+                race_date    TEXT NOT NULL,
+                settings_json TEXT NOT NULL,
+                plan_json    TEXT NOT NULL,
+                total_risk   REAL NOT NULL DEFAULT 0,
+                paper_mode   INTEGER NOT NULL DEFAULT 1,
+                created_at   TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_bp_session ON bet_plans(session_id);
+            CREATE INDEX IF NOT EXISTS idx_bp_track_date ON bet_plans(track, race_date);
             """
         )
         self.conn.commit()
@@ -2248,3 +2262,182 @@ class Persistence:
         """, params).fetchall()
 
         return [dict(r) for r in rows]
+
+    # ------------------------------------------------------------------
+    # Bet Plans
+    # ------------------------------------------------------------------
+
+    def save_bet_plan(
+        self, session_id: str, track: str, race_date: str,
+        settings_dict: Dict[str, Any], plan_dict: Dict[str, Any],
+        total_risk: float, paper_mode: bool,
+    ) -> int:
+        """Persist a generated bet plan. Returns the plan_id."""
+        track = self._normalize_track(track)
+        race_date = self._normalize_date(race_date)
+        now = datetime.utcnow().isoformat()
+        cur = self.conn.execute(
+            """
+            INSERT INTO bet_plans(
+                session_id, track, race_date, settings_json, plan_json,
+                total_risk, paper_mode, created_at
+            ) VALUES(?,?,?,?,?,?,?,?)
+            """,
+            (
+                session_id, track, race_date,
+                json.dumps(settings_dict), json.dumps(plan_dict),
+                total_risk, int(paper_mode), now,
+            ),
+        )
+        self.conn.commit()
+        return cur.lastrowid
+
+    def load_bet_plans(
+        self, session_id: str = "", track: str = "", race_date: str = "",
+    ) -> List[Dict[str, Any]]:
+        """Load stored bet plans with optional filters."""
+        where_parts = ["1=1"]
+        params: list = []
+        if session_id:
+            where_parts.append("session_id = ?")
+            params.append(session_id)
+        if track:
+            where_parts.append("track = ?")
+            params.append(self._normalize_track(track))
+        if race_date:
+            where_parts.append("race_date = ?")
+            params.append(self._normalize_date(race_date))
+        where = " AND ".join(where_parts)
+
+        rows = self.conn.execute(
+            f"""SELECT plan_id, session_id, track, race_date,
+                       settings_json, plan_json, total_risk,
+                       paper_mode, created_at
+                FROM bet_plans WHERE {where}
+                ORDER BY created_at DESC""",
+            params,
+        ).fetchall()
+
+        results = []
+        for r in rows:
+            d = dict(r)
+            d["settings"] = json.loads(d.pop("settings_json"))
+            d["plan"] = json.loads(d.pop("plan_json"))
+            d["paper_mode"] = bool(d["paper_mode"])
+            results.append(d)
+        return results
+
+    def evaluate_bet_plan_roi(self, plan_id: int) -> Dict[str, Any]:
+        """Compute realized ROI for a stored bet plan by joining tickets
+        against result_entries.
+
+        Returns dict with plan_id, total_wagered, total_returned, roi_pct,
+        ticket_results (list of per-ticket outcomes), and evaluated_at.
+        """
+        row = self.conn.execute(
+            "SELECT * FROM bet_plans WHERE plan_id = ?", (plan_id,)
+        ).fetchone()
+        if not row:
+            return {"error": f"plan_id {plan_id} not found"}
+
+        plan_data = json.loads(row["plan_json"])
+        track = row["track"]
+        race_date = row["race_date"]
+
+        total_wagered = 0.0
+        total_returned = 0.0
+        ticket_results = []
+
+        for rp in plan_data.get("race_plans", []):
+            race_num = rp.get("race_number", 0)
+            for t in rp.get("tickets", []):
+                cost = t.get("cost", 0)
+                total_wagered += cost
+                bet_type = t.get("bet_type", "")
+                selections = t.get("selections", [])
+                returned = 0.0
+                outcome = "pending"
+
+                if bet_type == "WIN" and selections:
+                    norm = self._normalize_name(selections[0])
+                    entry = self.conn.execute(
+                        """SELECT finish_pos, win_payoff, odds
+                           FROM result_entries
+                           WHERE track = ? AND race_date = ?
+                             AND race_number = ? AND normalized_name = ?""",
+                        (track, race_date, race_num, norm),
+                    ).fetchone()
+                    if entry and entry["finish_pos"] is not None:
+                        if entry["finish_pos"] == 1:
+                            payoff = entry["win_payoff"] or 0
+                            returned = (cost / 2.0) * payoff if payoff else 0
+                            outcome = "won"
+                        else:
+                            outcome = "lost"
+                    elif entry:
+                        outcome = "lost"
+
+                elif bet_type == "EXACTA" and len(selections) >= 2:
+                    structure = t.get("details", {}).get("structure", "key")
+                    entries = self.conn.execute(
+                        """SELECT horse_name, normalized_name, finish_pos
+                           FROM result_entries
+                           WHERE track = ? AND race_date = ?
+                             AND race_number = ?""",
+                        (track, race_date, race_num),
+                    ).fetchall()
+                    if entries:
+                        finish_map = {
+                            self._normalize_name(e["horse_name"] or ""): e["finish_pos"]
+                            for e in entries
+                        }
+                        if structure == "key":
+                            top_fin = finish_map.get(self._normalize_name(selections[0]))
+                            if top_fin == 1:
+                                for u in selections[1:]:
+                                    if finish_map.get(self._normalize_name(u)) == 2:
+                                        outcome = "won"
+                                        break
+                                else:
+                                    outcome = "lost"
+                            elif top_fin is not None:
+                                outcome = "lost"
+                        else:  # saver
+                            under_name = t.get("details", {}).get("under", "")
+                            under_fin = finish_map.get(self._normalize_name(under_name))
+                            if under_fin == 2:
+                                for o in t.get("details", {}).get("overs", []):
+                                    if finish_map.get(self._normalize_name(o)) == 1:
+                                        outcome = "won"
+                                        break
+                                else:
+                                    outcome = "lost"
+                            elif under_fin is not None:
+                                outcome = "lost"
+
+                    # Exacta payoff not tracked per combination in result_entries
+                    if outcome == "won":
+                        returned = 0
+
+                total_returned += returned
+                ticket_results.append({
+                    "race_number": race_num,
+                    "bet_type": bet_type,
+                    "selections": selections,
+                    "cost": cost,
+                    "outcome": outcome,
+                    "returned": returned,
+                })
+
+        roi_pct = ((total_returned - total_wagered) / total_wagered * 100) if total_wagered > 0 else 0
+
+        return {
+            "plan_id": plan_id,
+            "track": track,
+            "race_date": race_date,
+            "total_wagered": round(total_wagered, 2),
+            "total_returned": round(total_returned, 2),
+            "roi_pct": round(roi_pct, 1),
+            "ticket_results": ticket_results,
+            "evaluated_at": datetime.utcnow().isoformat(),
+        }

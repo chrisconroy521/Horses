@@ -31,7 +31,7 @@ def main():
     st.sidebar.header("Navigation")
     pages = ["Upload PDF", "Engine", "Horse Past Performance", "Horses Overview",
              "Individual Horse Analysis", "Race Analysis", "Database", "Results",
-             "Statistics", "Manage Sheets", "API Status"]
+             "Bet Builder", "Statistics", "Manage Sheets", "API Status"]
 
     # Apply programmatic navigation (e.g. "Open in Engine" button)
     if '_nav_target' in st.session_state:
@@ -55,6 +55,8 @@ def main():
         database_page()
     elif page == "Results":
         results_page()
+    elif page == "Bet Builder":
+        bet_builder_page()
     elif page == "Statistics":
         statistics_page()
     elif page == "Manage Sheets":
@@ -2314,6 +2316,231 @@ def results_page():
                               label_key="cycle", label_col="Pattern")
         if not roi_rank and not roi_cycle:
             st.info("No predictions saved yet. Run the engine on a session, then upload results.")
+
+
+def bet_builder_page():
+    st.header("Bet Builder")
+    st.caption("Generate WIN + EXACTA tickets from engine predictions with Kelly sizing and bankroll guardrails.")
+
+    # --- Session selector ---
+    session_options = {"(none)": ""}
+    try:
+        sr = requests.get(f"{API_BASE_URL}/sessions", timeout=10)
+        if sr.status_code == 200:
+            for s in sr.json().get("sessions", []):
+                label = f"{s['track']} {s['date']} ({s['session_id'][:8]}...)"
+                session_options[label] = s["session_id"]
+    except Exception:
+        pass
+
+    sel = st.selectbox("Session", options=list(session_options.keys()), key="bb_session")
+    chosen_sid = session_options.get(sel, "")
+
+    col_t, col_d = st.columns(2)
+    with col_t:
+        bb_track = st.text_input("Track", key="bb_track")
+    with col_d:
+        bb_date = st.text_input("Date (MM/DD/YYYY)", key="bb_date")
+
+    st.subheader("Settings")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        bankroll = st.number_input("Bankroll ($)", value=1000, min_value=100, step=100, key="bb_bankroll")
+        risk_profile = st.selectbox("Risk Profile", ["conservative", "standard", "aggressive"],
+                                    index=1, key="bb_risk_profile")
+    with c2:
+        max_race_pct = st.number_input("Max risk/race (%)", value=1.5, min_value=0.5, max_value=5.0,
+                                       step=0.5, key="bb_max_race")
+        max_day_pct = st.number_input("Max risk/day (%)", value=6.0, min_value=1.0, max_value=20.0,
+                                      step=1.0, key="bb_max_day")
+    with c3:
+        min_odds_a = st.number_input("Min odds (A races)", value=2.0, min_value=1.0, step=0.5, key="bb_min_odds_a")
+        min_odds_b = st.number_input("Min odds (B races)", value=4.0, min_value=1.0, step=0.5, key="bb_min_odds_b")
+
+    paper_mode = st.checkbox("Paper mode", value=True, key="bb_paper",
+                             help="Mark plan as paper (no real money). Always on by default.")
+
+    if st.button("Generate Bet Plan", type="primary", key="btn_build_bets"):
+        if not chosen_sid or not bb_track or not bb_date:
+            st.warning("Select a session and enter track + date.")
+        else:
+            with st.spinner("Building bet plan..."):
+                try:
+                    payload = {
+                        "session_id": chosen_sid,
+                        "track": bb_track,
+                        "race_date": bb_date,
+                        "bankroll": bankroll,
+                        "risk_profile": risk_profile,
+                        "max_risk_per_race_pct": max_race_pct,
+                        "max_risk_per_day_pct": max_day_pct,
+                        "min_odds_a": min_odds_a,
+                        "min_odds_b": min_odds_b,
+                        "paper_mode": paper_mode,
+                        "save": True,
+                    }
+                    resp = requests.post(f"{API_BASE_URL}/bets/build", json=payload, timeout=30)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        st.session_state["bb_last_plan"] = data
+                        st.success(f"Plan generated (plan_id={data.get('plan_id', '?')})")
+                    elif resp.status_code == 404:
+                        st.warning("No predictions found for this card. Run the engine first.")
+                    else:
+                        st.error(f"Error: {resp.text}")
+                except requests.exceptions.ConnectionError:
+                    st.error("Cannot connect to API.")
+                except Exception as e:
+                    st.error(f"Error: {e}")
+
+    # --- Display plan ---
+    plan_data = st.session_state.get("bb_last_plan", {}).get("plan")
+    plan_id = st.session_state.get("bb_last_plan", {}).get("plan_id")
+    if plan_data:
+        st.divider()
+        st.subheader("Day Plan")
+
+        settings = plan_data.get("settings", {})
+        mode_label = "PAPER" if settings.get("paper_mode", True) else "LIVE"
+        w1, w2, w3 = st.columns(3)
+        with w1:
+            st.metric("Total Risk", f"${plan_data['total_risk']:.0f}")
+        with w2:
+            bet_count = sum(len(rp.get("tickets", [])) for rp in plan_data.get("race_plans", []))
+            st.metric("Bets", bet_count)
+        with w3:
+            st.metric("Mode", mode_label)
+
+        for w in plan_data.get("warnings", []):
+            st.warning(w)
+
+        # Per-race details
+        for rp in plan_data.get("race_plans", []):
+            grade = rp["grade"]
+            race_num = rp["race_number"]
+            if rp["passed"]:
+                st.markdown(f"**Race {race_num}** — Grade {grade} PASS")
+                with st.expander(f"Race {race_num} details"):
+                    st.caption(rp.get("rationale", ""))
+            else:
+                st.markdown(f"**Race {race_num}** — Grade **{grade}** | ${rp['total_cost']:.0f}")
+                tickets_rows = []
+                for t in rp.get("tickets", []):
+                    tickets_rows.append({
+                        "Type": t["bet_type"],
+                        "Selections": " / ".join(t["selections"]),
+                        "Cost": f"${t['cost']:.0f}",
+                        "Rationale": t["rationale"],
+                    })
+                if tickets_rows:
+                    st.dataframe(pd.DataFrame(tickets_rows), hide_index=True, use_container_width=True)
+                with st.expander(f"Race {race_num} grading"):
+                    for r in rp.get("grade_reasons", []):
+                        st.text(f"  - {r}")
+
+        # --- Exports ---
+        st.divider()
+        st.subheader("Export")
+        ec1, ec2 = st.columns(2)
+
+        # CSV export
+        csv_rows = ["race,grade,bet_type,selections,cost,rationale"]
+        for rp in plan_data.get("race_plans", []):
+            if rp["passed"]:
+                csv_rows.append(f"{rp['race_number']},{rp['grade']},PASS,,0,\"{rp.get('rationale','')}\"")
+            else:
+                for t in rp.get("tickets", []):
+                    sels = " / ".join(t["selections"])
+                    csv_rows.append(
+                        f"{rp['race_number']},{rp['grade']},{t['bet_type']},"
+                        f"\"{sels}\",{t['cost']:.2f},\"{t['rationale']}\""
+                    )
+        with ec1:
+            st.download_button(
+                "Download CSV", "\n".join(csv_rows), "bet_plan.csv", "text/csv",
+                key="bb_dl_csv",
+            )
+
+        # Text export
+        lines = [f"=== BET PLAN ({mode_label}) ===",
+                 f"Bankroll: ${settings.get('bankroll',0):.0f}",
+                 f"Risk profile: {settings.get('risk_profile','standard')}",
+                 f"Total risk: ${plan_data['total_risk']:.0f}", ""]
+        for rp in plan_data.get("race_plans", []):
+            if rp["passed"]:
+                lines.append(f"Race {rp['race_number']}: PASS (Grade {rp['grade']})")
+            else:
+                lines.append(f"Race {rp['race_number']}: Grade {rp['grade']} — ${rp['total_cost']:.0f}")
+                for t in rp.get("tickets", []):
+                    lines.append(f"  {t['rationale']}")
+            lines.append("")
+        with ec2:
+            st.download_button(
+                "Download Text", "\n".join(lines), "bet_plan.txt", "text/plain",
+                key="bb_dl_txt",
+            )
+
+    # --- Saved plans & evaluation ---
+    st.divider()
+    st.subheader("Saved Plans")
+    try:
+        params = {}
+        if chosen_sid:
+            params["session_id"] = chosen_sid
+        if bb_track:
+            params["track"] = bb_track
+        if bb_date:
+            params["date"] = bb_date
+        plans_resp = requests.get(f"{API_BASE_URL}/bets/plans", params=params, timeout=10)
+        plans = plans_resp.json() if plans_resp.status_code == 200 else []
+    except Exception:
+        plans = []
+
+    if plans:
+        plan_rows = []
+        for p in plans:
+            plan_rows.append({
+                "ID": p["plan_id"],
+                "Track": p["track"],
+                "Date": p["race_date"],
+                "Risk": f"${p['total_risk']:.0f}",
+                "Mode": "Paper" if p["paper_mode"] else "Live",
+                "Created": p["created_at"][:16],
+            })
+        st.dataframe(pd.DataFrame(plan_rows), hide_index=True, use_container_width=True)
+
+        eval_id = st.number_input("Plan ID to evaluate", min_value=1, step=1, key="bb_eval_id")
+        if st.button("Evaluate vs Results", key="btn_eval_plan"):
+            try:
+                er = requests.get(f"{API_BASE_URL}/bets/evaluate/{int(eval_id)}", timeout=15)
+                if er.status_code == 200:
+                    ev = er.json()
+                    e1, e2, e3 = st.columns(3)
+                    with e1:
+                        st.metric("Wagered", f"${ev['total_wagered']:.2f}")
+                    with e2:
+                        st.metric("Returned", f"${ev['total_returned']:.2f}")
+                    with e3:
+                        st.metric("ROI", f"{ev['roi_pct']:.1f}%")
+
+                    tr_rows = []
+                    for tr in ev.get("ticket_results", []):
+                        tr_rows.append({
+                            "Race": tr["race_number"],
+                            "Type": tr["bet_type"],
+                            "Selections": " / ".join(tr["selections"]),
+                            "Cost": f"${tr['cost']:.0f}",
+                            "Outcome": tr["outcome"],
+                            "Returned": f"${tr['returned']:.2f}" if tr["returned"] else "-",
+                        })
+                    if tr_rows:
+                        st.dataframe(pd.DataFrame(tr_rows), hide_index=True, use_container_width=True)
+                else:
+                    st.error(f"Error: {er.text}")
+            except Exception as e:
+                st.error(f"Error: {e}")
+    else:
+        st.info("No saved bet plans. Generate one above.")
 
 
 def statistics_page():

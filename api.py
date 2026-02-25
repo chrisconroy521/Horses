@@ -18,6 +18,9 @@ from gpt_parser_alternative import GPTRagozinParserAlternative
 from merge import merge_parsed_sessions, merge_primary_secondary
 from brisnet_parser import BrisnetParser, to_pipeline_json as brisnet_to_pipeline
 from persistence import Persistence
+from bet_builder import (
+    BetSettings, build_day_plan, day_plan_to_dict, day_plan_to_text, day_plan_to_csv,
+)
 import hashlib
 import dotenv
 dotenv.load_dotenv()
@@ -1176,6 +1179,85 @@ async def get_stats():
         "surface_breakdown": surface_counts,
         "track_breakdown": track_counts
     }
+
+# ---------------------------------------------------------------------------
+# Bet Builder endpoints
+# ---------------------------------------------------------------------------
+
+@app.post("/bets/build")
+async def build_bets(payload: dict):
+    """Generate a bet plan from saved predictions.
+
+    Body: {session_id, track, race_date,
+           bankroll?, risk_profile?, max_risk_per_race_pct?,
+           max_risk_per_day_pct?, min_confidence?, min_odds_a?,
+           min_odds_b?, paper_mode?, save?}
+
+    Returns the DayPlan dict (and plan_id if save=true).
+    """
+    sid = payload.get("session_id", "")
+    track = payload.get("track", "")
+    race_date = payload.get("race_date", "")
+    if not sid or not track or not race_date:
+        raise HTTPException(status_code=400, detail="session_id, track, race_date required")
+
+    # Build settings from payload
+    settings = BetSettings(
+        bankroll=float(payload.get("bankroll", 1000)),
+        risk_profile=payload.get("risk_profile", "standard"),
+        max_risk_per_race_pct=float(payload.get("max_risk_per_race_pct", 1.5)),
+        max_risk_per_day_pct=float(payload.get("max_risk_per_day_pct", 6.0)),
+        min_confidence=float(payload.get("min_confidence", 0)),
+        min_odds_a=float(payload.get("min_odds_a", 2.0)),
+        min_odds_b=float(payload.get("min_odds_b", 4.0)),
+        paper_mode=bool(payload.get("paper_mode", True)),
+    )
+
+    # Load predictions for this card
+    preds = _db.get_predictions_vs_results(track=track, race_date=race_date, session_id=sid)
+    if not preds:
+        raise HTTPException(status_code=404, detail="No predictions found for this card")
+
+    # Group by race_number
+    race_projections: Dict[int, list] = {}
+    for p in preds:
+        rn = p.get("race_number", 0)
+        if rn not in race_projections:
+            race_projections[rn] = []
+        race_projections[rn].append(p)
+
+    plan = build_day_plan(race_projections, settings)
+    plan_dict = day_plan_to_dict(plan)
+
+    result = {"plan": plan_dict}
+
+    # Optionally persist
+    if payload.get("save", True):
+        from dataclasses import asdict as _asdict
+        plan_id = _db.save_bet_plan(
+            session_id=sid, track=track, race_date=race_date,
+            settings_dict=_asdict(settings), plan_dict=plan_dict,
+            total_risk=plan.total_risk, paper_mode=settings.paper_mode,
+        )
+        result["plan_id"] = plan_id
+
+    return result
+
+
+@app.get("/bets/plans")
+async def list_bet_plans(session_id: str = "", track: str = "", date: str = ""):
+    """List stored bet plans."""
+    return _db.load_bet_plans(session_id=session_id, track=track, race_date=date)
+
+
+@app.get("/bets/evaluate/{plan_id}")
+async def evaluate_bet_plan(plan_id: int):
+    """Evaluate a bet plan against actual results."""
+    result = _db.evaluate_bet_plan_roi(plan_id)
+    if "error" in result:
+        raise HTTPException(status_code=404, detail=result["error"])
+    return result
+
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
