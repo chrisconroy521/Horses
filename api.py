@@ -20,6 +20,7 @@ from brisnet_parser import BrisnetParser, to_pipeline_json as brisnet_to_pipelin
 from persistence import Persistence
 from bet_builder import (
     BetSettings, build_day_plan, day_plan_to_dict, day_plan_to_text, day_plan_to_csv,
+    build_daily_wins, DailyWinCandidate,
 )
 import hashlib
 import subprocess as _subprocess
@@ -1317,7 +1318,14 @@ async def build_bets(payload: dict):
             race_projections[rn] = []
         race_projections[rn].append(p)
 
-    plan = build_day_plan(race_projections, settings)
+    # Compute figure quality per race for guardrails
+    race_quality: Dict[int, float] = {}
+    for rn, projs in race_projections.items():
+        non_tossed = [p for p in projs if not p.get("tossed", False)]
+        with_figs = sum(1 for p in non_tossed if p.get("bias_score", 0) != 0)
+        race_quality[rn] = with_figs / len(non_tossed) if non_tossed else 0.0
+
+    plan = build_day_plan(race_projections, settings, race_quality=race_quality)
     plan_dict = day_plan_to_dict(plan)
 
     result = {"plan": plan_dict}
@@ -1330,6 +1338,75 @@ async def build_bets(payload: dict):
             settings_dict=_asdict(settings), plan_dict=plan_dict,
             total_risk=plan.total_risk, paper_mode=settings.paper_mode,
             engine_version=_ENGINE_VERSION,
+        )
+        result["plan_id"] = plan_id
+
+    return result
+
+
+@app.post("/bets/daily-wins")
+async def build_daily_wins_endpoint(payload: dict):
+    """Generate cross-track daily WIN bet plan.
+
+    Body: {race_date, bankroll?, risk_profile?, max_risk_per_day_pct?,
+           min_confidence?, min_odds_a?, paper_mode?, max_bets?, save?}
+    """
+    race_date = payload.get("race_date", "")
+    if not race_date:
+        raise HTTPException(status_code=400, detail="race_date required")
+
+    settings = BetSettings(
+        bankroll=float(payload.get("bankroll", 1000)),
+        risk_profile=payload.get("risk_profile", "standard"),
+        max_risk_per_day_pct=float(payload.get("max_risk_per_day_pct", 6.0)),
+        min_confidence=float(payload.get("min_confidence", 0.65)),
+        min_odds_a=float(payload.get("min_odds_a", 2.0)),
+        paper_mode=bool(payload.get("paper_mode", True)),
+        allow_missing_odds=bool(payload.get("allow_missing_odds", False)),
+    )
+    max_bets = int(payload.get("max_bets", 10))
+
+    # Load all predictions and odds for the date
+    predictions_by_track = _db.get_all_predictions_for_date(race_date)
+    if not predictions_by_track:
+        raise HTTPException(status_code=404, detail="No predictions found for this date")
+
+    odds_by_key = _db.get_all_odds_for_date(race_date)
+
+    # Build daily WIN candidates
+    candidates = build_daily_wins(
+        predictions_by_track, odds_by_key, settings, max_bets=max_bets,
+    )
+
+    # Serialize candidates
+    from dataclasses import asdict as _asdict_local
+    candidates_dicts = [_asdict_local(c) for c in candidates]
+    total_risk = sum(c.stake for c in candidates)
+
+    result: Dict[str, Any] = {
+        "candidates": candidates_dicts,
+        "total_risk": total_risk,
+        "tracks": list(set(c.track for c in candidates)),
+        "bet_count": len(candidates),
+    }
+
+    # Optionally persist
+    if payload.get("save", True) and candidates:
+        plan_dict = {
+            "candidates": candidates_dicts,
+            "total_risk": total_risk,
+            "settings": _asdict_local(settings),
+        }
+        plan_id = _db.save_bet_plan(
+            session_id=f"daily_{race_date}",
+            track="ALL",
+            race_date=race_date,
+            settings_dict=_asdict_local(settings),
+            plan_dict=plan_dict,
+            total_risk=total_risk,
+            paper_mode=settings.paper_mode,
+            engine_version=_ENGINE_VERSION,
+            plan_type="daily",
         )
         result["plan_id"] = plan_id
 

@@ -53,6 +53,7 @@ class BetSettings:
     min_odds_b: float = 4.0                 # minimum odds for B-race WIN bet
     paper_mode: bool = True                 # paper bets (no real money implied)
     allow_missing_odds: bool = False         # allow flat-stake WIN when odds absent
+    figure_quality_threshold: float = 0.80   # block race if < 80% figures present
 
     @property
     def max_risk_per_race(self) -> float:
@@ -85,6 +86,7 @@ class RacePlan:
     passed: bool = False       # True if grade=C → no bets
     warnings: List[str] = field(default_factory=list)
     blockers: List[str] = field(default_factory=list)
+    figure_quality_pct: Optional[float] = None  # fraction of scoreable horses with figures
 
 
 @dataclass
@@ -94,6 +96,32 @@ class DayPlan:
     total_risk: float = 0.0
     warnings: List[str] = field(default_factory=list)
     settings: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class DailyWinCandidate:
+    """A single cross-track WIN candidate for the daily best bets page."""
+    track: str
+    session_id: str
+    race_number: int
+    horse_name: str
+    post: str
+    grade: str
+    grade_reasons: List[str]
+    confidence: float
+    bias_score: float
+    projection_type: str
+    projected_low: float
+    projected_high: float
+    odds_decimal: Optional[float]
+    odds_raw: str
+    edge: float
+    kelly_fraction: float
+    stake: float
+    best_bet_score: float
+    tags: List[str]
+    new_top_setup: bool
+    bounce_risk: bool
 
 
 # ---------------------------------------------------------------------------
@@ -173,7 +201,10 @@ def _estimate_win_prob(confidence: float, bias_score: float, field_size: int) ->
 # Race Grading
 # ---------------------------------------------------------------------------
 
-def grade_race(projections: List[Dict[str, Any]], settings: BetSettings) -> tuple:
+def grade_race(
+    projections: List[Dict[str, Any]], settings: BetSettings,
+    figure_quality_pct: Optional[float] = None,
+) -> tuple:
     """Grade a race A/B/C based on engine projections.
 
     Returns (grade: str, reasons: List[str]).
@@ -186,6 +217,13 @@ def grade_race(projections: List[Dict[str, Any]], settings: BetSettings) -> tupl
 
     if not projections:
         return ("C", ["no projections available"])
+
+    # Quality guardrail: auto-PASS if figures too sparse
+    if figure_quality_pct is not None and figure_quality_pct < settings.figure_quality_threshold:
+        return ("C", [
+            f"figure quality {figure_quality_pct:.0%} below threshold "
+            f"{settings.figure_quality_threshold:.0%}"
+        ])
 
     # Sort by bias_score descending
     ranked = sorted(projections, key=lambda p: p.get("bias_score", 0), reverse=True)
@@ -399,9 +437,10 @@ def build_race_plan(
     projections: List[Dict[str, Any]],
     settings: BetSettings,
     remaining_day_budget: float,
+    figure_quality_pct: Optional[float] = None,
 ) -> RacePlan:
     """Build a complete bet plan for one race."""
-    grade, reasons = grade_race(projections, settings)
+    grade, reasons = grade_race(projections, settings, figure_quality_pct=figure_quality_pct)
 
     if grade == "C":
         return RacePlan(
@@ -410,6 +449,7 @@ def build_race_plan(
             grade_reasons=reasons,
             passed=True,
             rationale="PASS — " + "; ".join(reasons),
+            figure_quality_pct=figure_quality_pct,
         )
 
     race_budget = min(settings.max_risk_per_race, remaining_day_budget)
@@ -421,6 +461,7 @@ def build_race_plan(
             passed=True,
             rationale="PASS — daily risk cap reached",
             warnings=["daily cap reached"],
+            figure_quality_pct=figure_quality_pct,
         )
 
     ranked = sorted(projections, key=lambda p: p.get("bias_score", 0), reverse=True)
@@ -474,6 +515,7 @@ def build_race_plan(
         rationale=" | ".join(rationale_parts),
         passed=len(tickets) == 0,
         blockers=blockers,
+        figure_quality_pct=figure_quality_pct,
     )
 
 
@@ -484,10 +526,12 @@ def build_race_plan(
 def build_day_plan(
     race_projections: Dict[int, List[Dict[str, Any]]],
     settings: BetSettings,
+    race_quality: Optional[Dict[int, float]] = None,
 ) -> DayPlan:
     """Build a full day's bet plan across all races.
 
     *race_projections*: {race_number: [projection_dicts...]}
+    *race_quality*: optional {race_number: figure_quality_pct} for guardrails
 
     Returns DayPlan with per-race plans, total risk, and any warnings.
     """
@@ -497,7 +541,8 @@ def build_day_plan(
 
     for race_num in sorted(race_projections.keys()):
         projs = race_projections[race_num]
-        plan = build_race_plan(race_num, projs, settings, remaining)
+        quality = (race_quality or {}).get(race_num)
+        plan = build_race_plan(race_num, projs, settings, remaining, figure_quality_pct=quality)
         race_plans.append(plan)
         remaining -= plan.total_cost
 
@@ -555,6 +600,7 @@ def day_plan_to_dict(plan: DayPlan) -> dict:
                 "total_cost": rp.total_cost,
                 "rationale": rp.rationale,
                 "blockers": rp.blockers,
+                "figure_quality_pct": rp.figure_quality_pct,
                 "tickets": [
                     {
                         "bet_type": t.bet_type,
@@ -614,3 +660,137 @@ def day_plan_to_csv(plan: DayPlan) -> str:
                     f"\"{sels}\",{t.cost:.2f},\"{t.rationale}\""
                 )
     return "\n".join(rows)
+
+
+# ---------------------------------------------------------------------------
+# Daily WIN Bets (cross-track)
+# ---------------------------------------------------------------------------
+
+def build_daily_wins(
+    predictions_by_track: Dict[str, List[Dict[str, Any]]],
+    odds_by_key: Dict[tuple, dict],
+    settings: BetSettings,
+    max_bets: int = 15,
+    race_quality: Optional[Dict[tuple, float]] = None,
+) -> List[DailyWinCandidate]:
+    """Build cross-track daily WIN bet list from saved predictions.
+
+    Args:
+        predictions_by_track: {track: [pred_dicts]} from persistence
+        odds_by_key: {(track, race_num, norm_name): odds_dict}
+        settings: BetSettings with bankroll, risk caps, etc.
+        max_bets: maximum number of bets to return (5-15)
+        race_quality: optional {(track, race_num): quality_pct}
+
+    Returns list of DailyWinCandidate sorted by edge descending.
+    """
+    candidates: List[DailyWinCandidate] = []
+    multiplier = _risk_multiplier(settings.risk_profile)
+
+    for track, preds in predictions_by_track.items():
+        # Group by race_number
+        by_race: Dict[int, List[Dict[str, Any]]] = {}
+        for p in preds:
+            rn = p.get("race_number", 0)
+            by_race.setdefault(rn, []).append(p)
+
+        for rn, projs in by_race.items():
+            # Inject odds into each prediction
+            for p in projs:
+                if p.get("odds") is None:
+                    key = (track, rn, p.get("normalized_name", ""))
+                    snap = odds_by_key.get(key)
+                    if snap and snap.get("odds_decimal") is not None:
+                        p["odds"] = snap["odds_decimal"]
+                        p["odds_raw"] = snap.get("odds_raw", "")
+
+            # Grade the race
+            quality = (race_quality or {}).get((track, rn))
+            grade, reasons = grade_race(projs, settings, figure_quality_pct=quality)
+            if grade != "A":
+                continue
+
+            # Take the #1 ranked horse
+            ranked = sorted(projs, key=lambda p: p.get("bias_score", 0), reverse=True)
+            top = ranked[0]
+            if top.get("tossed", False):
+                continue
+
+            name = _horse_name(top)
+            conf = top.get("confidence", 0.5)
+            bias = top.get("bias_score", 0)
+            odds = top.get("odds")
+            odds_raw = top.get("odds_raw", "")
+            field_size = len(ranked)
+
+            # Compute edge
+            win_prob = _estimate_win_prob(conf, bias, field_size)
+            if odds is not None and odds > 0:
+                implied_prob = 1.0 / (odds + 1.0)
+                edge = win_prob - implied_prob
+                if edge <= 0:
+                    continue
+                kf = kelly_fraction(odds, win_prob)
+                if kf <= 0:
+                    continue
+                raw_stake = settings.bankroll * kf * multiplier
+                stake = round(raw_stake / _BET_BASE) * _BET_BASE
+                stake = max(stake, _BET_BASE)
+                stake = min(stake, settings.max_risk_per_race)
+            elif settings.allow_missing_odds:
+                edge = win_prob * 0.5  # rough edge estimate for sort
+                kf = 0.0
+                stake = round(settings.max_risk_per_race * 0.5 / _BET_BASE) * _BET_BASE
+                stake = max(stake, _BET_BASE)
+            else:
+                continue
+
+            proj_low = top.get("projected_low", 0)
+            proj_high = top.get("projected_high", 0)
+            spread = proj_high - proj_low
+            best_bet_score = bias + (conf * 10) - spread
+
+            candidates.append(DailyWinCandidate(
+                track=track,
+                session_id=top.get("session_id", ""),
+                race_number=rn,
+                horse_name=name,
+                post=str(top.get("post", "")),
+                grade=grade,
+                grade_reasons=reasons,
+                confidence=conf,
+                bias_score=bias,
+                projection_type=top.get("projection_type", "NEUTRAL"),
+                projected_low=proj_low,
+                projected_high=proj_high,
+                odds_decimal=odds,
+                odds_raw=odds_raw,
+                edge=edge,
+                kelly_fraction=kf,
+                stake=stake,
+                best_bet_score=best_bet_score,
+                tags=top.get("tags", []) if isinstance(top.get("tags"), list) else [],
+                new_top_setup=bool(top.get("new_top_setup", False)),
+                bounce_risk=bool(top.get("bounce_risk", False)),
+            ))
+
+    # Sort by edge descending, then best_bet_score descending
+    candidates.sort(key=lambda c: (c.edge, c.best_bet_score), reverse=True)
+
+    # Truncate to max_bets, enforce daily risk cap
+    selected: List[DailyWinCandidate] = []
+    total_risk = 0.0
+    for c in candidates:
+        if len(selected) >= max_bets:
+            break
+        if total_risk + c.stake > settings.max_risk_per_day:
+            # Try reducing stake to fit
+            remaining = settings.max_risk_per_day - total_risk
+            if remaining >= _BET_BASE:
+                c.stake = round(remaining / _BET_BASE) * _BET_BASE
+            else:
+                continue
+        selected.append(c)
+        total_risk += c.stake
+
+    return selected

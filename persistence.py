@@ -327,11 +327,13 @@ class Persistence:
         re_cols = {row[1] for row in cur2.fetchall()}
         if re_cols and "session_id" not in re_cols:
             self.conn.execute("ALTER TABLE result_entries ADD COLUMN session_id TEXT")
-        # bet_plans table — add engine_version if missing
+        # bet_plans table — add engine_version and plan_type if missing
         cur3 = self.conn.execute("PRAGMA table_info(bet_plans)")
         bp_cols = {row[1] for row in cur3.fetchall()}
         if bp_cols and "engine_version" not in bp_cols:
             self.conn.execute("ALTER TABLE bet_plans ADD COLUMN engine_version TEXT DEFAULT ''")
+        if bp_cols and "plan_type" not in bp_cols:
+            self.conn.execute("ALTER TABLE bet_plans ADD COLUMN plan_type TEXT NOT NULL DEFAULT 'session'")
         self.conn.commit()
         self._renormalize_names()
 
@@ -2035,6 +2037,37 @@ class Persistence:
 
         return [dict(r) for r in rows]
 
+    def get_all_predictions_for_date(
+        self, race_date: str,
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """Return all predictions for a date, grouped by track.
+
+        LEFT JOINs result_entries for odds/outcome data.
+        """
+        race_date = self._normalize_date(race_date)
+        rows = self.conn.execute("""
+            SELECT rp.session_id, rp.track, rp.race_number, rp.horse_name,
+                   rp.normalized_name, rp.pick_rank, rp.projection_type,
+                   rp.bias_score, rp.raw_score, rp.confidence,
+                   rp.projected_low, rp.projected_high, rp.tags,
+                   rp.new_top_setup, rp.bounce_risk, rp.tossed,
+                   er.finish_pos, er.odds AS result_odds, er.win_payoff, er.post
+            FROM result_predictions rp
+            LEFT JOIN result_entries er
+                ON rp.track = er.track AND rp.race_date = er.race_date
+                AND rp.race_number = er.race_number
+                AND rp.normalized_name = er.normalized_name
+            WHERE rp.race_date = ?
+            ORDER BY rp.track, rp.race_number, rp.pick_rank
+        """, (race_date,)).fetchall()
+
+        by_track: Dict[str, List[Dict[str, Any]]] = {}
+        for r in rows:
+            d = dict(r)
+            d["tags"] = json.loads(d.get("tags") or "[]")
+            by_track.setdefault(d["track"], []).append(d)
+        return by_track
+
     def get_prediction_roi(
         self, track: str = "", race_date: str = "", session_id: str = "",
     ) -> Dict[str, Any]:
@@ -2295,6 +2328,7 @@ class Persistence:
         self, session_id: str, track: str, race_date: str,
         settings_dict: Dict[str, Any], plan_dict: Dict[str, Any],
         total_risk: float, paper_mode: bool, engine_version: str = "",
+        plan_type: str = "session",
     ) -> int:
         """Persist a generated bet plan. Returns the plan_id."""
         track = self._normalize_track(track)
@@ -2304,13 +2338,13 @@ class Persistence:
             """
             INSERT INTO bet_plans(
                 session_id, track, race_date, settings_json, plan_json,
-                total_risk, paper_mode, engine_version, created_at
-            ) VALUES(?,?,?,?,?,?,?,?,?)
+                total_risk, paper_mode, engine_version, plan_type, created_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 session_id, track, race_date,
                 json.dumps(settings_dict), json.dumps(plan_dict),
-                total_risk, int(paper_mode), engine_version, now,
+                total_risk, int(paper_mode), engine_version, plan_type, now,
             ),
         )
         self.conn.commit()
@@ -2429,6 +2463,21 @@ class Persistence:
             (track, race_date, source),
         ).fetchall()
         return [dict(r) for r in rows]
+
+    def get_all_odds_for_date(
+        self, race_date: str, source: str = "morning_line",
+    ) -> Dict[tuple, dict]:
+        """Return {(track, race_number, normalized_name): odds_dict} for an entire date."""
+        race_date = self._normalize_date(race_date)
+        rows = self.conn.execute("""
+            SELECT track, race_number, post, normalized_name, odds_raw, odds_decimal
+            FROM odds_snapshots
+            WHERE race_date = ? AND source = ?
+        """, (race_date, source)).fetchall()
+        return {
+            (r["track"], r["race_number"], r["normalized_name"]): dict(r)
+            for r in rows
+        }
 
     def evaluate_bet_plan_roi(self, plan_id: int) -> Dict[str, Any]:
         """Compute realized ROI for a stored bet plan by joining tickets

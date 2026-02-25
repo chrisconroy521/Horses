@@ -36,9 +36,10 @@ def main():
     # Sidebar
     st.sidebar.header("Navigation")
     pages = [
-        "Upload PDF", "Engine", "Results", "Bet Builder", "Database",
-        "Horse Past Performance", "Horses Overview", "Individual Horse Analysis",
-        "Race Analysis", "Statistics", "Manage Sheets", "API Status",
+        "Upload PDF", "Engine", "Results", "Bet Builder", "Daily Best WIN Bets",
+        "Database", "Horse Past Performance", "Horses Overview",
+        "Individual Horse Analysis", "Race Analysis", "Statistics",
+        "Manage Sheets", "API Status",
     ]
 
     # Apply programmatic navigation (e.g. "Open in Engine" button)
@@ -66,6 +67,8 @@ def main():
         results_page()
     elif page == "Bet Builder":
         bet_builder_page()
+    elif page == "Daily Best WIN Bets":
+        daily_wins_page()
     elif page == "Statistics":
         statistics_page()
     elif page == "Manage Sheets":
@@ -152,6 +155,17 @@ def _best_bet_score(p):
     """Composite score: bias_score + confidence*10 - spread_penalty."""
     spread = p.projected_high - p.projected_low
     return p.bias_score + (p.confidence * 10) - spread
+
+
+def _quality_badge(pct_missing: float) -> str:
+    """Return a colored Streamlit badge for figure quality."""
+    quality = 1.0 - pct_missing
+    if quality >= 0.90:
+        return f":green[OK {quality:.0%}]"
+    elif quality >= 0.80:
+        return f":orange[WARN {quality:.0%}]"
+    else:
+        return f":red[BLOCK {quality:.0%}]"
 
 
 def _normalize_name_ui(name: str) -> str:
@@ -399,6 +413,7 @@ def engine_page():
 
     # --- Figure quality sanity check ---
     figure_warnings: dict = {}  # race_number -> pct_missing
+    _race_quality: dict = {}    # race_number -> pct_missing (all races)
     _race_detail: dict = {}     # race_number -> list of per-horse detail dicts
     _temp_groups: dict = {}
     for h in all_horses:
@@ -431,6 +446,7 @@ def engine_page():
                     'status': 'OK', 'raw': []})
         scoreable = len(horses_in_race) - first_timers
         pct = missing / scoreable if scoreable > 0 else 0
+        _race_quality[rn] = pct
         if pct > 0.3:
             figure_warnings[rn] = pct
         _race_detail[rn] = details
@@ -490,8 +506,10 @@ def engine_page():
     for rn in sorted(race_groups.keys()):
         count = len(race_groups[rn])
         label = f"R{rn}" if rn else "Ungrouped"
-        race_summary_parts.append(f"{label}: {count}")
-    st.caption(" | ".join(race_summary_parts))
+        q_pct = _race_quality.get(rn)
+        badge = f" {_quality_badge(q_pct)}" if q_pct is not None else ""
+        race_summary_parts.append(f"{label}: {count}{badge}")
+    st.markdown(" | ".join(race_summary_parts))
 
     # =====================================================================
     # (A) Bias Settings
@@ -1176,58 +1194,67 @@ def upload_page():
             help="When enabled, uses GPT-4 Vision for parsing. Falls back to traditional parser on failure."
         )
 
-        primary_file = st.file_uploader(
+        primary_files = st.file_uploader(
             "Step 1: Upload PRIMARY — Ragozin Sheets (required for cycle-based picks)",
             type=['pdf'],
             key='primary_uploader',
-            help="Primary drives picks using Sheets cycles. Do not rank by best single number."
+            accept_multiple_files=True,
+            help="Primary drives picks using Sheets cycles. Upload one or more PDFs."
         )
 
-        if primary_file is not None:
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("File Size", f"{primary_file.size / 1024:.1f} KB")
-            with col2:
-                st.metric("File Type", primary_file.type)
-            with col3:
-                st.metric("File Name", primary_file.name)
+        if primary_files:
+            st.info(f"{len(primary_files)} file(s) selected")
 
             if st.button("Parse Primary", type="primary", key="btn_parse_primary"):
                 use_gpt = st.session_state['use_gpt_parser']
-                with st.spinner("Parsing primary PDF..."):
-                    try:
-                        files = {"file": (primary_file.name, primary_file.getvalue(), "application/pdf")}
-                        params = {"use_gpt": use_gpt}
-                        response = requests.post(
-                            f"{API_BASE_URL}/upload_primary",
-                            files=files, params=params, timeout=300
-                        )
-                        if response.status_code == 200:
-                            result = response.json()
-                            st.success(f"Primary parsed: {result['horses_count']} horses, {result['races_count']} races")
-                            st.session_state['new_session_id'] = result['session_id']
-                            st.session_state['last_race_id'] = result['session_id']
-                            col1, col2, col3 = st.columns(3)
-                            with col1:
-                                st.metric("Session ID", result['session_id'][:8] + "...")
-                            with col2:
-                                st.metric("Track", result.get('track', 'N/A'))
-                            with col3:
-                                st.metric("Parser", result.get('parser_used', 'unknown'))
-                            # Show reconciliation impact
-                            if result.get('reconciliation'):
-                                recon = result['reconciliation']
-                                rc1, rc2 = st.columns(2)
-                                with rc1:
-                                    st.metric("New Matches", recon.get('new_matches', 0))
-                                with rc2:
-                                    st.metric("Global Coverage", f"{result.get('db_coverage_pct', 0):.1f}%")
-                        else:
-                            st.error(f"Error: {response.text}")
-                    except requests.exceptions.ConnectionError:
-                        st.error("Cannot connect to API. Is the backend running on http://localhost:8000?")
-                    except Exception as e:
-                        st.error(f"Error: {str(e)}")
+                all_results = []
+                progress = st.progress(0)
+                for idx, pf in enumerate(primary_files):
+                    with st.spinner(f"Parsing {pf.name} ({idx+1}/{len(primary_files)})..."):
+                        try:
+                            files = {"file": (pf.name, pf.getvalue(), "application/pdf")}
+                            params = {"use_gpt": use_gpt}
+                            response = requests.post(
+                                f"{API_BASE_URL}/upload_primary",
+                                files=files, params=params, timeout=300
+                            )
+                            if response.status_code == 200:
+                                result = response.json()
+                                all_results.append(result)
+                                st.success(
+                                    f"{pf.name}: {result['horses_count']} horses, "
+                                    f"{result['races_count']} races "
+                                    f"({result.get('track', '?')} — {result.get('parser_used', '?')})"
+                                )
+                            else:
+                                st.error(f"{pf.name}: {response.text}")
+                        except requests.exceptions.ConnectionError:
+                            st.error("Cannot connect to API. Is the backend running on http://localhost:8000?")
+                        except Exception as e:
+                            st.error(f"{pf.name}: {str(e)}")
+                    progress.progress((idx + 1) / len(primary_files))
+
+                if all_results:
+                    last = all_results[-1]
+                    st.session_state['new_session_id'] = last['session_id']
+                    st.session_state['last_race_id'] = last['session_id']
+                    total_horses = sum(r['horses_count'] for r in all_results)
+                    st.info(f"Parsed {len(all_results)} file(s): {total_horses} total horses across {len(all_results)} session(s)")
+                    # Show last session details
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("Session ID", last['session_id'][:8] + "...")
+                    with col2:
+                        st.metric("Track", last.get('track', 'N/A'))
+                    with col3:
+                        st.metric("Parser", last.get('parser_used', 'unknown'))
+                    if last.get('reconciliation'):
+                        recon = last['reconciliation']
+                        rc1, rc2 = st.columns(2)
+                        with rc1:
+                            st.metric("New Matches", recon.get('new_matches', 0))
+                        with rc2:
+                            st.metric("Global Coverage", f"{last.get('db_coverage_pct', 0):.1f}%")
 
         # Step 2: secondary upload (conditional on step 1)
         new_sid = st.session_state.get('new_session_id')
@@ -2365,9 +2392,10 @@ def results_page():
 
     # --- Upload CSV or PDF ---
     st.subheader("Import Results")
-    results_file = st.file_uploader(
-        "Upload results CSV or Equibase chart PDF",
+    results_files = st.file_uploader(
+        "Upload results CSV or Equibase chart PDF (multiple files supported)",
         type=["csv", "pdf"], key="results_file_uploader",
+        accept_multiple_files=True,
     )
 
     sel_session = st.selectbox(
@@ -2393,108 +2421,114 @@ def results_page():
         key="results_pgm_map",
     )
 
-    if results_file is not None and st.button("Import Results", type="primary", key="btn_import_results"):
-        with st.spinner("Importing results..."):
-            try:
-                fname = results_file.name.lower()
-                mime = "text/csv" if fname.endswith(".csv") else "application/pdf"
-                files = {"file": (results_file.name, results_file.getvalue(), mime)}
-                params = {}
-                if r_track:
-                    params["track"] = r_track
-                if r_date:
-                    params["date"] = r_date
-                if chosen_sid:
-                    params["session_id"] = chosen_sid
-                resp = requests.post(
-                    f"{API_BASE_URL}/results/upload",
-                    files=files, params=params, timeout=60,
+    if results_files and st.button("Import Results", type="primary", key="btn_import_results"):
+        _pending_review = None  # track first PDF needing review
+        imported_count = 0
+        for rf in results_files:
+            with st.spinner(f"Importing {rf.name}..."):
+                try:
+                    fname = rf.name.lower()
+                    mime = "text/csv" if fname.endswith(".csv") else "application/pdf"
+                    files_payload = {"file": (rf.name, rf.getvalue(), mime)}
+                    params = {}
+                    if r_track:
+                        params["track"] = r_track
+                    if r_date:
+                        params["date"] = r_date
+                    if chosen_sid:
+                        params["session_id"] = chosen_sid
+                    resp = requests.post(
+                        f"{API_BASE_URL}/results/upload",
+                        files=files_payload, params=params, timeout=60,
+                    )
+                    if resp.status_code == 200:
+                        res = resp.json()
+                        is_pdf = fname.endswith(".pdf")
+
+                        if is_pdf and res.get("needs_review") and _pending_review is None:
+                            _pending_review = (rf.name, res)
+                            st.info(f"{rf.name}: needs manual review (see below)")
+                        elif is_pdf and res.get("ingested"):
+                            _show_ingest_result(res, chosen_sid)
+                            imported_count += 1
+                        elif is_pdf and (res.get("sample_rows") or res.get("needs_review")):
+                            # High-confidence PDF preview
+                            conf = res.get("parse_confidence", 0)
+                            st.info(f"{rf.name}: PDF parsed (confidence {conf*100:.0f}%)")
+                            if not res.get("needs_review"):
+                                _show_ingest_result(res, chosen_sid)
+                                imported_count += 1
+                        elif not is_pdf:
+                            _show_ingest_result(res, chosen_sid)
+                            imported_count += 1
+                    else:
+                        st.error(f"{rf.name}: {resp.text}")
+                except requests.exceptions.ConnectionError:
+                    st.error("Cannot connect to API.")
+                except Exception as e:
+                    st.error(f"{rf.name}: {e}")
+
+        if imported_count > 0:
+            st.success(f"Imported {imported_count} file(s) successfully")
+
+        # Show review UI for the first PDF that needs manual review
+        if _pending_review:
+            review_name, res = _pending_review
+            conf = res.get("parse_confidence", 0)
+            conf_pct = conf * 100
+
+            st.divider()
+            st.warning(
+                f"**{review_name}** — Confidence {conf_pct:.0f}% is below the auto-import threshold. "
+                "Review and correct the data below, then click **Confirm & Import**."
+            )
+
+            # Preview
+            sample = res.get("sample_rows", [])
+            if sample:
+                display_cols = ["race_number", "program", "post", "horse_name",
+                                "finish_pos", "odds", "win_payoff", "surface"]
+                sdf = pd.DataFrame(sample)
+                show_cols = [c for c in display_cols if c in sdf.columns]
+                st.dataframe(sdf[show_cols], use_container_width=True, hide_index=True)
+
+            missing = res.get("missing_fields", [])
+            if missing:
+                with st.expander(f"Missing fields ({len(missing)})", expanded=True):
+                    for mf in missing:
+                        st.text(f"  - {mf}")
+
+            extracted = res.get("extracted_rows", [])
+            if extracted:
+                df = pd.DataFrame(extracted)
+                edited_df = st.data_editor(
+                    df, num_rows="dynamic", key="pdf_review_editor",
                 )
-                if resp.status_code == 200:
-                    res = resp.json()
-                    is_pdf = fname.endswith(".pdf")
 
-                    # --- PDF preview (always shown for PDFs) ---
-                    if is_pdf and (res.get("sample_rows") or res.get("needs_review")):
-                        conf = res.get("parse_confidence", 0)
-                        conf_pct = conf * 100
+                with st.expander("Raw extracted text", expanded=False):
+                    st.text(res.get("raw_text", "")[:5000])
 
-                        # Preview header
-                        st.info(
-                            f"**PDF Preview:** {res.get('preview_races', res.get('races', 0))} races, "
-                            f"{res.get('preview_entries', res.get('entries', 0))} entries"
-                            f"{', ' + str(res.get('preview_scratches', 0)) + ' scratched' if res.get('preview_scratches') else ''}"
-                            f"  \nConfidence: **{conf_pct:.0f}%**"
+                if st.button("Confirm & Import", type="primary", key="btn_confirm_pdf"):
+                    with st.spinner("Importing confirmed results..."):
+                        confirm_rows = edited_df.to_dict(orient="records")
+                        confirm_resp = requests.post(
+                            f"{API_BASE_URL}/results/confirm-pdf",
+                            json={
+                                "rows": confirm_rows,
+                                "track": res.get("track", r_track),
+                                "date": res.get("race_date", r_date),
+                                "session_id": chosen_sid,
+                                "program_map": pgm_map,
+                            },
+                            timeout=60,
                         )
-
-                        # Missing fields
-                        missing = res.get("missing_fields", [])
-                        if missing:
-                            with st.expander(f"Missing fields ({len(missing)})", expanded=True):
-                                for mf in missing:
-                                    st.text(f"  - {mf}")
-
-                        # Sample rows table
-                        import pandas as pd
-                        sample = res.get("sample_rows", [])
-                        if sample:
-                            display_cols = ["race_number", "program", "post", "horse_name",
-                                            "finish_pos", "odds", "win_payoff", "surface"]
-                            sdf = pd.DataFrame(sample)
-                            show_cols = [c for c in display_cols if c in sdf.columns]
-                            st.dataframe(sdf[show_cols], use_container_width=True, hide_index=True)
-
-                    if res.get("needs_review"):
-                        # --- Fallback mapping UI for low-confidence PDF ---
-                        st.warning(
-                            f"Confidence {conf_pct:.0f}% is below the auto-import threshold. "
-                            "Review and correct the data below, then click **Confirm & Import**."
-                        )
-
-                        extracted = res.get("extracted_rows", [])
-                        if extracted:
-                            import pandas as pd
-                            df = pd.DataFrame(extracted)
-                            edited_df = st.data_editor(
-                                df, num_rows="dynamic", key="pdf_review_editor",
-                            )
-
-                            with st.expander("Raw extracted text", expanded=False):
-                                st.text(res.get("raw_text", "")[:5000])
-
-                            if st.button("Confirm & Import", type="primary", key="btn_confirm_pdf"):
-                                with st.spinner("Importing confirmed results..."):
-                                    confirm_rows = edited_df.to_dict(orient="records")
-                                    confirm_resp = requests.post(
-                                        f"{API_BASE_URL}/results/confirm-pdf",
-                                        json={
-                                            "rows": confirm_rows,
-                                            "track": res.get("track", r_track),
-                                            "date": res.get("race_date", r_date),
-                                            "session_id": chosen_sid,
-                                            "program_map": pgm_map,
-                                        },
-                                        timeout=60,
-                                    )
-                                    if confirm_resp.status_code == 200:
-                                        cr = confirm_resp.json()
-                                        _show_ingest_result(cr, chosen_sid)
-                                    else:
-                                        st.error(f"Error: {confirm_resp.text}")
+                        if confirm_resp.status_code == 200:
+                            cr = confirm_resp.json()
+                            _show_ingest_result(cr, chosen_sid)
                         else:
-                            st.error("No data could be extracted from the PDF.")
-                    elif is_pdf and res.get("ingested"):
-                        # Auto-ingested high-confidence PDF
-                        _show_ingest_result(res, chosen_sid)
-                    elif not is_pdf:
-                        # CSV result
-                        _show_ingest_result(res, chosen_sid)
-                else:
-                    st.error(f"Error: {resp.text}")
-            except requests.exceptions.ConnectionError:
-                st.error("Cannot connect to API.")
-            except Exception as e:
-                st.error(f"Error: {e}")
+                            st.error(f"Error: {confirm_resp.text}")
+            else:
+                st.error("No data could be extracted from the PDF.")
 
     st.divider()
 
@@ -2696,6 +2730,181 @@ def results_page():
             st.info("No predictions saved yet. Run the engine on a session, then upload results.")
 
 
+def daily_wins_page():
+    st.header("Daily Best WIN Bets")
+    st.caption("Cross-track A-grade WIN bets ranked by edge, with Kelly sizing.")
+
+    # --- Date input ---
+    from datetime import date as _date
+    dw_date = st.date_input("Race Date", value=_date.today(), key="dw_date")
+    dw_date_str = dw_date.strftime("%m/%d/%Y") if dw_date else ""
+
+    # --- Settings ---
+    st.subheader("Settings")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        bankroll = st.number_input("Bankroll ($)", value=1000, min_value=100, step=100, key="dw_bankroll")
+        risk_profile = st.selectbox("Risk Profile", ["conservative", "standard", "aggressive"],
+                                    index=1, key="dw_risk_profile")
+    with c2:
+        max_day_pct = st.number_input("Max risk/day (%)", value=6.0, min_value=1.0, max_value=20.0,
+                                      step=1.0, key="dw_max_day")
+        min_confidence = st.number_input("Min confidence", value=0.65, min_value=0.0, max_value=1.0,
+                                         step=0.05, key="dw_min_conf")
+    with c3:
+        min_odds = st.number_input("Min odds (A-grade)", value=2.0, min_value=1.0, step=0.5, key="dw_min_odds")
+        max_bets = st.number_input("Max bets", value=10, min_value=5, max_value=15, step=1, key="dw_max_bets")
+
+    paper_mode = st.checkbox("Paper mode", value=True, key="dw_paper")
+
+    # --- Generate ---
+    if st.button("Generate Daily WIN Bets", type="primary", key="btn_daily_wins"):
+        if not dw_date_str:
+            st.warning("Select a race date.")
+        else:
+            with st.spinner("Building daily WIN bet plan across all tracks..."):
+                payload = {
+                    "race_date": dw_date_str,
+                    "bankroll": bankroll,
+                    "risk_profile": risk_profile,
+                    "max_risk_per_day_pct": max_day_pct,
+                    "min_confidence": min_confidence,
+                    "min_odds_a": min_odds,
+                    "paper_mode": paper_mode,
+                    "max_bets": max_bets,
+                    "save": True,
+                }
+                try:
+                    resp = requests.post(f"{API_BASE_URL}/bets/daily-wins", json=payload, timeout=30)
+                    if resp.status_code == 200:
+                        st.session_state["dw_last_result"] = resp.json()
+                        st.session_state["dw_last_date"] = dw_date_str
+                        plan_id = resp.json().get("plan_id", "?")
+                        st.success(f"Plan generated (plan_id={plan_id})")
+                    elif resp.status_code == 404:
+                        st.warning("No predictions found for this date. Run the engine on sessions first.")
+                    else:
+                        st.error(f"Error: {resp.text}")
+                except requests.exceptions.ConnectionError:
+                    st.error("Cannot connect to API. Is the backend running?")
+                except Exception as e:
+                    st.error(f"Error: {e}")
+
+    # --- Display results ---
+    result = st.session_state.get("dw_last_result")
+    if result:
+        candidates = result.get("candidates", [])
+        plan_id = result.get("plan_id")
+
+        st.divider()
+        st.subheader(f"Top {len(candidates)} WIN Bets")
+
+        # Summary metrics
+        w1, w2, w3, w4 = st.columns(4)
+        with w1:
+            st.metric("Total Risk", f"${result.get('total_risk', 0):.0f}")
+        with w2:
+            st.metric("Bets", len(candidates))
+        with w3:
+            tracks = result.get("tracks", [])
+            st.metric("Tracks", len(tracks))
+        with w4:
+            st.metric("Plan ID", plan_id or "N/A")
+
+        if not candidates:
+            st.info("No qualifying WIN bets found. Try relaxing min confidence or min odds.")
+        else:
+            # Candidates table
+            rows = []
+            for c in candidates:
+                rows.append({
+                    "Track": c.get("track", ""),
+                    "Race": c.get("race_number", ""),
+                    "Horse": c.get("horse_name", ""),
+                    "Cycle": c.get("projection_type", ""),
+                    "Conf": f"{c.get('confidence', 0):.0%}",
+                    "Odds": f"{c['odds_decimal']:.1f}-1" if c.get("odds_decimal") else "-",
+                    "Edge": f"{c.get('edge', 0):.1%}",
+                    "Stake": f"${c.get('stake', 0):.0f}",
+                    "Score": f"{c.get('best_bet_score', 0):.1f}",
+                })
+            st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+
+            # --- Export ---
+            st.divider()
+            st.subheader("Export")
+            ec1, ec2 = st.columns(2)
+
+            csv_header = "track,race,horse,cycle,confidence,odds,edge,stake,score"
+            csv_lines = [csv_header]
+            for c in candidates:
+                csv_lines.append(
+                    f"{c.get('track','')},{c.get('race_number','')},\"{c.get('horse_name','')}\","
+                    f"{c.get('projection_type','')},{c.get('confidence', 0):.2f},"
+                    f"{c.get('odds_decimal', '')},{c.get('edge', 0):.4f},"
+                    f"{c.get('stake', 0):.2f},{c.get('best_bet_score', 0):.1f}"
+                )
+            with ec1:
+                st.download_button("Download CSV", "\n".join(csv_lines),
+                                   "daily_wins.csv", "text/csv", key="dw_dl_csv")
+
+            text_lines = [f"=== DAILY WIN BETS ({st.session_state.get('dw_last_date', '')}) ==="]
+            for c in candidates:
+                odds_str = f"{c['odds_decimal']:.1f}-1" if c.get("odds_decimal") else "?"
+                text_lines.append(
+                    f"{c.get('track','')} R{c.get('race_number','')}: "
+                    f"{c.get('horse_name','')} @ {odds_str} — ${c.get('stake', 0):.0f}"
+                )
+            text_lines.append(f"\nTotal risk: ${result.get('total_risk', 0):.0f}")
+            with ec2:
+                st.download_button("Download Text", "\n".join(text_lines),
+                                   "daily_wins.txt", "text/plain", key="dw_dl_txt")
+
+        # --- Past plans ---
+        st.divider()
+        st.subheader("Past Daily Plans")
+        try:
+            plans_resp = requests.get(
+                f"{API_BASE_URL}/bets/plans", params={"date": dw_date_str}, timeout=10
+            )
+            if plans_resp.status_code == 200:
+                all_plans = plans_resp.json()
+                daily_plans = [p for p in all_plans if str(p.get("session_id", "")).startswith("daily_")]
+                if daily_plans:
+                    for dp in daily_plans:
+                        dp_id = dp.get("plan_id")
+                        dp_risk = dp.get("total_risk", 0)
+                        dp_mode = "Paper" if dp.get("paper_mode") else "Live"
+                        dp_created = dp.get("created_at", "")[:19]
+                        st.markdown(
+                            f"**Plan #{dp_id}** — Risk: ${dp_risk:.0f} | "
+                            f"Mode: {dp_mode} | Created: {dp_created}"
+                        )
+                        if st.button(f"Evaluate ROI (Plan #{dp_id})", key=f"dw_eval_{dp_id}"):
+                            try:
+                                eval_resp = requests.get(
+                                    f"{API_BASE_URL}/bets/evaluate/{dp_id}", timeout=15
+                                )
+                                if eval_resp.status_code == 200:
+                                    ev = eval_resp.json()
+                                    rc1, rc2, rc3 = st.columns(3)
+                                    with rc1:
+                                        st.metric("Wagered", f"${ev.get('total_wagered', 0):.0f}")
+                                    with rc2:
+                                        st.metric("Returned", f"${ev.get('total_returned', 0):.0f}")
+                                    with rc3:
+                                        roi = ev.get("roi_pct", 0)
+                                        st.metric("ROI", f"{roi:+.1f}%")
+                                else:
+                                    st.warning("No results linked yet. Upload results first.")
+                            except Exception:
+                                st.error("Could not evaluate plan.")
+                else:
+                    st.info("No daily plans found for this date.")
+        except Exception:
+            pass
+
+
 def bet_builder_page():
     st.header("Bet Builder")
     st.caption("Generate WIN + EXACTA tickets from engine predictions with Kelly sizing and bankroll guardrails.")
@@ -2783,6 +2992,21 @@ def bet_builder_page():
 
         settings = plan_data.get("settings", {})
         mode_label = "PAPER" if settings.get("paper_mode", True) else "LIVE"
+
+        # Live-mode guardrail: block if any race has poor figure quality
+        if not settings.get("paper_mode", True):
+            poor_races = [
+                rp for rp in plan_data.get("race_plans", [])
+                if rp.get("figure_quality_pct") is not None
+                and rp["figure_quality_pct"] < 0.80
+                and not rp.get("passed", False)
+            ]
+            if poor_races:
+                st.error(
+                    f"LIVE MODE BLOCKED: {len(poor_races)} race(s) have poor data quality "
+                    f"(< 80% figures). Switch to Paper mode or improve data before placing live bets."
+                )
+
         w1, w2, w3 = st.columns(3)
         with w1:
             st.metric("Total Risk", f"${plan_data['total_risk']:.0f}")
