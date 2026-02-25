@@ -15,6 +15,8 @@ from bet_builder import (
     day_plan_to_dict, day_plan_to_text, day_plan_to_csv,
     _estimate_win_prob, _risk_multiplier,
     _MAX_KELLY_FRACTION, _BET_BASE,
+    MultiRaceStrategy, build_multi_race_plan,
+    multi_race_plan_to_dict, multi_race_plan_to_text, multi_race_plan_to_csv,
 )
 
 
@@ -487,3 +489,101 @@ class TestDashboardSharedPipeline:
         p1 = day_plan_to_dict(build_day_plan(projs, settings))
         p2 = day_plan_to_dict(build_day_plan(projs, settings))
         assert p1 == p2
+
+
+class TestMultiRacePlan:
+    """Tests for Pick 3 / Pick 6 multi-race ticket builder."""
+
+    def test_pick3_combinations(self):
+        """Pick 3 with A(1) x B(3) x A(1) = 3 combos, cost $6."""
+        race_projs = {1: A_RACE, 2: B_RACE, 3: A_RACE}
+        strategy = MultiRaceStrategy(a_count=1, b_count=3, c_count=5)
+        plan = build_multi_race_plan(
+            race_projs, start_race=1, bet_type="PICK3",
+            budget=100, strategy=strategy, settings=BetSettings(),
+        )
+        assert len(plan.legs) == 3
+        assert plan.legs[0].grade == "A"
+        assert plan.legs[0].horse_count == 1
+        assert plan.legs[1].grade == "B"
+        assert plan.legs[1].horse_count == 3
+        assert plan.combinations == 1 * 3 * 1
+        assert plan.cost == 3 * 2.0  # $6
+        assert not plan.over_budget
+
+    def test_pick6_combinations(self):
+        """Pick 6 correct combo math — 6 A-legs with single horses."""
+        race_projs = {i: A_RACE for i in range(1, 7)}
+        strategy = MultiRaceStrategy(a_count=1, b_count=3, c_count=5)
+        plan = build_multi_race_plan(
+            race_projs, start_race=1, bet_type="PICK6",
+            budget=100, strategy=strategy, settings=BetSettings(),
+        )
+        assert len(plan.legs) == 6
+        assert plan.combinations == 1  # all A-legs with 1 horse each
+        assert plan.cost == 2.0
+
+    def test_max_one_c_leg(self):
+        """More than 1 C-leg triggers warning unless overridden."""
+        race_projs = {1: C_RACE_LOW_CONF, 2: C_RACE_LOW_CONF, 3: A_RACE}
+        strategy = MultiRaceStrategy(a_count=1, b_count=3, c_count=5)
+        plan = build_multi_race_plan(
+            race_projs, start_race=1, bet_type="PICK3",
+            budget=500, strategy=strategy, settings=BetSettings(),
+        )
+        assert plan.c_leg_count == 2
+        assert plan.c_leg_warning is True
+
+    def test_c_leg_override(self):
+        """Override suppresses c_leg_warning."""
+        race_projs = {1: C_RACE_LOW_CONF, 2: C_RACE_LOW_CONF, 3: A_RACE}
+        strategy = MultiRaceStrategy(a_count=1, b_count=3, c_count=5)
+        plan = build_multi_race_plan(
+            race_projs, start_race=1, bet_type="PICK3",
+            budget=500, strategy=strategy, settings=BetSettings(),
+            c_leg_override=True,
+        )
+        assert plan.c_leg_warning is False
+
+    def test_budget_cap_enforced(self):
+        """Over-budget flagged."""
+        race_projs = {1: A_RACE, 2: B_RACE, 3: B_RACE}
+        strategy = MultiRaceStrategy(a_count=1, b_count=3, c_count=5)
+        plan = build_multi_race_plan(
+            race_projs, start_race=1, bet_type="PICK3",
+            budget=5, strategy=strategy, settings=BetSettings(),
+        )
+        # 1 x 3 x 3 = 9 combos = $18 > $5
+        assert plan.over_budget is True
+
+    def test_figure_quality_blocks_leg(self):
+        """Low figure quality on a leg adds warning."""
+        race_projs = {1: A_RACE, 2: A_RACE, 3: A_RACE}
+        quality = {1: 0.50}  # 50% missing → 50% quality < 80% threshold
+        strategy = MultiRaceStrategy(a_count=1, b_count=3, c_count=5)
+        plan = build_multi_race_plan(
+            race_projs, start_race=1, bet_type="PICK3",
+            budget=100, strategy=strategy, settings=BetSettings(),
+            race_quality=quality,
+        )
+        assert any("quality" in w.lower() for w in plan.warnings)
+
+    def test_serialization(self):
+        """Multi-race plan serializes to dict, text, and csv."""
+        race_projs = {1: A_RACE, 2: B_RACE, 3: A_RACE}
+        strategy = MultiRaceStrategy(a_count=1, b_count=3, c_count=5)
+        plan = build_multi_race_plan(
+            race_projs, start_race=1, bet_type="PICK3",
+            budget=100, strategy=strategy, settings=BetSettings(),
+        )
+        d = multi_race_plan_to_dict(plan)
+        assert d["bet_type"] == "PICK3"
+        assert len(d["legs"]) == 3
+
+        txt = multi_race_plan_to_text(plan)
+        assert "PICK3" in txt
+        assert "Leg 1" in txt
+
+        csv = multi_race_plan_to_csv(plan)
+        lines = csv.strip().split("\n")
+        assert lines[0].startswith("leg,race")

@@ -811,3 +811,229 @@ def build_daily_wins(
         total_risk += c.stake
 
     return selected
+
+
+# ---------------------------------------------------------------------------
+# Multi-Race (Pick 3 / Pick 6)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class MultiRaceLeg:
+    """One leg of a Pick 3 or Pick 6 ticket."""
+    race_number: int
+    grade: str
+    grade_reasons: List[str]
+    horses: List[str]           # selected horse names
+    posts: List[str]            # corresponding posts
+    horse_count: int
+    top_confidence: float       # confidence of #1 pick
+    top_projection_type: str    # cycle of #1 pick
+    figure_quality_pct: Optional[float] = None
+
+
+@dataclass
+class MultiRaceStrategy:
+    """How many horses to use per grade."""
+    a_count: int = 1            # A-leg: single (1)
+    b_count: int = 3            # B-leg: 2-3 horses
+    c_count: int = 5            # C-leg: 4-6 horses
+
+
+@dataclass
+class MultiRacePlan:
+    """Complete Pick 3 or Pick 6 ticket plan."""
+    bet_type: str               # "PICK3" or "PICK6"
+    start_race: int
+    legs: List[MultiRaceLeg]
+    combinations: int           # product of horses per leg
+    cost: float                 # combinations × base_unit
+    budget: float               # user-set cap
+    over_budget: bool
+    c_leg_count: int            # number of C-grade legs
+    c_leg_warning: bool         # True if c_leg_count > 1 and not overridden
+    warnings: List[str]
+    settings: Dict[str, Any]
+
+
+def build_multi_race_plan(
+    race_projections: Dict[int, List[Dict[str, Any]]],
+    start_race: int,
+    bet_type: str,              # "PICK3" or "PICK6"
+    budget: float,
+    strategy: MultiRaceStrategy,
+    settings: BetSettings,
+    race_quality: Optional[Dict[int, float]] = None,
+    c_leg_override: bool = False,
+) -> MultiRacePlan:
+    """Build a Pick 3 or Pick 6 ticket from graded race projections.
+
+    Algorithm:
+    - For each leg, grade the race A/B/C
+    - A → strategy.a_count horses, B → strategy.b_count, C → strategy.c_count
+    - Select top N non-tossed horses by bias_score
+    - Flag >1 C-leg (unless overridden), over-budget, low quality
+    """
+    leg_count = 3 if bet_type == "PICK3" else 6
+    base_unit = _BET_BASE
+    race_quality = race_quality or {}
+
+    legs: List[MultiRaceLeg] = []
+    warnings: List[str] = []
+
+    for i in range(leg_count):
+        rn = start_race + i
+        projs = race_projections.get(rn)
+
+        if not projs:
+            warnings.append(f"R{rn}: no projections available")
+            legs.append(MultiRaceLeg(
+                race_number=rn, grade="C", grade_reasons=["no projections"],
+                horses=[], posts=[], horse_count=0,
+                top_confidence=0, top_projection_type="UNKNOWN",
+            ))
+            continue
+
+        quality = race_quality.get(rn)
+        figure_quality_pct = (1.0 - quality) if quality is not None else None
+        grade, reasons = grade_race(projs, settings, figure_quality_pct=figure_quality_pct)
+
+        # Determine horse count based on grade
+        if grade == "A":
+            n_horses = strategy.a_count
+        elif grade == "B":
+            n_horses = strategy.b_count
+        else:
+            n_horses = strategy.c_count
+
+        # Select top N non-tossed horses
+        ranked = sorted(projs, key=lambda p: p.get("bias_score", 0), reverse=True)
+        non_tossed = [p for p in ranked if not p.get("tossed", False)]
+        if not non_tossed:
+            non_tossed = ranked  # fallback: use all if all tossed
+        selected = non_tossed[:n_horses]
+
+        top = selected[0] if selected else ranked[0]
+
+        # Quality warning
+        if figure_quality_pct is not None and figure_quality_pct < settings.figure_quality_threshold:
+            warnings.append(f"R{rn}: figure quality {figure_quality_pct:.0%} below threshold")
+
+        legs.append(MultiRaceLeg(
+            race_number=rn,
+            grade=grade,
+            grade_reasons=reasons,
+            horses=[_horse_name(p) for p in selected],
+            posts=[str(p.get("post", "")) for p in selected],
+            horse_count=len(selected),
+            top_confidence=top.get("confidence", 0),
+            top_projection_type=top.get("projection_type", "UNKNOWN"),
+            figure_quality_pct=figure_quality_pct,
+        ))
+
+    c_leg_count = sum(1 for leg in legs if leg.grade == "C")
+    c_leg_warning = c_leg_count > 1 and not c_leg_override
+
+    if c_leg_warning:
+        warnings.append(f"More than 1 C-leg ({c_leg_count}) — consider revising or overriding")
+
+    # Compute combinations and cost
+    horse_counts = [max(leg.horse_count, 1) for leg in legs]
+    combinations = 1
+    for hc in horse_counts:
+        combinations *= hc
+    cost = combinations * base_unit
+
+    over_budget = cost > budget
+    if over_budget:
+        warnings.append(f"Cost ${cost:.0f} exceeds budget ${budget:.0f}")
+
+    return MultiRacePlan(
+        bet_type=bet_type,
+        start_race=start_race,
+        legs=legs,
+        combinations=combinations,
+        cost=cost,
+        budget=budget,
+        over_budget=over_budget,
+        c_leg_count=c_leg_count,
+        c_leg_warning=c_leg_warning,
+        warnings=warnings,
+        settings={
+            "a_count": strategy.a_count,
+            "b_count": strategy.b_count,
+            "c_count": strategy.c_count,
+            "budget": budget,
+            "c_leg_override": c_leg_override,
+        },
+    )
+
+
+def multi_race_plan_to_dict(plan: MultiRacePlan) -> Dict[str, Any]:
+    """Serialize a MultiRacePlan to a JSON-serializable dict."""
+    return {
+        "bet_type": plan.bet_type,
+        "start_race": plan.start_race,
+        "legs": [
+            {
+                "race_number": leg.race_number,
+                "grade": leg.grade,
+                "grade_reasons": leg.grade_reasons,
+                "horses": leg.horses,
+                "posts": leg.posts,
+                "horse_count": leg.horse_count,
+                "top_confidence": leg.top_confidence,
+                "top_projection_type": leg.top_projection_type,
+                "figure_quality_pct": leg.figure_quality_pct,
+            }
+            for leg in plan.legs
+        ],
+        "combinations": plan.combinations,
+        "cost": plan.cost,
+        "budget": plan.budget,
+        "over_budget": plan.over_budget,
+        "c_leg_count": plan.c_leg_count,
+        "c_leg_warning": plan.c_leg_warning,
+        "warnings": plan.warnings,
+        "settings": plan.settings,
+    }
+
+
+def multi_race_plan_to_text(plan: MultiRacePlan) -> str:
+    """Human-readable text summary of a multi-race plan."""
+    end_race = plan.start_race + len(plan.legs) - 1
+    lines = [
+        f"=== {plan.bet_type} (Races {plan.start_race}-{end_race}) ===",
+        f"Budget: ${plan.budget:.0f} | Cost: ${plan.cost:.0f} | Combos: {plan.combinations}",
+    ]
+    if plan.over_budget:
+        lines.append("*** OVER BUDGET ***")
+    if plan.c_leg_warning:
+        lines.append(f"*** WARNING: {plan.c_leg_count} C-legs ***")
+    lines.append("")
+
+    for i, leg in enumerate(plan.legs, 1):
+        horses_str = ", ".join(leg.horses) if leg.horses else "(none)"
+        tag = "single" if leg.horse_count == 1 else f"{leg.horse_count} horses"
+        lines.append(f"Leg {i} (R{leg.race_number}) Grade {leg.grade}: {horses_str} [{tag}]")
+        lines.append(f"  Top: {leg.top_projection_type} @ {leg.top_confidence:.0%}")
+
+    if plan.warnings:
+        lines.append("")
+        lines.append("Warnings:")
+        for w in plan.warnings:
+            lines.append(f"  - {w}")
+
+    return "\n".join(lines)
+
+
+def multi_race_plan_to_csv(plan: MultiRacePlan) -> str:
+    """CSV export of multi-race plan legs."""
+    lines = ["leg,race,grade,horses,horse_count,cost_contribution"]
+    base_unit = _BET_BASE
+    for i, leg in enumerate(plan.legs, 1):
+        horses_str = "; ".join(leg.horses) if leg.horses else ""
+        # Cost contribution: this leg's horse count as part of total
+        other_combos = plan.combinations // max(leg.horse_count, 1) if leg.horse_count > 0 else 0
+        cost_contrib = leg.horse_count * other_combos * base_unit if other_combos > 0 else 0
+        lines.append(f"{i},{leg.race_number},{leg.grade},\"{horses_str}\",{leg.horse_count},{cost_contrib:.0f}")
+    return "\n".join(lines)

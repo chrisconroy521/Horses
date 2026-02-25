@@ -575,6 +575,164 @@ def _render_best_bets_table(best_bets, odds_data, odds_by_post, key_prefix="eng"
             st.caption(p.summary)
 
 
+def _render_big_race_mode(key_prefix: str):
+    """Render Pick 3/Pick 6 builder UI."""
+    # Session selector
+    try:
+        sess_resp = requests.get(f"{API_BASE_URL}/races", timeout=15)
+        races = sess_resp.json().get("races", []) if sess_resp.ok else []
+    except Exception:
+        races = []
+
+    if not races:
+        st.info("No sessions available. Upload a PDF and run the engine first.")
+        return
+
+    def _mr_label(x):
+        name = x.get('primary_pdf_filename') or x.get('original_filename', 'unknown')
+        track = x.get('track') or x.get('track_name', '')
+        date = x.get('date') or x.get('race_date', '')
+        return f"{name} | {track} | {date}"
+
+    mr_sel = st.selectbox("Session:", options=races, format_func=_mr_label,
+                           key=f"mr_sess_{key_prefix}")
+    if not mr_sel:
+        return
+
+    mr_sid = mr_sel.get('session_id') or mr_sel.get('id')
+    mr_track = mr_sel.get('track') or mr_sel.get('track_name', '')
+    mr_date = mr_sel.get('date') or mr_sel.get('race_date', '')
+
+    # Settings row
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        bet_type = st.selectbox("Bet Type", ["Pick 3", "Pick 6"], key=f"mr_type_{key_prefix}")
+        start_race = st.number_input("Start Race", min_value=1, max_value=15,
+                                      value=1, step=1, key=f"mr_start_{key_prefix}")
+    with c2:
+        budget = st.number_input("Budget ($)", min_value=4, max_value=1000,
+                                  value=48, step=6, key=f"mr_budget_{key_prefix}")
+        c_leg_override = st.checkbox("Override C-leg limit", key=f"mr_c_override_{key_prefix}")
+    with c3:
+        a_count = st.slider("A-leg horses", 1, 3, 1, key=f"mr_a_{key_prefix}")
+        b_count = st.slider("B-leg horses", 2, 4, 3, key=f"mr_b_{key_prefix}")
+        c_count = st.slider("C-leg horses", 3, 6, 5, key=f"mr_c_{key_prefix}")
+
+    bt_code = "PICK3" if bet_type == "Pick 3" else "PICK6"
+
+    if st.button("Build Ticket", type="primary", key=f"mr_build_{key_prefix}"):
+        payload = {
+            "session_id": mr_sid,
+            "track": mr_track,
+            "race_date": mr_date,
+            "start_race": start_race,
+            "bet_type": bt_code,
+            "budget": budget,
+            "a_count": a_count,
+            "b_count": b_count,
+            "c_count": c_count,
+            "c_leg_override": c_leg_override,
+            "save": True,
+        }
+        try:
+            resp = requests.post(f"{API_BASE_URL}/bets/multi-race", json=payload, timeout=30)
+            if resp.ok:
+                st.session_state[f"mr_plan_{key_prefix}"] = resp.json()
+            elif resp.status_code == 404:
+                st.warning("No predictions found. Run the engine on this session first.")
+            else:
+                st.error(f"Error: {resp.text}")
+        except Exception as e:
+            st.error(f"Error: {e}")
+
+    # Display plan
+    plan_data = st.session_state.get(f"mr_plan_{key_prefix}")
+    if plan_data:
+        plan = plan_data.get("plan", {})
+        legs = plan.get("legs", [])
+        warnings = plan.get("warnings", [])
+
+        # Summary
+        sm1, sm2, sm3, sm4 = st.columns(4)
+        sm1.metric("Combinations", plan.get("combinations", 0))
+        sm2.metric("Cost", f"${plan.get('cost', 0):.0f}")
+        sm3.metric("Budget", f"${plan.get('budget', 0):.0f}")
+        sm4.metric("C-legs", plan.get("c_leg_count", 0))
+
+        if plan.get("over_budget"):
+            st.error("Over budget!")
+        if plan.get("c_leg_warning"):
+            st.warning(f"More than 1 C-leg ({plan.get('c_leg_count')}) — consider revising.")
+
+        if plan_data.get("plan_id"):
+            st.caption(f"Plan saved (ID {plan_data['plan_id']})")
+
+        # Ticket grid
+        if legs:
+            rows = []
+            for i, leg in enumerate(legs, 1):
+                rows.append({
+                    "Leg": i,
+                    "Race": leg.get("race_number", ""),
+                    "Grade": leg.get("grade", ""),
+                    "Horses": ", ".join(leg.get("horses", [])),
+                    "Count": leg.get("horse_count", 0),
+                    "Top Cycle": leg.get("top_projection_type", ""),
+                    "Top Conf": f"{leg.get('top_confidence', 0):.0%}",
+                })
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+        # Per-leg rationale
+        for i, leg in enumerate(legs, 1):
+            reasons = leg.get("grade_reasons", [])
+            if reasons:
+                st.caption(f"Leg {i} (R{leg.get('race_number')}) — {'; '.join(reasons)}")
+
+        # Warnings
+        if warnings:
+            with st.expander("Warnings", expanded=True):
+                for w in warnings:
+                    st.markdown(f"- {w}")
+
+        # Export buttons
+        from bet_builder import multi_race_plan_to_text, multi_race_plan_to_csv, MultiRacePlan, MultiRaceLeg
+        # Reconstruct plan object for text/csv export
+        plan_obj = MultiRacePlan(
+            bet_type=plan.get("bet_type", ""),
+            start_race=plan.get("start_race", 0),
+            legs=[
+                MultiRaceLeg(
+                    race_number=lg.get("race_number", 0),
+                    grade=lg.get("grade", "C"),
+                    grade_reasons=lg.get("grade_reasons", []),
+                    horses=lg.get("horses", []),
+                    posts=lg.get("posts", []),
+                    horse_count=lg.get("horse_count", 0),
+                    top_confidence=lg.get("top_confidence", 0),
+                    top_projection_type=lg.get("top_projection_type", ""),
+                    figure_quality_pct=lg.get("figure_quality_pct"),
+                ) for lg in legs
+            ],
+            combinations=plan.get("combinations", 0),
+            cost=plan.get("cost", 0),
+            budget=plan.get("budget", 0),
+            over_budget=plan.get("over_budget", False),
+            c_leg_count=plan.get("c_leg_count", 0),
+            c_leg_warning=plan.get("c_leg_warning", False),
+            warnings=warnings,
+            settings=plan.get("settings", {}),
+        )
+        ec1, ec2 = st.columns(2)
+        with ec1:
+            st.download_button("Export Text", multi_race_plan_to_text(plan_obj),
+                               f"{bt_code.lower()}_plan.txt", "text/plain",
+                               key=f"mr_export_txt_{key_prefix}")
+        with ec2:
+            st.download_button("Export CSV", multi_race_plan_to_csv(plan_obj),
+                               f"{bt_code.lower()}_plan.csv", "text/csv",
+                               key=f"mr_export_csv_{key_prefix}")
+
+
 def dashboard_page():
     st.header("Dashboard")
     st.caption("Unified workflow: upload \u2192 analyze \u2192 bet \u2192 evaluate.")
@@ -945,6 +1103,10 @@ def dashboard_page():
                         ):
                             for tl in ticket_lines:
                                 st.markdown(f"- {tl}")
+
+    # ===== Section D2: Big Race Mode =====
+    with st.expander("Big Race Mode (Pick 3 / Pick 6)", expanded=False):
+        _render_big_race_mode(key_prefix="dash")
 
     # ===== Section E: Results & ROI =====
     with st.expander("Results & ROI", expanded=False):
@@ -1642,6 +1804,13 @@ def engine_page():
                                      key="bb_relax_missing"):
                             st.session_state["bb_allow_missing"] = True
                             st.rerun()
+
+    # =====================================================================
+    # (D) Big Race Mode — Pick 3 / Pick 6
+    # =====================================================================
+    st.divider()
+    with st.expander("Big Race Mode (Pick 3 / Pick 6)", expanded=False):
+        _render_big_race_mode(key_prefix="eng")
 
 
 def upload_page():
