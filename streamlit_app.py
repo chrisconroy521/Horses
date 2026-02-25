@@ -325,6 +325,12 @@ def _persist_predictions(session_id, track, race_date, race_number, projections)
                     "new_top_setup": p.new_top_setup,
                     "bounce_risk": p.bounce_risk,
                     "tossed": p.tossed,
+                    "proj_mid": p.proj_mid,
+                    "spread": p.spread,
+                    "cycle_priority": p.cycle_priority,
+                    "sheets_rank": p.sheets_rank,
+                    "tie_break_used": p.tie_break_used,
+                    "explain": p.explain,
                 }
                 for p in projections
             ],
@@ -387,17 +393,22 @@ def _render_ranked_table(display_projections, race_horses, show_odds,
 
     rows = []
     for p in display_projections:
+        rank_str = f"{p.sheets_rank}" if hasattr(p, 'sheets_rank') and p.sheets_rank else ""
+        if hasattr(p, 'tie_break_used') and p.tie_break_used:
+            rank_str += "*"
         row = {
+            'Rank': rank_str,
             'Horse': p.name,
             'Post': p.post,
             'Style': p.style,
             'Cycle': p.projection_type,
             'Setup': '',
+            'Proj Mid': f"{p.proj_mid:.1f}" if hasattr(p, 'proj_mid') else '',
             'Proj Low': f"{p.projected_low:.1f}",
             'Proj High': f"{p.projected_high:.1f}",
             'Confidence': f"{p.confidence:.0%}",
             'Tags': ', '.join(p.tags) if p.tags else '-',
-            'Bias Score': f"{p.bias_score:.1f}",
+            'Tie-Break': f"{p.bias_score:.1f}",
             'Summary': p.summary,
         }
         if p.new_top_setup:
@@ -562,6 +573,20 @@ def _render_analysis_expanders(sorted_by_bias, audit, race_horses, key_prefix="e
         )
         st.plotly_chart(fig2, use_container_width=True)
 
+    # --- Ranking Explain ---
+    if sorted_by_bias and hasattr(sorted_by_bias[0], 'explain') and sorted_by_bias[0].explain:
+        with st.expander("Ranking Explain", expanded=False):
+            for p in sorted_by_bias:
+                rank_label = f"#{p.sheets_rank}" if hasattr(p, 'sheets_rank') else ""
+                tie_marker = " (tie-break)" if hasattr(p, 'tie_break_used') and p.tie_break_used else ""
+                st.markdown(f"**{rank_label} {p.name}**{tie_marker}")
+                if hasattr(p, 'explain') and p.explain:
+                    explain_rows = []
+                    for key, val in p.explain:
+                        explain_rows.append({"Factor": key, "Value": str(val)})
+                    st.dataframe(pd.DataFrame(explain_rows), use_container_width=True, hide_index=True)
+                st.markdown("---")
+
 
 def _render_best_bets_table(best_bets, odds_data, odds_by_post, key_prefix="eng"):
     """Render best bets table + top 3 cards."""
@@ -672,7 +697,7 @@ def _render_big_race_mode(key_prefix: str):
     # Settings row
     c1, c2, c3 = st.columns(3)
     with c1:
-        bet_type = st.selectbox("Bet Type", ["Pick 3", "Pick 6"], key=f"mr_type_{key_prefix}")
+        bet_type = st.selectbox("Bet Type", ["Daily Double", "Pick 3", "Pick 6"], key=f"mr_type_{key_prefix}")
         start_race = st.number_input("Start Race", min_value=1, max_value=15,
                                       value=1, step=1, key=f"mr_start_{key_prefix}")
     with c2:
@@ -684,7 +709,8 @@ def _render_big_race_mode(key_prefix: str):
         b_count = st.slider("B-leg horses", 2, 4, 3, key=f"mr_b_{key_prefix}")
         c_count = st.slider("C-leg horses", 3, 6, 5, key=f"mr_c_{key_prefix}")
 
-    bt_code = "PICK3" if bet_type == "Pick 3" else "PICK6"
+    is_dd = bet_type == "Daily Double"
+    bt_code = "DAILY_DOUBLE" if is_dd else ("PICK3" if bet_type == "Pick 3" else "PICK6")
 
     if st.button("Build Ticket", type="primary", key=f"mr_build_{key_prefix}"):
         payload = {
@@ -692,16 +718,18 @@ def _render_big_race_mode(key_prefix: str):
             "track": mr_track,
             "race_date": mr_date,
             "start_race": start_race,
-            "bet_type": bt_code,
             "budget": budget,
             "a_count": a_count,
             "b_count": b_count,
             "c_count": c_count,
-            "c_leg_override": c_leg_override,
             "save": True,
         }
+        if not is_dd:
+            payload["bet_type"] = bt_code
+            payload["c_leg_override"] = c_leg_override
+        api_url = "/bets/daily-double" if is_dd else "/bets/multi-race"
         try:
-            resp = api_post(f"/bets/multi-race", json=payload, timeout=30)
+            resp = api_post(api_url, json=payload, timeout=30)
             if resp.ok:
                 st.session_state[f"mr_plan_{key_prefix}"] = resp.json()
             elif resp.status_code == 404:
@@ -715,88 +743,141 @@ def _render_big_race_mode(key_prefix: str):
     plan_data = st.session_state.get(f"mr_plan_{key_prefix}")
     if plan_data:
         plan = plan_data.get("plan", {})
-        legs = plan.get("legs", [])
         warnings = plan.get("warnings", [])
-
-        # Summary
-        sm1, sm2, sm3, sm4 = st.columns(4)
-        sm1.metric("Combinations", plan.get("combinations", 0))
-        sm2.metric("Cost", f"${plan.get('cost', 0):.0f}")
-        sm3.metric("Budget", f"${plan.get('budget', 0):.0f}")
-        sm4.metric("C-legs", plan.get("c_leg_count", 0))
-
-        if plan.get("over_budget"):
-            st.error("Over budget!")
-        if plan.get("c_leg_warning"):
-            st.warning(f"More than 1 C-leg ({plan.get('c_leg_count')}) — consider revising.")
+        is_dd_plan = plan.get("bet_type") == "DAILY_DOUBLE"
 
         if plan_data.get("plan_id"):
             st.caption(f"Plan saved (ID {plan_data['plan_id']})")
 
-        # Ticket grid
-        if legs:
-            rows = []
-            for i, leg in enumerate(legs, 1):
-                rows.append({
-                    "Leg": i,
-                    "Race": leg.get("race_number", ""),
-                    "Grade": leg.get("grade", ""),
-                    "Horses": ", ".join(leg.get("horses", [])),
-                    "Count": leg.get("horse_count", 0),
-                    "Top Cycle": leg.get("top_projection_type", ""),
-                    "Top Conf": f"{leg.get('top_confidence', 0):.0%}",
-                })
-            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        if is_dd_plan:
+            # --- Daily Double display ---
+            if plan.get("passed"):
+                st.warning(f"PASS — {plan.get('pass_reason', 'No reason given')}")
+            else:
+                r2 = plan.get("start_race", 0) + 1
+                sm1, sm2, sm3 = st.columns(3)
+                sm1.metric("Leg 1 Grade", plan.get("leg1_grade", "?"))
+                sm2.metric("Leg 2 Grade", plan.get("leg2_grade", "?"))
+                sm3.metric("Total Cost", f"${plan.get('total_cost', 0):.0f}")
 
-        # Per-leg rationale
-        for i, leg in enumerate(legs, 1):
-            reasons = leg.get("grade_reasons", [])
-            if reasons:
-                st.caption(f"Leg {i} (R{leg.get('race_number')}) — {'; '.join(reasons)}")
+                tickets = plan.get("tickets", [])
+                if tickets:
+                    rows = []
+                    for i, t in enumerate(tickets, 1):
+                        rows.append({
+                            "#": i,
+                            f"Leg 1 (R{plan.get('start_race', '?')})": ", ".join(t.get("leg1", [])),
+                            f"Leg 2 (R{r2})": ", ".join(t.get("leg2", [])),
+                            "Cost": f"${t.get('cost', 0):.0f}",
+                            "Reason": t.get("reason", ""),
+                        })
+                    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
-        # Warnings
-        if warnings:
-            with st.expander("Warnings", expanded=True):
-                for w in warnings:
-                    st.markdown(f"- {w}")
+            if warnings:
+                with st.expander("Warnings", expanded=True):
+                    for w in warnings:
+                        st.markdown(f"- {w}")
 
-        # Export buttons
-        from bet_builder import multi_race_plan_to_text, multi_race_plan_to_csv, MultiRacePlan, MultiRaceLeg
-        # Reconstruct plan object for text/csv export
-        plan_obj = MultiRacePlan(
-            bet_type=plan.get("bet_type", ""),
-            start_race=plan.get("start_race", 0),
-            legs=[
-                MultiRaceLeg(
-                    race_number=lg.get("race_number", 0),
-                    grade=lg.get("grade", "C"),
-                    grade_reasons=lg.get("grade_reasons", []),
-                    horses=lg.get("horses", []),
-                    posts=lg.get("posts", []),
-                    horse_count=lg.get("horse_count", 0),
-                    top_confidence=lg.get("top_confidence", 0),
-                    top_projection_type=lg.get("top_projection_type", ""),
-                    figure_quality_pct=lg.get("figure_quality_pct"),
-                ) for lg in legs
-            ],
-            combinations=plan.get("combinations", 0),
-            cost=plan.get("cost", 0),
-            budget=plan.get("budget", 0),
-            over_budget=plan.get("over_budget", False),
-            c_leg_count=plan.get("c_leg_count", 0),
-            c_leg_warning=plan.get("c_leg_warning", False),
-            warnings=warnings,
-            settings=plan.get("settings", {}),
-        )
-        ec1, ec2 = st.columns(2)
-        with ec1:
-            st.download_button("Export Text", multi_race_plan_to_text(plan_obj),
-                               f"{bt_code.lower()}_plan.txt", "text/plain",
+            # Export
+            from bet_builder import daily_double_plan_to_text, DailyDoublePlan, DailyDoubleTicket
+            plan_obj = DailyDoublePlan(
+                bet_type=plan.get("bet_type", "DAILY_DOUBLE"),
+                start_race=plan.get("start_race", 0),
+                tickets=[
+                    DailyDoubleTicket(
+                        base=t.get("base", 2),
+                        leg1=t.get("leg1", []),
+                        leg2=t.get("leg2", []),
+                        cost=t.get("cost", 0),
+                        reason=t.get("reason", ""),
+                    ) for t in plan.get("tickets", [])
+                ],
+                total_cost=plan.get("total_cost", 0),
+                passed=plan.get("passed", False),
+                pass_reason=plan.get("pass_reason", ""),
+                warnings=warnings,
+                leg1_grade=plan.get("leg1_grade", ""),
+                leg2_grade=plan.get("leg2_grade", ""),
+                settings=plan.get("settings", {}),
+            )
+            st.download_button("Export Text", daily_double_plan_to_text(plan_obj),
+                               "daily_double_plan.txt", "text/plain",
                                key=f"mr_export_txt_{key_prefix}")
-        with ec2:
-            st.download_button("Export CSV", multi_race_plan_to_csv(plan_obj),
-                               f"{bt_code.lower()}_plan.csv", "text/csv",
-                               key=f"mr_export_csv_{key_prefix}")
+
+        else:
+            # --- Pick 3 / Pick 6 display ---
+            legs = plan.get("legs", [])
+
+            sm1, sm2, sm3, sm4 = st.columns(4)
+            sm1.metric("Combinations", plan.get("combinations", 0))
+            sm2.metric("Cost", f"${plan.get('cost', 0):.0f}")
+            sm3.metric("Budget", f"${plan.get('budget', 0):.0f}")
+            sm4.metric("C-legs", plan.get("c_leg_count", 0))
+
+            if plan.get("over_budget"):
+                st.error("Over budget!")
+            if plan.get("c_leg_warning"):
+                st.warning(f"More than 1 C-leg ({plan.get('c_leg_count')}) — consider revising.")
+
+            if legs:
+                rows = []
+                for i, leg in enumerate(legs, 1):
+                    rows.append({
+                        "Leg": i,
+                        "Race": leg.get("race_number", ""),
+                        "Grade": leg.get("grade", ""),
+                        "Horses": ", ".join(leg.get("horses", [])),
+                        "Count": leg.get("horse_count", 0),
+                        "Top Cycle": leg.get("top_projection_type", ""),
+                        "Top Conf": f"{leg.get('top_confidence', 0):.0%}",
+                    })
+                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+            for i, leg in enumerate(legs, 1):
+                reasons = leg.get("grade_reasons", [])
+                if reasons:
+                    st.caption(f"Leg {i} (R{leg.get('race_number')}) — {'; '.join(reasons)}")
+
+            if warnings:
+                with st.expander("Warnings", expanded=True):
+                    for w in warnings:
+                        st.markdown(f"- {w}")
+
+            from bet_builder import multi_race_plan_to_text, multi_race_plan_to_csv, MultiRacePlan, MultiRaceLeg
+            plan_obj = MultiRacePlan(
+                bet_type=plan.get("bet_type", ""),
+                start_race=plan.get("start_race", 0),
+                legs=[
+                    MultiRaceLeg(
+                        race_number=lg.get("race_number", 0),
+                        grade=lg.get("grade", "C"),
+                        grade_reasons=lg.get("grade_reasons", []),
+                        horses=lg.get("horses", []),
+                        posts=lg.get("posts", []),
+                        horse_count=lg.get("horse_count", 0),
+                        top_confidence=lg.get("top_confidence", 0),
+                        top_projection_type=lg.get("top_projection_type", ""),
+                        figure_quality_pct=lg.get("figure_quality_pct"),
+                    ) for lg in legs
+                ],
+                combinations=plan.get("combinations", 0),
+                cost=plan.get("cost", 0),
+                budget=plan.get("budget", 0),
+                over_budget=plan.get("over_budget", False),
+                c_leg_count=plan.get("c_leg_count", 0),
+                c_leg_warning=plan.get("c_leg_warning", False),
+                warnings=warnings,
+                settings=plan.get("settings", {}),
+            )
+            ec1, ec2 = st.columns(2)
+            with ec1:
+                st.download_button("Export Text", multi_race_plan_to_text(plan_obj),
+                                   f"{bt_code.lower()}_plan.txt", "text/plain",
+                                   key=f"mr_export_txt_{key_prefix}")
+            with ec2:
+                st.download_button("Export CSV", multi_race_plan_to_csv(plan_obj),
+                                   f"{bt_code.lower()}_plan.csv", "text/csv",
+                                   key=f"mr_export_csv_{key_prefix}")
 
 
 def dashboard_page():

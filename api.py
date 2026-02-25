@@ -22,6 +22,7 @@ from bet_builder import (
     BetSettings, build_day_plan, day_plan_to_dict, day_plan_to_text, day_plan_to_csv,
     build_daily_wins, DailyWinCandidate,
     MultiRaceStrategy, build_multi_race_plan, multi_race_plan_to_dict,
+    build_daily_double_plan, daily_double_plan_to_dict,
 )
 import hashlib
 import subprocess as _subprocess
@@ -1680,6 +1681,84 @@ async def build_multi_race(payload: dict):
             total_risk=plan.cost, paper_mode=True,
             engine_version=_ENGINE_VERSION,
             plan_type="multi_race",
+        )
+        result["plan_id"] = plan_id
+
+    return result
+
+
+@app.post("/bets/daily-double")
+async def build_daily_double(payload: dict):
+    """Build a Daily Double ticket for two consecutive races.
+
+    Body: {session_id, track, race_date, start_race,
+           budget, a_count?, b_count?, c_count?, save?}
+    """
+    sid = payload.get("session_id", "")
+    track = payload.get("track", "")
+    race_date = payload.get("race_date", "")
+    if not sid or not track or not race_date:
+        raise HTTPException(status_code=400, detail="session_id, track, race_date required")
+
+    start_race = int(payload.get("start_race", 1))
+    budget = float(payload.get("budget", 24))
+    strategy = MultiRaceStrategy(
+        a_count=int(payload.get("a_count", 1)),
+        b_count=int(payload.get("b_count", 3)),
+        c_count=int(payload.get("c_count", 5)),
+    )
+    settings = BetSettings(
+        bankroll=float(payload.get("bankroll", 1000)),
+        min_confidence=float(payload.get("min_confidence", 0)),
+    )
+
+    # Load predictions
+    preds = _db.get_predictions_vs_results(track=track, race_date=race_date, session_id=sid)
+    if not preds:
+        raise HTTPException(status_code=404, detail="No predictions found for this card")
+
+    # Inject ML odds
+    ml_snaps = _db.get_odds_snapshots_full(track=track, race_date=race_date, source='morning_line')
+    ml_by_name: Dict[tuple, dict] = {}
+    for snap in ml_snaps:
+        key = (snap["race_number"], snap["normalized_name"])
+        ml_by_name[key] = snap
+    for p in preds:
+        if p.get('odds') is None:
+            key = (p.get('race_number', 0), _db._normalize_name(p.get('horse_name', '')))
+            snap = ml_by_name.get(key)
+            if snap and snap.get('odds_decimal') is not None:
+                p['odds'] = snap['odds_decimal']
+                p['odds_raw'] = snap.get('odds_raw', '')
+
+    # Group by race_number
+    race_projections: Dict[int, list] = {}
+    for p in preds:
+        rn = p.get("race_number", 0)
+        race_projections.setdefault(rn, []).append(p)
+
+    # Compute figure quality per race
+    race_quality: Dict[int, float] = {}
+    for rn, projs in race_projections.items():
+        non_tossed = [p for p in projs if not p.get("tossed", False)]
+        with_figs = sum(1 for p in non_tossed if p.get("bias_score", 0) != 0)
+        race_quality[rn] = with_figs / len(non_tossed) if non_tossed else 0.0
+
+    plan = build_daily_double_plan(
+        race_projections, start_race, budget, settings, strategy,
+        race_quality=race_quality,
+    )
+    plan_dict = daily_double_plan_to_dict(plan)
+
+    result: Dict[str, Any] = {"plan": plan_dict}
+
+    if payload.get("save", False):
+        plan_id = _db.save_bet_plan(
+            session_id=sid, track=track, race_date=race_date,
+            settings_dict=plan.settings, plan_dict=plan_dict,
+            total_risk=plan.total_cost, paper_mode=True,
+            engine_version=_ENGINE_VERSION,
+            plan_type="daily_double",
         )
         result["plan_id"] = plan_id
 

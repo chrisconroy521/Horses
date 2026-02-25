@@ -38,6 +38,17 @@ DEV_BIG_JUMP = 3.0         # improvement threshold that triggers bounce risk fla
 DEV_UPGRADE_BONUS = 3.0    # raw_score bonus for strong development
 DEV_DOWNGRADE_PENALTY = 2.0  # raw_score penalty for stalled/declining development
 
+# --- Sheets-first cycle priority (higher = better cycle) ---
+CYCLE_PRIORITY = {
+    "PAIRED": 6,            # includes PAIRED_TOP (same projection_type)
+    "REBOUND": 4,
+    "IMPROVING": 3,
+    "NEUTRAL": 2,
+    "TAIL_OFF": 1,
+    "NEW_TOP_BOUNCE": 0,    # risk flag, never treated as positive
+}
+TIE_WINDOW = 1.5            # proj_mid gap within which bias_score breaks ties
+
 
 @dataclass
 class FigureEntry:
@@ -100,6 +111,12 @@ class HorseProjection:
     toss_reasons: List[str] = field(default_factory=list)
     dev_pattern: str = ""           # STRONG_DEV, STALLED, DECLINING, BIG_JUMP, ""
     dev_explanation: str = ""
+    proj_mid: float = 0.0
+    spread: float = 0.0
+    cycle_priority: int = 2
+    sheets_rank: int = 0            # 1-based position in sheets-first order
+    tie_break_used: bool = False
+    explain: List[tuple] = field(default_factory=list)
 
 
 @dataclass
@@ -139,7 +156,57 @@ class HandicappingEngine:
             projection.toss_reasons = toss_reasons
             results.append(projection)
 
-        results.sort(key=lambda hp: hp.bias_score, reverse=True)
+        # ==============================================================
+        # Sheets-first ranking: cycle_priority → proj_mid → confidence
+        # Bias/style only breaks ties within TIE_WINDOW.
+        # ==============================================================
+        results = self._sheets_first_sort(results)
+        return results
+
+    @staticmethod
+    def _sheets_first_sort(results: List["HorseProjection"]) -> List["HorseProjection"]:
+        """Sort by cycle_priority DESC, raw_score DESC (normalized), confidence DESC.
+
+        Then apply tie-break pass: within TIE_WINDOW of proj_mid AND same
+        cycle_priority, reorder by bias_score DESC.
+        """
+        if not results:
+            return results
+
+        # Primary sort: sheets-first (raw_score already normalizes direction)
+        results.sort(key=lambda hp: (-hp.cycle_priority, -hp.raw_score, -hp.confidence))
+
+        # Assign initial sheets_rank
+        for i, hp in enumerate(results):
+            hp.sheets_rank = i + 1
+
+        # Tie-break pass: bubble-swap adjacent horses within tie window
+        changed = True
+        while changed:
+            changed = False
+            for i in range(len(results) - 1):
+                a, b = results[i], results[i + 1]
+                if (a.cycle_priority == b.cycle_priority
+                        and abs(a.proj_mid - b.proj_mid) <= TIE_WINDOW
+                        and b.bias_score > a.bias_score):
+                    results[i], results[i + 1] = b, a
+                    a.tie_break_used = True
+                    b.tie_break_used = True
+                    changed = True
+
+        # Reassign final sheets_rank and build explain
+        for i, hp in enumerate(results):
+            hp.sheets_rank = i + 1
+            hp.explain = [
+                ("cycle_priority", hp.cycle_priority),
+                ("proj_mid", round(hp.proj_mid, 1)),
+                ("confidence", hp.confidence),
+                ("tie_break_used", hp.tie_break_used),
+                ("bias_score", round(hp.bias_score, 1)),
+                ("sheets_rank", hp.sheets_rank),
+                ("notes", list(hp.tags)),
+            ]
+
         return results
 
     def analyze_race_with_audit(
@@ -490,6 +557,9 @@ class HandicappingEngine:
             bounce_risk=bounce_risk,
             dev_pattern=dev_pattern,
             dev_explanation=dev_expl,
+            proj_mid=(projected_low + projected_high) / 2,
+            spread=projected_high - projected_low,
+            cycle_priority=CYCLE_PRIORITY.get(projection_type, 2),
         )
 
     # ------------------------------------------------------------------

@@ -894,7 +894,7 @@ def build_multi_race_plan(
             continue
 
         quality = race_quality.get(rn)
-        figure_quality_pct = (1.0 - quality) if quality is not None else None
+        figure_quality_pct = quality if quality is not None else None
         grade, reasons = grade_race(projs, settings, figure_quality_pct=figure_quality_pct)
 
         # Determine horse count based on grade
@@ -1036,4 +1036,282 @@ def multi_race_plan_to_csv(plan: MultiRacePlan) -> str:
         other_combos = plan.combinations // max(leg.horse_count, 1) if leg.horse_count > 0 else 0
         cost_contrib = leg.horse_count * other_combos * base_unit if other_combos > 0 else 0
         lines.append(f"{i},{leg.race_number},{leg.grade},\"{horses_str}\",{leg.horse_count},{cost_contrib:.0f}")
+    return "\n".join(lines)
+
+
+# ======================================================================
+# Daily Double planner
+# ======================================================================
+
+@dataclass
+class DailyDoubleTicket:
+    """One ticket within a Daily Double plan."""
+    base: float
+    leg1: List[str]
+    leg2: List[str]
+    cost: float
+    reason: str
+
+
+@dataclass
+class DailyDoublePlan:
+    """Complete Daily Double plan for two consecutive races."""
+    bet_type: str = "DAILY_DOUBLE"
+    start_race: int = 0
+    tickets: List[DailyDoubleTicket] = field(default_factory=list)
+    total_cost: float = 0.0
+    passed: bool = False
+    pass_reason: str = ""
+    warnings: List[str] = field(default_factory=list)
+    leg1_grade: str = ""
+    leg2_grade: str = ""
+    settings: Dict[str, Any] = field(default_factory=dict)
+
+
+def _tier_horses(
+    projs: List[Dict[str, Any]],
+    settings: BetSettings,
+    strategy: MultiRaceStrategy,
+    figure_quality_pct: Optional[float],
+) -> tuple:
+    """Assign horses to A/B/C tiers using sheets-first rank.
+
+    Returns (a_horses, b_horses, c_horses, grade, is_chaos, has_single).
+    """
+    # Sort by sheets-first rank (cycle_priority desc, then raw_score desc)
+    ranked = sorted(
+        projs,
+        key=lambda p: (-p.get("cycle_priority", 2), -p.get("raw_score", 0), -p.get("confidence", 0)),
+    )
+    non_tossed = [p for p in ranked if not p.get("tossed", False)]
+    if not non_tossed:
+        non_tossed = ranked
+
+    # Exclude NEW_TOP_BOUNCE from A tier unless no alternatives
+    clean = [p for p in non_tossed if p.get("projection_type") != "NEW_TOP_BOUNCE"]
+    a_pool = clean if clean else non_tossed
+
+    a_count = min(strategy.a_count, len(a_pool))
+    a_horses = [_horse_name(p) for p in a_pool[:a_count]]
+
+    # B = next horses after A
+    remaining = [p for p in non_tossed if _horse_name(p) not in a_horses]
+    b_count = min(strategy.b_count, len(remaining))
+    b_horses = [_horse_name(p) for p in remaining[:b_count]]
+
+    # C = only in chaos conditions
+    is_chaos = False
+    low_quality = figure_quality_pct is not None and figure_quality_pct < settings.figure_quality_threshold
+    if low_quality:
+        is_chaos = True
+    c_remaining = [p for p in non_tossed if _horse_name(p) not in a_horses and _horse_name(p) not in b_horses]
+    c_cap = min(2, strategy.c_count, len(c_remaining))
+    c_horses = [_horse_name(p) for p in c_remaining[:c_cap]] if is_chaos else []
+
+    # Grade the leg
+    grade, _ = grade_race(projs, settings, figure_quality_pct=figure_quality_pct)
+
+    # TRUE SINGLE detection
+    top = a_pool[0] if a_pool else non_tossed[0]
+    has_single = (
+        top.get("cycle_priority", 0) >= 5
+        and top.get("confidence", 0) >= 0.65
+        and not top.get("bounce_risk", False)
+    )
+
+    return a_horses, b_horses, c_horses, grade, is_chaos, has_single
+
+
+def build_daily_double_plan(
+    race_projections: Dict[int, List[Dict[str, Any]]],
+    start_race: int,
+    budget: float,
+    settings: BetSettings,
+    strategy: MultiRaceStrategy,
+    race_quality: Optional[Dict[int, float]] = None,
+) -> DailyDoublePlan:
+    """Build a Daily Double ticket for two consecutive races.
+
+    Uses A/B/C tier system, TRUE SINGLE detection, and PASS rules.
+    """
+    race_quality = race_quality or {}
+    warnings: List[str] = []
+    base = _BET_BASE
+
+    r1, r2 = start_race, start_race + 1
+    projs1 = race_projections.get(r1, [])
+    projs2 = race_projections.get(r2, [])
+
+    if not projs1 or not projs2:
+        missing = []
+        if not projs1:
+            missing.append(f"R{r1}")
+        if not projs2:
+            missing.append(f"R{r2}")
+        return DailyDoublePlan(
+            start_race=start_race, passed=True,
+            pass_reason=f"No projections for {', '.join(missing)}",
+            warnings=[f"Missing projections: {', '.join(missing)}"],
+        )
+
+    q1 = race_quality.get(r1)
+    q2 = race_quality.get(r2)
+
+    a1, b1, c1, g1, chaos1, single1 = _tier_horses(projs1, settings, strategy, q1)
+    a2, b2, c2, g2, chaos2, single2 = _tier_horses(projs2, settings, strategy, q2)
+
+    # --- PASS checks ---
+    if g1 == "C" and g2 == "C":
+        return DailyDoublePlan(
+            start_race=start_race, passed=True,
+            pass_reason="Both legs are C-grade races",
+            leg1_grade=g1, leg2_grade=g2,
+        )
+
+    low_q1 = q1 is not None and q1 < settings.figure_quality_threshold
+    low_q2 = q2 is not None and q2 < settings.figure_quality_threshold
+    if low_q1 and low_q2:
+        return DailyDoublePlan(
+            start_race=start_race, passed=True,
+            pass_reason="Both legs have poor figure quality",
+            leg1_grade=g1, leg2_grade=g2,
+        )
+
+    # Both legs dominated by bounce risk
+    top1_bounce = projs1 and sorted(projs1, key=lambda p: -p.get("cycle_priority", 0))[0].get("projection_type") == "NEW_TOP_BOUNCE"
+    top2_bounce = projs2 and sorted(projs2, key=lambda p: -p.get("cycle_priority", 0))[0].get("projection_type") == "NEW_TOP_BOUNCE"
+    clean1 = [p for p in projs1 if p.get("projection_type") != "NEW_TOP_BOUNCE" and not p.get("tossed", False)]
+    clean2 = [p for p in projs2 if p.get("projection_type") != "NEW_TOP_BOUNCE" and not p.get("tossed", False)]
+    if top1_bounce and not clean1 and top2_bounce and not clean2:
+        return DailyDoublePlan(
+            start_race=start_race, passed=True,
+            pass_reason="Both legs dominated by bounce risk with no clean alternatives",
+            leg1_grade=g1, leg2_grade=g2,
+        )
+
+    # --- Ticket construction ---
+    tickets: List[DailyDoubleTicket] = []
+
+    if single1:
+        # Single x (A+B) of leg2
+        leg2_all = a2 + b2
+        if leg2_all:
+            cost = len(leg2_all) * base
+            tickets.append(DailyDoubleTicket(
+                base=base, leg1=a1[:1], leg2=leg2_all,
+                cost=cost, reason=f"TRUE SINGLE R{r1} x A+B R{r2}",
+            ))
+    elif single2:
+        # (A+B) of leg1 x Single
+        leg1_all = a1 + b1
+        if leg1_all:
+            cost = len(leg1_all) * base
+            tickets.append(DailyDoubleTicket(
+                base=base, leg1=leg1_all, leg2=a2[:1],
+                cost=cost, reason=f"A+B R{r1} x TRUE SINGLE R{r2}",
+            ))
+    else:
+        # A x A
+        if a1 and a2:
+            cost = len(a1) * len(a2) * base
+            tickets.append(DailyDoubleTicket(
+                base=base, leg1=a1, leg2=a2,
+                cost=cost, reason="A x A",
+            ))
+        # A x B
+        if a1 and b2:
+            cost = len(a1) * len(b2) * base
+            tickets.append(DailyDoubleTicket(
+                base=base, leg1=a1, leg2=b2,
+                cost=cost, reason="A x B",
+            ))
+        # B x A
+        if b1 and a2:
+            cost = len(b1) * len(a2) * base
+            tickets.append(DailyDoubleTicket(
+                base=base, leg1=b1, leg2=a2,
+                cost=cost, reason="B x A",
+            ))
+
+    # Chaos containment: A x C in chaos leg only
+    if chaos1 and c1 and a2:
+        cost = len(c1) * len(a2) * base
+        tickets.append(DailyDoubleTicket(
+            base=base, leg1=c1, leg2=a2,
+            cost=cost, reason=f"Chaos R{r1}: C x A",
+        ))
+        warnings.append(f"R{r1} is chaos — added C-tier coverage")
+    if chaos2 and a1 and c2:
+        cost = len(a1) * len(c2) * base
+        tickets.append(DailyDoubleTicket(
+            base=base, leg1=a1, leg2=c2,
+            cost=cost, reason=f"Chaos R{r2}: A x C",
+        ))
+        warnings.append(f"R{r2} is chaos — added C-tier coverage")
+
+    total_cost = sum(t.cost for t in tickets)
+    if total_cost > budget:
+        warnings.append(f"Cost ${total_cost:.0f} exceeds budget ${budget:.0f}")
+
+    return DailyDoublePlan(
+        start_race=start_race,
+        tickets=tickets,
+        total_cost=total_cost,
+        passed=False,
+        warnings=warnings,
+        leg1_grade=g1,
+        leg2_grade=g2,
+        settings={
+            "a_count": strategy.a_count,
+            "b_count": strategy.b_count,
+            "c_count": strategy.c_count,
+            "budget": budget,
+        },
+    )
+
+
+def daily_double_plan_to_dict(plan: DailyDoublePlan) -> Dict[str, Any]:
+    """Serialize a DailyDoublePlan to a JSON-friendly dict."""
+    return {
+        "bet_type": plan.bet_type,
+        "start_race": plan.start_race,
+        "tickets": [
+            {
+                "base": t.base,
+                "leg1": t.leg1,
+                "leg2": t.leg2,
+                "cost": t.cost,
+                "reason": t.reason,
+            }
+            for t in plan.tickets
+        ],
+        "total_cost": plan.total_cost,
+        "passed": plan.passed,
+        "pass_reason": plan.pass_reason,
+        "warnings": plan.warnings,
+        "leg1_grade": plan.leg1_grade,
+        "leg2_grade": plan.leg2_grade,
+        "settings": plan.settings,
+    }
+
+
+def daily_double_plan_to_text(plan: DailyDoublePlan) -> str:
+    """Human-readable summary of a Daily Double plan."""
+    r2 = plan.start_race + 1
+    lines = [f"=== DAILY DOUBLE (R{plan.start_race}-R{r2}) ==="]
+    if plan.passed:
+        lines.append(f"PASS: {plan.pass_reason}")
+        return "\n".join(lines)
+
+    lines.append(f"Leg 1 (R{plan.start_race}) Grade {plan.leg1_grade}")
+    lines.append(f"Leg 2 (R{r2}) Grade {plan.leg2_grade}")
+    lines.append(f"Total cost: ${plan.total_cost:.0f}")
+    lines.append("")
+    for i, t in enumerate(plan.tickets, 1):
+        lines.append(f"Ticket {i}: {', '.join(t.leg1)} x {', '.join(t.leg2)}  ${t.cost:.0f}  ({t.reason})")
+    if plan.warnings:
+        lines.append("")
+        lines.append("Warnings:")
+        for w in plan.warnings:
+            lines.append(f"  - {w}")
     return "\n".join(lines)
