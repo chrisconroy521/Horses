@@ -267,4 +267,79 @@ For issues and questions:
 
 ---
 
-**Enhanced Ragozin Sheets Parser** - Bringing AI-powered insights to horse racing analysis! 🐎🤖 
+## Production Deployment (Railway)
+
+### Architecture
+
+- **api.loopstar23.com** — FastAPI backend (Dockerfile.api)
+- **app.loopstar23.com** — Streamlit frontend (Dockerfile.streamlit)
+- **Postgres** — Railway managed plugin (replaces local SQLite)
+
+### Railway Setup
+
+1. Create a new Railway project
+2. Add a **Postgres** plugin (Database > Add > PostgreSQL)
+3. Create two services from the same GitHub repo:
+   - **api** service: Set Dockerfile path to `Dockerfile.api`
+   - **app** service: Set Dockerfile path to `Dockerfile.streamlit`
+4. Link the Postgres plugin to the **api** service (auto-injects `DATABASE_URL`)
+
+### Environment Variables
+
+**API service:**
+| Variable | Value |
+|----------|-------|
+| `DATABASE_URL` | *(auto from Postgres plugin)* |
+| `OPENAI_API_KEY` | Your OpenAI key |
+| `ALLOWED_ORIGINS` | `https://app.loopstar23.com` |
+| `GOOGLE_CLIENT_ID` | *(Phase 2)* |
+| `GOOGLE_CLIENT_SECRET` | *(Phase 2)* |
+| `JWT_SECRET` | *(Phase 2)* |
+| `ALLOWED_EMAILS` | *(Phase 2)* |
+| `APP_URL` | `https://app.loopstar23.com` |
+
+**Streamlit service:**
+| Variable | Value |
+|----------|-------|
+| `API_BASE_URL` | `https://api.loopstar23.com` |
+| `AUTH_ENABLED` | `true` *(Phase 2)* |
+
+### Custom Domains
+
+1. In Railway, add custom domains for each service:
+   - api service: `api.loopstar23.com`
+   - app service: `app.loopstar23.com`
+2. At your DNS provider, add CNAME records pointing to the Railway-provided targets
+3. Railway handles SSL/TLS certificates automatically
+
+### Data Migration
+
+To transfer your local SQLite data to Railway Postgres:
+
+```bash
+# Get DATABASE_URL from Railway dashboard > Postgres plugin > Connect
+DATABASE_URL=postgresql://... python scripts/migrate_sqlite_to_postgres.py
+```
+
+### Smoke Test
+
+```bash
+bash scripts/smoke_production.sh
+# Or with custom URLs:
+API_URL=https://api.loopstar23.com APP_URL=https://app.loopstar23.com bash scripts/smoke_production.sh
+```
+
+### Local Development
+
+No changes needed — leave `DATABASE_URL` unset to use SQLite:
+
+```bash
+python start.py
+# or
+python api.py &
+streamlit run streamlit_app.py --server.port 8502
+```
+
+---
+
+**Enhanced Ragozin Sheets Parser** - Bringing AI-powered insights to horse racing analysis!

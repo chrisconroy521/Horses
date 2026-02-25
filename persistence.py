@@ -1,12 +1,129 @@
-"""SQLite persistence for handicapping sessions and cumulative horse database."""
+"""Persistence for handicapping sessions and cumulative horse database.
+
+Supports SQLite (default, local dev) and PostgreSQL (production).
+Set DATABASE_URL env var to use Postgres; otherwise falls back to SQLite.
+"""
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime
+
+
+# ---------------------------------------------------------------------------
+# Postgres compatibility layer
+# ---------------------------------------------------------------------------
+
+def _translate_sql(sql: str) -> str:
+    """Translate SQLite SQL dialect to Postgres."""
+    # Parameter placeholders: ? -> %s
+    sql = sql.replace("?", "%s")
+    # AUTOINCREMENT -> Postgres SERIAL
+    sql = re.sub(
+        r"INTEGER\s+PRIMARY\s+KEY\s+AUTOINCREMENT",
+        "SERIAL PRIMARY KEY",
+        sql,
+        flags=re.IGNORECASE,
+    )
+    # INSERT OR IGNORE -> INSERT ... ON CONFLICT DO NOTHING
+    if re.search(r"INSERT\s+OR\s+IGNORE\s+INTO", sql, re.IGNORECASE):
+        sql = re.sub(r"INSERT\s+OR\s+IGNORE\s+INTO", "INSERT INTO", sql, flags=re.IGNORECASE)
+        sql = sql.rstrip().rstrip(";") + " ON CONFLICT DO NOTHING"
+    return sql
+
+
+class _PgCursorResult:
+    """Wraps a psycopg2 cursor to provide sqlite3-compatible attributes."""
+
+    def __init__(self, cursor, lastrowid: Optional[int] = None):
+        self._cursor = cursor
+        self._lastrowid = lastrowid
+
+    @property
+    def lastrowid(self) -> Optional[int]:
+        return self._lastrowid
+
+    @property
+    def rowcount(self) -> int:
+        return self._cursor.rowcount
+
+    def fetchone(self):
+        return self._cursor.fetchone()
+
+    def fetchall(self):
+        return self._cursor.fetchall()
+
+    def __iter__(self):
+        return iter(self._cursor)
+
+
+class _PgConnectionWrapper:
+    """Wraps a psycopg2 connection so Persistence can use the same API as sqlite3."""
+
+    def __init__(self, pg_conn, cursor_factory):
+        self._conn = pg_conn
+        self._cursor_factory = cursor_factory
+        self._last_rowcount = 0
+
+    def execute(self, sql, params=None):
+        sql = _translate_sql(sql)
+        cur = self._conn.cursor(cursor_factory=self._cursor_factory)
+
+        # Handle SQLite's SELECT changes() — return previous rowcount
+        if "select lastval()" in sql.lower() or "select changes()" in sql.lower():
+            # Return the stored rowcount from previous UPDATE
+            class _FakeRow:
+                def __init__(self, val):
+                    self._val = val
+                def __getitem__(self, idx):
+                    return self._val
+            class _FakeResult:
+                lastrowid = None
+                rowcount = 1
+                def __init__(self, val):
+                    self._val = val
+                def fetchone(self):
+                    return _FakeRow(self._val)
+                def fetchall(self):
+                    return [_FakeRow(self._val)]
+            return _FakeResult(self._last_rowcount)
+
+        cur.execute(sql, params or ())
+        self._last_rowcount = cur.rowcount
+
+        # For INSERT, retrieve the auto-generated serial value via lastval()
+        _lastrowid = None
+        is_insert = sql.strip().upper().startswith("INSERT")
+        if is_insert and cur.rowcount and cur.rowcount > 0:
+            try:
+                lv_cur = self._conn.cursor()
+                lv_cur.execute("SELECT lastval()")
+                _lastrowid = lv_cur.fetchone()[0]
+                lv_cur.close()
+            except Exception:
+                _lastrowid = None
+
+        return _PgCursorResult(cur, _lastrowid)
+
+    def executescript(self, sql):
+        """Execute multiple SQL statements separated by semicolons."""
+        cur = self._conn.cursor(cursor_factory=self._cursor_factory)
+        for stmt in sql.split(";"):
+            stmt = stmt.strip()
+            if stmt:
+                cur.execute(_translate_sql(stmt))
+        return cur
+
+    def commit(self):
+        self._conn.commit()
+
+    @property
+    def total_changes(self):
+        return self._last_rowcount
 
 
 SESSION_COLUMNS = [
@@ -35,11 +152,25 @@ _TRACK_FULL_TO_CODE = {
 
 
 class Persistence:
-    def __init__(self, db_path: Path):
-        self.db_path = Path(db_path)
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
-        self.conn.row_factory = sqlite3.Row
+    def __init__(self, db_path: Path = None):
+        database_url = os.environ.get("DATABASE_URL")
+        if database_url:
+            import psycopg2
+            import psycopg2.extras
+            # Railway gives postgres:// but psycopg2 requires postgresql://
+            if database_url.startswith("postgres://"):
+                database_url = database_url.replace("postgres://", "postgresql://", 1)
+            pg_conn = psycopg2.connect(database_url)
+            pg_conn.autocommit = False
+            self.conn = _PgConnectionWrapper(pg_conn, psycopg2.extras.DictCursor)
+            self.db_backend = "postgres"
+            self.db_path = None
+        else:
+            self.db_path = Path(db_path or "horses.db")
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+            self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
+            self.conn.row_factory = sqlite3.Row
+            self.db_backend = "sqlite"
         self._init_db()
 
     # ------------------------------------------------------------------
@@ -309,10 +440,21 @@ class Persistence:
         self.conn.commit()
         self._ensure_columns()
 
+    def _get_table_columns(self, table_name: str) -> set:
+        """Return set of column names for a table (works on both backends)."""
+        if self.db_backend == "postgres":
+            cur = self.conn.execute(
+                "SELECT column_name FROM information_schema.columns WHERE table_name = %s",
+                (table_name,),
+            )
+            return {row[0] for row in cur.fetchall()}
+        else:
+            cur = self.conn.execute(f"PRAGMA table_info({table_name})")
+            return {row[1] for row in cur.fetchall()}
+
     def _ensure_columns(self) -> None:
         # sessions table
-        cur = self.conn.execute("PRAGMA table_info(sessions)")
-        existing = {row[1] for row in cur.fetchall()}
+        existing = self._get_table_columns("sessions")
         desired = {
             "parser_used": "TEXT",
             "horses_count": "INTEGER",
@@ -323,13 +465,11 @@ class Persistence:
             if column not in existing:
                 self.conn.execute(f"ALTER TABLE sessions ADD COLUMN {column} {col_type}")
         # result_entries table — add session_id if missing
-        cur2 = self.conn.execute("PRAGMA table_info(result_entries)")
-        re_cols = {row[1] for row in cur2.fetchall()}
+        re_cols = self._get_table_columns("result_entries")
         if re_cols and "session_id" not in re_cols:
             self.conn.execute("ALTER TABLE result_entries ADD COLUMN session_id TEXT")
         # bet_plans table — add engine_version and plan_type if missing
-        cur3 = self.conn.execute("PRAGMA table_info(bet_plans)")
-        bp_cols = {row[1] for row in cur3.fetchall()}
+        bp_cols = self._get_table_columns("bet_plans")
         if bp_cols and "engine_version" not in bp_cols:
             self.conn.execute("ALTER TABLE bet_plans ADD COLUMN engine_version TEXT DEFAULT ''")
         if bp_cols and "plan_type" not in bp_cols:
@@ -475,7 +615,7 @@ class Persistence:
             )
             self.conn.commit()
             return self.conn.total_changes > 0
-        except sqlite3.IntegrityError:
+        except Exception:
             return False
 
     def list_aliases(self) -> List[Dict[str, str]]:
@@ -581,7 +721,7 @@ class Persistence:
             })
         return result
 
-    def _prepare_session_row(self, row: sqlite3.Row | None) -> Optional[Dict[str, Any]]:
+    def _prepare_session_row(self, row) -> Optional[Dict[str, Any]]:
         if row is None:
             return None
         data = dict(row)

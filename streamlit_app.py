@@ -4,6 +4,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import requests
 import json
+import os
 import re
 from pathlib import Path
 import io
@@ -21,7 +22,7 @@ st.set_page_config(
 )
 
 # API configuration
-API_BASE_URL = "http://localhost:8000"
+API_BASE_URL = os.environ.get("API_BASE_URL", "http://localhost:8000")
 
 # --- Minimal CSS for layout consistency ---
 st.markdown("""<style>

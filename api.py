@@ -52,9 +52,12 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="Ragozin Sheets Parser API", version="1.0.0")
 
 # Add CORS middleware
+_allowed_origins = os.getenv(
+    "ALLOWED_ORIGINS", "http://localhost:8501,http://localhost:8502"
+).split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, specify actual origins
+    allow_origins=[o.strip() for o in _allowed_origins],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -212,7 +215,28 @@ def _gpt_to_dict(horse_performance) -> Dict[str, Any]:
 
 @app.on_event("startup")
 async def _recover_sessions():
-    """Rebuild sessions dict from *_primary.json files on disk."""
+    """Rebuild sessions dict from DB and *_primary.json files on disk."""
+    # DB-based recovery (works on Railway where files are ephemeral)
+    try:
+        for sess in _db.list_sessions():
+            sid = sess.get("session_id")
+            if sid and sid not in sessions:
+                sessions[sid] = {
+                    "session_id": sid,
+                    "track": sess.get("track_name", ""),
+                    "date": sess.get("race_date", ""),
+                    "has_primary": True,
+                    "has_secondary": False,
+                    "primary_pdf_type": sess.get("parser_used", ""),
+                    "primary_pdf_filename": sess.get("pdf_name", ""),
+                    "primary_horses_count": sess.get("horses_count", 0),
+                    "created_at": sess.get("created_at", ""),
+                }
+                logger.info(f"Recovered session {sid} from database")
+    except Exception as e:
+        logger.warning(f"DB-based session recovery failed: {e}")
+
+    # File-based recovery (local dev, overrides DB data with richer metadata)
     for path in OUTPUT_DIR.glob("*_primary.json"):
         try:
             with open(path, 'r') as f:
@@ -224,6 +248,25 @@ async def _recover_sessions():
                 logger.info(f"Recovered session {sid} from {path.name}")
         except Exception as e:
             logger.warning(f"Could not recover session from {path.name}: {e}")
+
+    # Patch sessions that have a _secondary.json on disk but meta missed it
+    for path in OUTPUT_DIR.glob("*_secondary.json"):
+        sid = path.stem.replace('_secondary', '')
+        if sid in sessions and not sessions[sid].get('has_secondary'):
+            try:
+                with open(path, 'r') as f:
+                    sec_data = json.load(f)
+                sec_horses = sec_data.get('horses', [])
+                sessions[sid].update({
+                    "has_secondary": True,
+                    "secondary_pdf_type": sec_data.get('parse_source', 'brisnet'),
+                    "secondary_pdf_filename": sec_data.get('pdf_filename') or path.name,
+                    "secondary_output_file": str(path),
+                    "secondary_horses_count": len(sec_horses),
+                })
+                logger.info(f"Patched secondary info for session {sid} from {path.name}")
+            except Exception as e:
+                logger.warning(f"Could not patch secondary for {sid}: {e}")
 
     # Also rebuild legacy parsed_races from non-session JSON files
     for path in OUTPUT_DIR.glob("*.json"):
@@ -722,6 +765,19 @@ async def upload_secondary(session_id: str, file: UploadFile = File(...)):
         "has_secondary": True,
         "merge_coverage": merge_coverage,
     })
+
+    # Persist updated _session_meta back to primary JSON so recovery sees it
+    primary_json_path = OUTPUT_DIR / f"{session_id}_primary.json"
+    if primary_json_path.exists():
+        try:
+            with open(primary_json_path, 'r') as f:
+                primary_data_on_disk = json.load(f)
+            primary_data_on_disk['_session_meta'] = dict(session)
+            with open(primary_json_path, 'w') as f:
+                json.dump(primary_data_on_disk, f, indent=2, default=str)
+            logger.info(f"Persisted secondary metadata to {primary_json_path.name}")
+        except Exception as e:
+            logger.warning(f"Failed to persist secondary metadata: {e}")
 
     # --- Cumulative DB ingestion for secondary ---
     recon_result = None
