@@ -828,6 +828,12 @@ async def prediction_roi_detailed(track: str = "", date: str = "", session_id: s
     return _db.get_prediction_roi_detailed(track=track, race_date=date, session_id=session_id)
 
 
+@app.get("/calibration/roi")
+async def calibration_roi(track: str = "", min_n: int = 30):
+    """ROI grouped by (track, surface, distance) with threshold recommendations."""
+    return _db.get_calibration_data(min_n=min_n, track_filter=track)
+
+
 @app.get("/predictions/export-bets")
 async def export_bets(track: str = "", date: str = "", session_id: str = ""):
     """All predictions + outcomes for audit/export."""

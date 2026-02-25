@@ -2339,6 +2339,135 @@ class Persistence:
             "roi_by_distance": roi_distance,
         }
 
+    def get_calibration_data(
+        self, min_n: int = 30, track_filter: str = "",
+    ) -> Dict[str, Any]:
+        """ROI grouped by (track, surface, distance) with threshold recommendations."""
+        where_parts = ["1=1"]
+        params: list = []
+        if track_filter:
+            where_parts.append("rp.track = ?")
+            params.append(self._normalize_track(track_filter))
+        where = " AND ".join(where_parts)
+
+        surface_expr = """
+            CASE WHEN UPPER(COALESCE(rr.surface, '')) LIKE '%TURF%' THEN 'Turf'
+                 WHEN UPPER(COALESCE(rr.surface, '')) IN ('POLY', 'ALL WEATHER', 'SYNTHETIC') THEN 'Poly'
+                 WHEN COALESCE(rr.surface, '') != '' THEN 'Dirt'
+                 ELSE 'Unknown' END
+        """
+        distance_expr = """
+            CASE WHEN COALESCE(rr.distance, '') = '' THEN 'Unknown'
+                 WHEN LOWER(rr.distance) LIKE '%mile%' THEN 'Route'
+                 WHEN CAST(REPLACE(REPLACE(rr.distance, ' Furlongs', ''), ' Furlong', '') AS REAL) >= 8 THEN 'Route'
+                 ELSE 'Sprint' END
+        """
+
+        base_join = f"""
+            FROM result_predictions rp
+            JOIN result_entries er
+                ON rp.track = er.track AND rp.race_date = er.race_date
+                AND rp.race_number = er.race_number
+                AND rp.normalized_name = er.normalized_name
+            LEFT JOIN result_races rr
+                ON er.track = rr.track AND er.race_date = rr.race_date
+                AND er.race_number = rr.race_number
+            WHERE {where}
+        """
+
+        # Main bucket query: ROI by (track, surface, distance)
+        bucket_rows = self.conn.execute(f"""
+            SELECT rp.track,
+                   {surface_expr} AS surface_cat,
+                   {distance_expr} AS dist_cat,
+                   COUNT(*) AS N,
+                   SUM(CASE WHEN er.finish_pos = 1 THEN 1 ELSE 0 END) AS wins,
+                   SUM(CASE WHEN er.finish_pos = 1 AND er.win_payoff IS NOT NULL
+                            THEN er.win_payoff ELSE 0 END) AS payoff
+            {base_join}
+            GROUP BY rp.track, surface_cat, dist_cat
+            ORDER BY rp.track, surface_cat, dist_cat
+        """, params).fetchall()
+
+        buckets = []
+        for r in bucket_rows:
+            n = r["N"]
+            cost = n * 2.0
+            pay = r["payoff"] or 0
+            roi = ((pay - cost) / cost * 100) if cost > 0 else 0
+            buckets.append({
+                "track": r["track"],
+                "surface": r["surface_cat"],
+                "distance": r["dist_cat"],
+                "label": f"{r['track']} {r['surface_cat']} {r['dist_cat']}",
+                "N": n,
+                "wins": r["wins"],
+                "win_pct": round(r["wins"] / n * 100, 1) if n else 0,
+                "roi_pct": round(roi, 1),
+            })
+
+        # Threshold grid search per qualifying bucket
+        conf_thresholds = [0.60, 0.65, 0.70, 0.75, 0.80, 0.85]
+        odds_thresholds = [2.0, 3.0, 4.0, 5.0, 8.0]
+        recommendations = []
+
+        for b in buckets:
+            if b["N"] < min_n:
+                continue
+            tv, sv, dv = b["track"], b["surface"], b["distance"]
+
+            best_conf_roi, best_conf_thresh, best_conf_n = -999.0, 0.60, 0
+            for ct in conf_thresholds:
+                row = self.conn.execute(f"""
+                    SELECT COUNT(*) AS N,
+                           SUM(CASE WHEN er.finish_pos = 1 THEN 1 ELSE 0 END) AS wins,
+                           SUM(CASE WHEN er.finish_pos = 1 AND er.win_payoff IS NOT NULL
+                                    THEN er.win_payoff ELSE 0 END) AS payoff
+                    {base_join}
+                    AND rp.track = ? AND {surface_expr} = ? AND {distance_expr} = ?
+                    AND rp.confidence >= ?
+                """, params + [tv, sv, dv, ct]).fetchone()
+                n = row["N"]
+                if n >= min_n:
+                    cost = n * 2.0
+                    pay = row["payoff"] or 0
+                    roi = ((pay - cost) / cost * 100) if cost > 0 else 0
+                    if roi > best_conf_roi:
+                        best_conf_roi, best_conf_thresh, best_conf_n = roi, ct, n
+
+            best_odds_roi, best_odds_thresh, best_odds_n = -999.0, 2.0, 0
+            for ot in odds_thresholds:
+                row = self.conn.execute(f"""
+                    SELECT COUNT(*) AS N,
+                           SUM(CASE WHEN er.finish_pos = 1 THEN 1 ELSE 0 END) AS wins,
+                           SUM(CASE WHEN er.finish_pos = 1 AND er.win_payoff IS NOT NULL
+                                    THEN er.win_payoff ELSE 0 END) AS payoff
+                    {base_join}
+                    AND rp.track = ? AND {surface_expr} = ? AND {distance_expr} = ?
+                    AND er.odds >= ?
+                """, params + [tv, sv, dv, ot]).fetchone()
+                n = row["N"]
+                if n >= min_n:
+                    cost = n * 2.0
+                    pay = row["payoff"] or 0
+                    roi = ((pay - cost) / cost * 100) if cost > 0 else 0
+                    if roi > best_odds_roi:
+                        best_odds_roi, best_odds_thresh, best_odds_n = roi, ot, n
+
+            recommendations.append({
+                "label": b["label"],
+                "track": tv, "surface": sv, "distance": dv,
+                "total_N": b["N"], "total_roi": b["roi_pct"],
+                "best_conf_threshold": best_conf_thresh,
+                "best_conf_roi": round(best_conf_roi, 1),
+                "best_conf_n": best_conf_n,
+                "best_odds_threshold": best_odds_thresh,
+                "best_odds_roi": round(best_odds_roi, 1),
+                "best_odds_n": best_odds_n,
+            })
+
+        return {"buckets": buckets, "recommendations": recommendations, "min_n": min_n}
+
     def get_all_bets(
         self, track: str = "", race_date: str = "", session_id: str = "",
     ) -> List[Dict[str, Any]]:

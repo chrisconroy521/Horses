@@ -37,7 +37,8 @@ def main():
     st.sidebar.header("Navigation")
     pages = [
         "Upload PDF", "Engine", "Results", "Results Inbox", "Bet Builder",
-        "Daily Best WIN Bets", "Database", "Horse Past Performance", "Horses Overview",
+        "Daily Best WIN Bets", "Calibration", "Database", "Horse Past Performance",
+        "Horses Overview",
         "Individual Horse Analysis", "Race Analysis", "Statistics",
         "Manage Sheets", "API Status",
     ]
@@ -71,6 +72,8 @@ def main():
         results_inbox_page()
     elif page == "Daily Best WIN Bets":
         daily_wins_page()
+    elif page == "Calibration":
+        calibration_page()
     elif page == "Statistics":
         statistics_page()
     elif page == "Manage Sheets":
@@ -2730,6 +2733,126 @@ def results_page():
                               label_key="cycle", label_col="Pattern")
         if not roi_rank and not roi_cycle:
             st.info("No predictions saved yet. Run the engine on a session, then upload results.")
+
+
+def calibration_page():
+    st.header("Track / Surface Calibration")
+    st.caption("ROI analysis by track, surface, and distance. "
+               "Find optimal confidence and odds thresholds for each spot type.")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        cal_track = st.text_input("Filter by track (blank = all)", key="cal_track")
+    with col2:
+        cal_min_n = st.number_input("Min sample size", value=30, min_value=10, step=5, key="cal_min_n")
+
+    if st.button("Load Calibration Data", type="primary", key="btn_calibration"):
+        with st.spinner("Loading calibration data..."):
+            try:
+                params = {"min_n": cal_min_n}
+                if cal_track:
+                    params["track"] = cal_track
+                resp = requests.get(f"{API_BASE_URL}/calibration/roi", params=params, timeout=30)
+                if resp.status_code == 200:
+                    st.session_state["cal_data"] = resp.json()
+                else:
+                    st.error(f"Error: {resp.text}")
+            except requests.exceptions.ConnectionError:
+                st.error("Cannot connect to API. Is the backend running?")
+
+    data = st.session_state.get("cal_data")
+    if not data:
+        return
+
+    buckets = data.get("buckets", [])
+    recommendations = data.get("recommendations", [])
+    min_n_used = data.get("min_n", 30)
+
+    if not buckets:
+        st.info("No data available. Upload results and run the engine first.")
+        return
+
+    # --- Buckets table ---
+    st.subheader("ROI by Track / Surface / Distance")
+    bucket_rows = []
+    for b in buckets:
+        bucket_rows.append({
+            "Spot": b["label"],
+            "N": b["N"],
+            "Wins": b["wins"],
+            "Win%": f"{b['win_pct']:.1f}",
+            "ROI%": f"{b['roi_pct']:+.1f}",
+            "_low": b["N"] < min_n_used,
+        })
+
+    df_buckets = pd.DataFrame(bucket_rows)
+
+    def _grey_low(row):
+        if row["_low"]:
+            return ["color: #999; font-style: italic"] * len(row)
+        return [""] * len(row)
+
+    display_cols = ["Spot", "N", "Wins", "Win%", "ROI%"]
+    styled = df_buckets[display_cols + ["_low"]].style.apply(_grey_low, axis=1)
+    styled = styled.hide(axis="columns", subset=["_low"])
+    st.dataframe(styled, hide_index=True, use_container_width=True)
+
+    if any(r["_low"] for r in bucket_rows):
+        st.caption(f"*Greyed rows: N < {min_n_used} -- LOW SAMPLE, DO NOT TRUST*")
+
+    # --- Recommendations ---
+    if recommendations:
+        st.divider()
+        st.subheader("Optimal Thresholds per Spot")
+        st.caption("Best-performing confidence and odds thresholds found via grid search (N >= min sample).")
+
+        rec_rows = []
+        for r in recommendations:
+            rec_rows.append({
+                "Spot": r["label"],
+                "N": r["total_N"],
+                "Base ROI%": f"{r['total_roi']:+.1f}",
+                "Best Conf >=": f"{r['best_conf_threshold']:.0%}",
+                "Conf ROI%": f"{r['best_conf_roi']:+.1f}",
+                "Conf N": r["best_conf_n"],
+                "Best Odds >=": f"{r['best_odds_threshold']:.1f}-1",
+                "Odds ROI%": f"{r['best_odds_roi']:+.1f}",
+                "Odds N": r["best_odds_n"],
+            })
+
+        st.dataframe(pd.DataFrame(rec_rows), hide_index=True, use_container_width=True)
+
+        # Highlight profitable spots
+        profitable = [r for r in recommendations if r["best_conf_roi"] > 0 or r["best_odds_roi"] > 0]
+        if profitable:
+            st.divider()
+            st.subheader("Actionable Suggestions")
+            for r in profitable:
+                parts = []
+                if r["best_conf_roi"] > 0:
+                    parts.append(
+                        f"confidence >= {r['best_conf_threshold']:.0%} "
+                        f"(ROI {r['best_conf_roi']:+.1f}%, N={r['best_conf_n']})"
+                    )
+                if r["best_odds_roi"] > 0:
+                    parts.append(
+                        f"odds >= {r['best_odds_threshold']:.1f}-1 "
+                        f"(ROI {r['best_odds_roi']:+.1f}%, N={r['best_odds_n']})"
+                    )
+                st.markdown(f"- **{r['label']}**: {' | '.join(parts)}")
+
+    # --- Export ---
+    st.divider()
+    st.subheader("Export")
+    if buckets:
+        csv_lines = ["spot,track,surface,distance,N,wins,win_pct,roi_pct"]
+        for b in buckets:
+            csv_lines.append(
+                f"{b['label']},{b['track']},{b['surface']},{b['distance']},"
+                f"{b['N']},{b['wins']},{b['win_pct']:.1f},{b['roi_pct']:+.1f}"
+            )
+        st.download_button("Download Calibration CSV", "\n".join(csv_lines),
+                           "calibration.csv", "text/csv", key="dl_calibration")
 
 
 def results_inbox_page():
