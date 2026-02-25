@@ -781,6 +781,18 @@ async def prediction_roi(track: str = "", date: str = "", session_id: str = ""):
     return _db.get_prediction_roi(track=track, race_date=date, session_id=session_id)
 
 
+@app.get("/predictions/roi-detailed")
+async def prediction_roi_detailed(track: str = "", date: str = "", session_id: str = ""):
+    """Detailed ROI by cycle, confidence bucket, odds bucket, surface, distance."""
+    return _db.get_prediction_roi_detailed(track=track, race_date=date, session_id=session_id)
+
+
+@app.get("/predictions/export-bets")
+async def export_bets(track: str = "", date: str = "", session_id: str = ""):
+    """All predictions + outcomes for audit/export."""
+    return _db.get_all_bets(track=track, race_date=date, session_id=session_id)
+
+
 @app.get("/predictions/vs-results")
 async def predictions_vs_results(
     track: str = "", date: str = "", session_id: str = "",

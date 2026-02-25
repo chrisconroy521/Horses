@@ -2077,3 +2077,174 @@ class Persistence:
             "roi_by_cycle": roi_cycle,
             "roi_by_confidence": roi_conf,
         }
+
+    def get_prediction_roi_detailed(
+        self, track: str = "", race_date: str = "", session_id: str = "",
+    ) -> Dict[str, Any]:
+        """Extended ROI stats with finer-grained buckets.
+
+        Returns ROI sliced by:
+        - cycle_label (projection_type)
+        - confidence bucket (0-59, 60-74, 75-84, 85+)
+        - odds bucket (<=2-1, 5/2-4-1, 9/2-8-1, 9-1+)
+        - surface (Dirt/Turf/Poly) + distance bucket (Sprint/Route)
+        """
+        where_parts = ["1=1"]
+        params: list = []
+        if track:
+            where_parts.append("rp.track = ?")
+            params.append(self._normalize_track(track))
+        if race_date:
+            where_parts.append("rp.race_date = ?")
+            params.append(self._normalize_date(race_date))
+        if session_id:
+            where_parts.append("rp.session_id = ?")
+            params.append(session_id)
+        where = " AND ".join(where_parts)
+
+        base_join = f"""
+            FROM result_predictions rp
+            JOIN result_entries er
+                ON rp.track = er.track AND rp.race_date = er.race_date
+                AND rp.race_number = er.race_number
+                AND rp.normalized_name = er.normalized_name
+            LEFT JOIN result_races rr
+                ON er.track = rr.track AND er.race_date = rr.race_date
+                AND er.race_number = rr.race_number
+            WHERE {where}
+        """
+
+        def _roi_query(group_expr):
+            return self.conn.execute(f"""
+                SELECT {group_expr} as grp,
+                       COUNT(*) as bets,
+                       SUM(CASE WHEN er.finish_pos = 1 THEN 1 ELSE 0 END) as wins,
+                       SUM(CASE WHEN er.finish_pos = 1 AND er.win_payoff IS NOT NULL
+                                THEN er.win_payoff ELSE 0 END) as payoff
+                {base_join}
+                GROUP BY grp ORDER BY grp
+            """, params).fetchall()
+
+        def _build(rows, label_key):
+            out = []
+            for r in rows:
+                b = r["bets"]
+                cost = b * 2.0
+                pay = r["payoff"] or 0
+                roi = ((pay - cost) / cost * 100) if cost > 0 else 0
+                out.append({
+                    label_key: r["grp"] or "UNKNOWN",
+                    "N": b, "wins": r["wins"],
+                    "win_pct": round(r["wins"] / b * 100, 1) if b else 0,
+                    "roi_pct": round(roi, 1),
+                })
+            return out
+
+        # 1. By cycle label
+        roi_cycle = _build(
+            _roi_query("rp.projection_type"), "cycle"
+        )
+
+        # 2. By confidence bucket (finer: 0-59, 60-74, 75-84, 85+)
+        roi_conf = _build(
+            _roi_query("""
+                CASE WHEN rp.confidence >= 0.85 THEN '85+'
+                     WHEN rp.confidence >= 0.75 THEN '75-84'
+                     WHEN rp.confidence >= 0.60 THEN '60-74'
+                     ELSE '0-59' END
+            """),
+            "confidence",
+        )
+
+        # 3. By odds bucket
+        roi_odds = _build(
+            _roi_query("""
+                CASE WHEN er.odds IS NULL THEN 'No Odds'
+                     WHEN er.odds <= 2.0 THEN '<=2-1'
+                     WHEN er.odds <= 4.0 THEN '5/2-4/1'
+                     WHEN er.odds <= 8.0 THEN '9/2-8/1'
+                     ELSE '9/1+' END
+            """),
+            "odds",
+        )
+
+        # 4. By surface
+        roi_surface = _build(
+            _roi_query("""
+                CASE WHEN UPPER(COALESCE(rr.surface, '')) LIKE '%TURF%' THEN 'Turf'
+                     WHEN UPPER(COALESCE(rr.surface, '')) IN ('POLY', 'ALL WEATHER', 'SYNTHETIC') THEN 'Poly'
+                     WHEN COALESCE(rr.surface, '') != '' THEN 'Dirt'
+                     ELSE 'Unknown' END
+            """),
+            "surface",
+        )
+
+        # 5. By distance bucket (Sprint < 8f, Route >= 8f)
+        roi_distance = _build(
+            _roi_query("""
+                CASE WHEN COALESCE(rr.distance, '') = '' THEN 'Unknown'
+                     WHEN LOWER(rr.distance) LIKE '%mile%' THEN 'Route'
+                     WHEN CAST(REPLACE(REPLACE(rr.distance, ' Furlongs', ''), ' Furlong', '') AS REAL) >= 8 THEN 'Route'
+                     ELSE 'Sprint' END
+            """),
+            "distance",
+        )
+
+        # Summary counts
+        total_preds = self.conn.execute(
+            f"SELECT COUNT(*) FROM result_predictions rp WHERE {where}", params
+        ).fetchone()[0]
+        matched = self.conn.execute(f"""
+            SELECT COUNT(*) {base_join}
+        """, params).fetchone()[0]
+
+        return {
+            "total_predictions": total_preds,
+            "matched_with_results": matched,
+            "match_rate": round(matched / total_preds * 100, 1) if total_preds else 0,
+            "roi_by_cycle": roi_cycle,
+            "roi_by_confidence": roi_conf,
+            "roi_by_odds": roi_odds,
+            "roi_by_surface": roi_surface,
+            "roi_by_distance": roi_distance,
+        }
+
+    def get_all_bets(
+        self, track: str = "", race_date: str = "", session_id: str = "",
+    ) -> List[Dict[str, Any]]:
+        """Return every prediction joined with outcome for audit/export."""
+        where_parts = ["1=1"]
+        params: list = []
+        if track:
+            where_parts.append("rp.track = ?")
+            params.append(self._normalize_track(track))
+        if race_date:
+            where_parts.append("rp.race_date = ?")
+            params.append(self._normalize_date(race_date))
+        if session_id:
+            where_parts.append("rp.session_id = ?")
+            params.append(session_id)
+        where = " AND ".join(where_parts)
+
+        rows = self.conn.execute(f"""
+            SELECT rp.session_id, rp.track, rp.race_date, rp.race_number,
+                   rp.horse_name, rp.pick_rank, rp.projection_type,
+                   rp.bias_score, rp.confidence,
+                   rp.projected_low, rp.projected_high,
+                   rp.new_top_setup, rp.bounce_risk, rp.tossed,
+                   er.post, er.finish_pos, er.odds,
+                   er.win_payoff, er.place_payoff, er.show_payoff,
+                   rr.surface, rr.distance
+            FROM result_predictions rp
+            LEFT JOIN result_entries er
+                ON rp.track = er.track AND rp.race_date = er.race_date
+                AND rp.race_number = er.race_number
+                AND rp.normalized_name = er.normalized_name
+            LEFT JOIN result_races rr
+                ON er.track = rr.track AND er.race_date = rr.race_date
+                AND er.race_number = rr.race_number
+            WHERE {where}
+            ORDER BY rp.race_date, rp.race_number, rp.pick_rank
+        """, params).fetchall()
+
+        return [dict(r) for r in rows]

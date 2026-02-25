@@ -1756,6 +1756,185 @@ def database_page():
                 "`python ingest.py --backfill-json` (import existing output/*.json)")
 
 
+_LOW_SAMPLE_THRESHOLD = 30
+
+
+def _render_roi_table(title: str, data: list, label_key: str, label_col: str):
+    """Render a single ROI table with N column and sample-size warnings.
+
+    *data* is a list of dicts. Each dict has *label_key*, plus either
+    "N"/"bets" for count, "wins", "win_pct", "roi_pct".
+    """
+    if not data:
+        return
+    st.subheader(title)
+
+    rows = []
+    has_low = False
+    for d in data:
+        n = d.get("N", d.get("bets", 0))
+        low = n < _LOW_SAMPLE_THRESHOLD
+        if low:
+            has_low = True
+        rows.append({
+            label_col: d.get(label_key, ""),
+            "N": n,
+            "Wins": d.get("wins", 0),
+            "Win%": d.get("win_pct", 0),
+            "ROI%": d.get("roi_pct", 0),
+            "_low": low,
+        })
+
+    df = pd.DataFrame(rows)
+
+    # Style low-sample rows
+    def _grey_low(row):
+        if row["_low"]:
+            return ["color: #999; font-style: italic"] * len(row)
+        return [""] * len(row)
+
+    display_cols = [label_col, "N", "Wins", "Win%", "ROI%"]
+    styled = df[display_cols + ["_low"]].style.apply(_grey_low, axis=1)
+    styled = styled.hide(axis="columns", subset=["_low"])
+    styled = styled.format({"Win%": "{:.1f}", "ROI%": "{:+.1f}"})
+    st.dataframe(styled, hide_index=True, use_container_width=True)
+
+    if has_low:
+        st.caption("*Greyed rows: N < 30 — LOW SAMPLE, DO NOT TRUST*")
+
+
+def _render_recommendations(roi_cycle: list, roi_conf: list, roi_odds: list):
+    """Show a 'Recommended settings' panel based on ROI data."""
+    st.subheader("Recommended Settings")
+    st.caption("Suggestions based on historical ROI. These do NOT auto-change any settings.")
+
+    suggestions = []
+
+    # Best confidence bucket (only consider N >= 30)
+    valid_conf = [c for c in roi_conf
+                  if c.get("N", c.get("bets", 0)) >= _LOW_SAMPLE_THRESHOLD]
+    if valid_conf:
+        best_conf = max(valid_conf, key=lambda x: x.get("roi_pct", 0))
+        bucket = best_conf.get("confidence", "")
+        roi = best_conf.get("roi_pct", 0)
+        n = best_conf.get("N", best_conf.get("bets", 0))
+        if roi > 0:
+            suggestions.append(
+                f"**Confidence {bucket}%** has best ROI at **{roi:+.1f}%** (N={n})"
+            )
+
+    # Best odds bucket
+    valid_odds = [o for o in roi_odds
+                  if o.get("N", o.get("bets", 0)) >= _LOW_SAMPLE_THRESHOLD
+                  and o.get("odds", "") != "No Odds"]
+    if valid_odds:
+        best_odds = max(valid_odds, key=lambda x: x.get("roi_pct", 0))
+        bucket = best_odds.get("odds", "")
+        roi = best_odds.get("roi_pct", 0)
+        n = best_odds.get("N", best_odds.get("bets", 0))
+        if roi > 0:
+            suggestions.append(
+                f"**Odds {bucket}** has best ROI at **{roi:+.1f}%** (N={n})"
+            )
+
+    # Best cycle pattern
+    valid_cycle = [c for c in roi_cycle
+                   if c.get("N", c.get("bets", 0)) >= _LOW_SAMPLE_THRESHOLD]
+    if valid_cycle:
+        best_cycle = max(valid_cycle, key=lambda x: x.get("roi_pct", 0))
+        pattern = best_cycle.get("cycle", "")
+        roi = best_cycle.get("roi_pct", 0)
+        n = best_cycle.get("N", best_cycle.get("bets", 0))
+        if roi > 0:
+            suggestions.append(
+                f"**{pattern}** cycle has best ROI at **{roi:+.1f}%** (N={n})"
+            )
+
+    # Combined suggestion
+    if valid_conf and valid_odds:
+        bc = max(valid_conf, key=lambda x: x.get("roi_pct", 0))
+        bo = max(valid_odds, key=lambda x: x.get("roi_pct", 0))
+        if bc.get("roi_pct", 0) > 0 and bo.get("roi_pct", 0) > 0:
+            conf_label = bc.get("confidence", "")
+            odds_label = bo.get("odds", "")
+            suggestions.append(
+                f"Combined suggestion: **confidence >= {conf_label}%**, **odds {odds_label}**"
+            )
+
+    if suggestions:
+        for s in suggestions:
+            st.markdown(f"- {s}")
+    else:
+        st.info("Not enough data with N >= 30 to make recommendations yet.")
+
+
+def _render_exports(roi_params: dict, det: dict,
+                    roi_rank: list, roi_cycle: list, roi_conf: list,
+                    roi_odds: list, roi_surface: list, roi_distance: list):
+    """Render CSV export buttons for ROI tables and full bets list."""
+    st.subheader("Exports")
+
+    col1, col2 = st.columns(2)
+
+    # --- ROI tables CSV ---
+    with col1:
+        roi_sections = []
+        for label, data, key in [
+            ("Pick Rank", roi_rank, "rank"),
+            ("Cycle Pattern", roi_cycle, "cycle"),
+            ("Confidence", roi_conf, "confidence"),
+            ("Odds Bucket", roi_odds, "odds"),
+            ("Surface", roi_surface, "surface"),
+            ("Distance", roi_distance, "distance"),
+        ]:
+            if data:
+                roi_sections.append(f"\n# {label}")
+                header_label = key.title()
+                roi_sections.append(f"{header_label},N,Wins,Win%,ROI%")
+                for d in data:
+                    n = d.get("N", d.get("bets", 0))
+                    roi_sections.append(
+                        f"{d.get(key, '')},{n},{d.get('wins', 0)},"
+                        f"{d.get('win_pct', 0):.1f},{d.get('roi_pct', 0):+.1f}"
+                    )
+
+        if roi_sections:
+            csv_text = "\n".join(roi_sections)
+            st.download_button(
+                "Download ROI Tables (CSV)",
+                data=csv_text,
+                file_name="roi_tables.csv",
+                mime="text/csv",
+                key="dl_roi_tables",
+            )
+        else:
+            st.caption("No ROI data to export.")
+
+    # --- Full bets/picks audit CSV ---
+    with col2:
+        try:
+            bets_resp = requests.get(
+                f"{API_BASE_URL}/predictions/export-bets",
+                params=roi_params, timeout=30,
+            )
+            bets = bets_resp.json() if bets_resp.status_code == 200 else []
+        except Exception:
+            bets = []
+
+        if bets:
+            bets_df = pd.DataFrame(bets)
+            csv_bytes = bets_df.to_csv(index=False).encode("utf-8")
+            st.download_button(
+                f"Download All Bets ({len(bets)} picks, CSV)",
+                data=csv_bytes,
+                file_name="all_bets_audit.csv",
+                mime="text/csv",
+                key="dl_all_bets",
+            )
+        else:
+            st.caption("No bets data to export.")
+
+
 def _show_ingest_result(res: dict, session_id: str = ""):
     """Display ingestion result with linking diagnostics."""
     link_rate = res.get("link_rate", 0)
@@ -1969,57 +2148,105 @@ def results_page():
 
     st.divider()
 
-    # --- Prediction-based ROI (from result_predictions table) ---
+    # --- Fetch detailed ROI from predictions ---
+    roi_params = {}
+    if r_track:
+        roi_params["track"] = r_track
+    if r_date:
+        roi_params["date"] = r_date
+    if chosen_sid:
+        roi_params["session_id"] = chosen_sid
+
     try:
-        roi_params = {}
-        if r_track:
-            roi_params["track"] = r_track
-        if r_date:
-            roi_params["date"] = r_date
-        if chosen_sid:
-            roi_params["session_id"] = chosen_sid
-        roi_resp = requests.get(f"{API_BASE_URL}/predictions/roi", params=roi_params, timeout=15)
+        det_resp = requests.get(
+            f"{API_BASE_URL}/predictions/roi-detailed",
+            params=roi_params, timeout=15,
+        )
+        det = det_resp.json() if det_resp.status_code == 200 else {}
+    except Exception:
+        det = {}
+
+    # Also fetch legacy simple ROI for fallback
+    try:
+        roi_resp = requests.get(
+            f"{API_BASE_URL}/predictions/roi",
+            params=roi_params, timeout=15,
+        )
         pred_roi = roi_resp.json() if roi_resp.status_code == 200 else {}
     except Exception:
         pred_roi = {}
 
+    has_detailed = det.get("matched_with_results", 0) > 0
     has_pred_roi = pred_roi.get("total_predictions", 0) > 0
 
-    if has_pred_roi:
+    if has_detailed:
         st.subheader("Predictions vs Results")
         pm1, pm2, pm3 = st.columns(3)
         with pm1:
-            st.metric("Predictions", pred_roi["total_predictions"])
+            st.metric("Predictions", det["total_predictions"])
         with pm2:
-            st.metric("Matched w/ Results", pred_roi["matched_with_results"])
+            st.metric("Matched w/ Results", det["matched_with_results"])
         with pm3:
-            st.metric("Match Rate", f"{pred_roi['match_rate']:.1f}%")
+            st.metric("Match Rate", f"{det['match_rate']:.1f}%")
 
-        # ROI by Pick Rank
+        # ---------- ROI tables with sample-size warnings ----------
+
+        # ROI by Pick Rank (from simple endpoint — has rank column)
         roi_rank = pred_roi.get("roi_by_rank", [])
         if roi_rank:
-            st.subheader("ROI by Pick Rank ($2 Win)")
-            rank_df = pd.DataFrame(roi_rank)
-            rank_df.columns = ["Rank", "Bets", "Wins", "Win%", "ROI%"]
-            st.dataframe(rank_df, hide_index=True, use_container_width=True)
+            _render_roi_table(
+                "ROI by Pick Rank ($2 Win)", roi_rank,
+                label_key="rank", label_col="Rank",
+            )
 
-        # ROI by Cycle Type
-        roi_cycle = pred_roi.get("roi_by_cycle", [])
+        # ROI by Cycle Label
+        roi_cycle = det.get("roi_by_cycle", [])
         if roi_cycle:
-            st.subheader("ROI by Cycle Pattern ($2 Win)")
-            cycle_df = pd.DataFrame(roi_cycle)
-            cycle_df.columns = ["Pattern", "Bets", "Wins", "Win%", "ROI%"]
-            st.dataframe(cycle_df, hide_index=True, use_container_width=True)
+            _render_roi_table(
+                "ROI by Cycle Pattern ($2 Win)", roi_cycle,
+                label_key="cycle", label_col="Pattern",
+            )
 
         # ROI by Confidence Bucket
-        roi_conf = pred_roi.get("roi_by_confidence", [])
+        roi_conf = det.get("roi_by_confidence", [])
         if roi_conf:
-            st.subheader("ROI by Confidence ($2 Win)")
-            conf_df = pd.DataFrame(roi_conf)
-            conf_df.columns = ["Confidence", "Bets", "Wins", "Win%", "ROI%"]
-            st.dataframe(conf_df, hide_index=True, use_container_width=True)
+            _render_roi_table(
+                "ROI by Confidence ($2 Win)", roi_conf,
+                label_key="confidence", label_col="Confidence",
+            )
 
-        # Detailed predictions vs results table
+        # ROI by Odds Bucket
+        roi_odds = det.get("roi_by_odds", [])
+        if roi_odds:
+            _render_roi_table(
+                "ROI by Odds Bucket ($2 Win)", roi_odds,
+                label_key="odds", label_col="Odds",
+            )
+
+        # ROI by Surface
+        roi_surface = det.get("roi_by_surface", [])
+        if roi_surface:
+            _render_roi_table(
+                "ROI by Surface ($2 Win)", roi_surface,
+                label_key="surface", label_col="Surface",
+            )
+
+        # ROI by Distance
+        roi_distance = det.get("roi_by_distance", [])
+        if roi_distance:
+            _render_roi_table(
+                "ROI by Distance ($2 Win)", roi_distance,
+                label_key="distance", label_col="Distance",
+            )
+
+        st.divider()
+
+        # ---------- Recommended settings panel ----------
+        _render_recommendations(roi_cycle, roi_conf, roi_odds)
+
+        st.divider()
+
+        # ---------- Detailed predictions table ----------
         try:
             pvr_resp = requests.get(
                 f"{API_BASE_URL}/predictions/vs-results",
@@ -2031,11 +2258,11 @@ def results_page():
 
         if pvr:
             with st.expander(f"Full predictions table ({len(pvr)} entries)", expanded=False):
-                rows = []
+                pvr_rows = []
                 for r in pvr:
                     fp = r.get("finish_pos")
                     win_p = r.get("win_payoff")
-                    rows.append({
+                    pvr_rows.append({
                         "Race": r["race_number"],
                         "Horse": r["horse_name"],
                         "Rank": r["pick_rank"],
@@ -2046,25 +2273,45 @@ def results_page():
                         "Finish": fp if fp else "-",
                         "Win$": f"${win_p:.2f}" if win_p else "",
                     })
-                pvr_df = pd.DataFrame(rows)
+                pvr_df = pd.DataFrame(pvr_rows)
                 st.dataframe(pvr_df, hide_index=True, use_container_width=True)
 
-    # Fallback: result_entries-based ROI (legacy, from pick_rank/projection_type on entries)
-    if not has_pred_roi:
+        st.divider()
+
+        # ---------- Exports ----------
+        _render_exports(roi_params, det, roi_rank, roi_cycle, roi_conf, roi_odds,
+                        roi_surface, roi_distance)
+
+    elif has_pred_roi:
+        # Simpler display when detailed endpoint returned empty but simple has data
+        st.subheader("Predictions vs Results")
+        pm1, pm2, pm3 = st.columns(3)
+        with pm1:
+            st.metric("Predictions", pred_roi["total_predictions"])
+        with pm2:
+            st.metric("Matched w/ Results", pred_roi["matched_with_results"])
+        with pm3:
+            st.metric("Match Rate", f"{pred_roi['match_rate']:.1f}%")
+
+        roi_rank = pred_roi.get("roi_by_rank", [])
+        if roi_rank:
+            _render_roi_table("ROI by Pick Rank ($2 Win)", roi_rank,
+                              label_key="rank", label_col="Rank")
+        roi_cycle = pred_roi.get("roi_by_cycle", [])
+        if roi_cycle:
+            _render_roi_table("ROI by Cycle Pattern ($2 Win)", roi_cycle,
+                              label_key="cycle", label_col="Pattern")
+
+    else:
+        # Fallback: result_entries-based ROI (legacy)
         roi_rank = stats.get("roi_by_rank", [])
         if roi_rank:
-            st.subheader("ROI by Pick Rank ($2 Win)")
-            rank_df = pd.DataFrame(roi_rank)
-            rank_df.columns = ["Rank", "Bets", "Wins", "Win%", "ROI%"]
-            st.dataframe(rank_df, hide_index=True, use_container_width=True)
-
+            _render_roi_table("ROI by Pick Rank ($2 Win)", roi_rank,
+                              label_key="rank", label_col="Rank")
         roi_cycle = stats.get("roi_by_cycle", [])
         if roi_cycle:
-            st.subheader("ROI by Cycle Pattern ($2 Win)")
-            cycle_df = pd.DataFrame(roi_cycle)
-            cycle_df.columns = ["Pattern", "Bets", "Wins", "Win%", "ROI%"]
-            st.dataframe(cycle_df, hide_index=True, use_container_width=True)
-
+            _render_roi_table("ROI by Cycle Pattern ($2 Win)", roi_cycle,
+                              label_key="cycle", label_col="Pattern")
         if not roi_rank and not roi_cycle:
             st.info("No predictions saved yet. Run the engine on a session, then upload results.")
 
