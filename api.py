@@ -64,6 +64,16 @@ def detect_pdf_type(pdf_path: str) -> str:
         doc.close()
         lower = combined.lower()
 
+        # Equibase results chart detection (before brisnet check)
+        has_mutuel = '$2 mutuel prices' in lower or '$2 mutuel' in lower
+        has_race_header = _re.search(
+            r'(FIRST|SECOND|THIRD|FOURTH|FIFTH|SIXTH|SEVENTH|EIGHTH|NINTH|'
+            r'TENTH|ELEVENTH|TWELFTH|THIRTEENTH|FOURTEENTH)\s+RACE',
+            combined,
+        )
+        if has_mutuel and has_race_header:
+            return 'equibase_chart'
+
         is_brisnet = 'brisnet.com' in lower or 'ultimate pp' in lower
         has_quickplay = 'quickplay' in lower or 'QuickPlay' in combined
 
@@ -786,14 +796,21 @@ async def upload_results(
     file: UploadFile = File(...), track: str = "", date: str = "",
     session_id: str = "",
 ):
-    """Upload a results CSV and ingest into DB.
+    """Upload a results CSV or Equibase chart PDF and ingest into DB.
 
     If *session_id* is provided, results are scoped to that session and
     linking uses the session's uploads for matching.  Track/date are pulled
     from the session metadata when not explicitly provided.
+
+    PDF uploads always return a preview (races, entries, sample_rows,
+    confidence, missing_fields).  High-confidence PDFs are auto-ingested;
+    low-confidence PDFs require user confirmation via ``/results/confirm-pdf``.
     """
-    if not file.filename.lower().endswith('.csv'):
-        raise HTTPException(status_code=400, detail="Only CSV files are allowed")
+    fname = (file.filename or "").lower()
+    is_csv = fname.endswith('.csv')
+    is_pdf = fname.endswith('.pdf')
+    if not is_csv and not is_pdf:
+        raise HTTPException(status_code=400, detail="Only CSV and PDF files are allowed")
 
     # Pull track/date from session when available
     if session_id and session_id in sessions:
@@ -805,20 +822,63 @@ async def upload_results(
 
     content = await file.read()
     import tempfile
-    tmp = Path(tempfile.mktemp(suffix=".csv"))
+    suffix = ".csv" if is_csv else ".pdf"
+    tmp = Path(tempfile.mktemp(suffix=suffix))
     tmp.write_bytes(content)
 
     try:
-        from ingest_results import ingest_csv
-        result = ingest_csv(
-            _db, str(tmp), track=track, race_date=date,
-            session_id=session_id,
-        )
-        return {"success": True, **result}
+        if is_csv:
+            from ingest_results import ingest_csv
+            result = ingest_csv(
+                _db, str(tmp), track=track, race_date=date,
+                session_id=session_id,
+            )
+            return {"success": True, **result}
+        else:
+            from ingest_results import ingest_pdf
+            result = ingest_pdf(
+                _db, str(tmp), track=track, race_date=date,
+                session_id=session_id,
+            )
+            # Always includes preview data; adds ingested/needs_review flags
+            if result.get("needs_review"):
+                return result
+            return {"success": True, **result}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         tmp.unlink(missing_ok=True)
+
+
+@app.post("/results/confirm-pdf")
+async def confirm_pdf_results(payload: dict):
+    """Confirm and ingest user-reviewed PDF results.
+
+    Body: {rows: [...], track: str, date: str, session_id: str,
+           program_map: "program"|"post"}
+
+    *program_map*: ``"program"`` uses the ``program`` column as the post
+    identifier (extracts leading digits from "1A" etc.); ``"post"``
+    (default) uses the ``post`` column as-is.
+    """
+    rows = payload.get("rows", [])
+    track = payload.get("track", "")
+    date = payload.get("date", "")
+    session_id = payload.get("session_id", "")
+    program_map = payload.get("program_map", "post")
+
+    if not rows:
+        raise HTTPException(status_code=400, detail="No rows provided")
+
+    try:
+        from ingest_results import ingest_rows
+        result = ingest_rows(
+            _db, rows, track=track, race_date=date,
+            session_id=session_id, program_map=program_map,
+        )
+        return {"success": True, **result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/db/alias")

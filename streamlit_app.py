@@ -1756,9 +1756,37 @@ def database_page():
                 "`python ingest.py --backfill-json` (import existing output/*.json)")
 
 
+def _show_ingest_result(res: dict, session_id: str = ""):
+    """Display ingestion result with linking diagnostics."""
+    link_rate = res.get("link_rate", 0)
+    st.success(
+        f"Imported {res.get('races', 0)} races, {res.get('entries', 0)} entries, "
+        f"{res.get('linked', 0)} linked ({link_rate:.1f}%)"
+    )
+
+    # Confidence caption for PDF
+    if res.get("parse_confidence") is not None:
+        st.caption(f"Parse confidence: {res['parse_confidence'] * 100:.0f}%")
+
+    # Linking warning when session is attached and rate is low
+    if session_id and link_rate < 70:
+        st.warning(
+            f"Linking rate is {link_rate:.1f}% (< 70%). Some results could not be matched "
+            "to session entries. Check that race numbers and post/program positions align. "
+            "You can also try switching the **Identifier mapping** between post and program."
+        )
+
+    # Unmatched entries with reasons
+    unmatched = res.get("unmatched", [])
+    if unmatched:
+        with st.expander(f"Unmatched entries ({len(unmatched)})", expanded=link_rate < 70):
+            for u in unmatched:
+                st.text(f"R{u['race']} P{u['post']} {u['name']}: {u['reason']}")
+
+
 def results_page():
     st.header("Race Results & ROI")
-    st.caption("Upload race results CSVs to track ROI by pick rank and cycle pattern.")
+    st.caption("Upload race results CSVs or Equibase chart PDFs to track ROI by pick rank and cycle pattern.")
 
     # --- Fetch sessions for dropdown ---
     session_options = {"(none)": ""}
@@ -1771,9 +1799,12 @@ def results_page():
     except Exception:
         pass
 
-    # --- Upload CSV ---
+    # --- Upload CSV or PDF ---
     st.subheader("Import Results")
-    csv_file = st.file_uploader("Upload results CSV", type=["csv"], key="results_csv_uploader")
+    results_file = st.file_uploader(
+        "Upload results CSV or Equibase chart PDF",
+        type=["csv", "pdf"], key="results_file_uploader",
+    )
 
     sel_session = st.selectbox(
         "Attach to session (links results to picks)",
@@ -1788,10 +1819,22 @@ def results_page():
     with col_d:
         r_date = st.text_input("Date (MM/DD/YYYY)", key="results_date")
 
-    if csv_file is not None and st.button("Import Results", type="primary", key="btn_import_results"):
+    # Program vs post selector (relevant when chart program != session post)
+    pgm_map = st.radio(
+        "Identifier mapping",
+        options=["post", "program"],
+        horizontal=True,
+        index=0,
+        help="Use 'program' if the chart uses program numbers (1, 1A) that differ from session post positions.",
+        key="results_pgm_map",
+    )
+
+    if results_file is not None and st.button("Import Results", type="primary", key="btn_import_results"):
         with st.spinner("Importing results..."):
             try:
-                files = {"file": (csv_file.name, csv_file.getvalue(), "text/csv")}
+                fname = results_file.name.lower()
+                mime = "text/csv" if fname.endswith(".csv") else "application/pdf"
+                files = {"file": (results_file.name, results_file.getvalue(), mime)}
                 params = {}
                 if r_track:
                     params["track"] = r_track
@@ -1805,17 +1848,83 @@ def results_page():
                 )
                 if resp.status_code == 200:
                     res = resp.json()
-                    link_rate = res.get("link_rate", 0)
-                    st.success(
-                        f"Imported {res['races']} races, {res['entries']} entries, "
-                        f"{res['linked']} linked ({link_rate:.1f}%)"
-                    )
-                    # Show unmatched
-                    unmatched = res.get("unmatched", [])
-                    if unmatched:
-                        with st.expander(f"Unmatched entries ({len(unmatched)})", expanded=False):
-                            for u in unmatched:
-                                st.text(f"R{u['race']} P{u['post']} {u['name']}: {u['reason']}")
+                    is_pdf = fname.endswith(".pdf")
+
+                    # --- PDF preview (always shown for PDFs) ---
+                    if is_pdf and (res.get("sample_rows") or res.get("needs_review")):
+                        conf = res.get("parse_confidence", 0)
+                        conf_pct = conf * 100
+
+                        # Preview header
+                        st.info(
+                            f"**PDF Preview:** {res.get('preview_races', res.get('races', 0))} races, "
+                            f"{res.get('preview_entries', res.get('entries', 0))} entries"
+                            f"{', ' + str(res.get('preview_scratches', 0)) + ' scratched' if res.get('preview_scratches') else ''}"
+                            f"  \nConfidence: **{conf_pct:.0f}%**"
+                        )
+
+                        # Missing fields
+                        missing = res.get("missing_fields", [])
+                        if missing:
+                            with st.expander(f"Missing fields ({len(missing)})", expanded=True):
+                                for mf in missing:
+                                    st.text(f"  - {mf}")
+
+                        # Sample rows table
+                        import pandas as pd
+                        sample = res.get("sample_rows", [])
+                        if sample:
+                            display_cols = ["race_number", "program", "post", "horse_name",
+                                            "finish_pos", "odds", "win_payoff", "surface"]
+                            sdf = pd.DataFrame(sample)
+                            show_cols = [c for c in display_cols if c in sdf.columns]
+                            st.dataframe(sdf[show_cols], use_container_width=True, hide_index=True)
+
+                    if res.get("needs_review"):
+                        # --- Fallback mapping UI for low-confidence PDF ---
+                        st.warning(
+                            f"Confidence {conf_pct:.0f}% is below the auto-import threshold. "
+                            "Review and correct the data below, then click **Confirm & Import**."
+                        )
+
+                        extracted = res.get("extracted_rows", [])
+                        if extracted:
+                            import pandas as pd
+                            df = pd.DataFrame(extracted)
+                            edited_df = st.data_editor(
+                                df, num_rows="dynamic", key="pdf_review_editor",
+                            )
+
+                            with st.expander("Raw extracted text", expanded=False):
+                                st.text(res.get("raw_text", "")[:5000])
+
+                            if st.button("Confirm & Import", type="primary", key="btn_confirm_pdf"):
+                                with st.spinner("Importing confirmed results..."):
+                                    confirm_rows = edited_df.to_dict(orient="records")
+                                    confirm_resp = requests.post(
+                                        f"{API_BASE_URL}/results/confirm-pdf",
+                                        json={
+                                            "rows": confirm_rows,
+                                            "track": res.get("track", r_track),
+                                            "date": res.get("race_date", r_date),
+                                            "session_id": chosen_sid,
+                                            "program_map": pgm_map,
+                                        },
+                                        timeout=60,
+                                    )
+                                    if confirm_resp.status_code == 200:
+                                        cr = confirm_resp.json()
+                                        _show_ingest_result(cr, chosen_sid)
+                                    else:
+                                        st.error(f"Error: {confirm_resp.text}")
+                        else:
+                            st.error("No data could be extracted from the PDF.")
+                    elif is_pdf and res.get("ingested"):
+                        # Auto-ingested high-confidence PDF
+                        _show_ingest_result(res, chosen_sid)
+                    elif not is_pdf:
+                        # CSV result
+                        _show_ingest_result(res, chosen_sid)
                 else:
                     st.error(f"Error: {resp.text}")
             except requests.exceptions.ConnectionError:
