@@ -160,7 +160,13 @@ class Persistence:
             # Railway gives postgres:// but psycopg2 requires postgresql://
             if database_url.startswith("postgres://"):
                 database_url = database_url.replace("postgres://", "postgresql://", 1)
-            pg_conn = psycopg2.connect(database_url)
+            try:
+                pg_conn = psycopg2.connect(database_url, connect_timeout=5)
+            except Exception as exc:
+                import sys
+                print(f"[persistence] FATAL: Cannot connect to Postgres "
+                      f"(timeout 5s): {exc}", file=sys.stderr, flush=True)
+                raise
             pg_conn.autocommit = False
             self.conn = _PgConnectionWrapper(pg_conn, psycopg2.extras.DictCursor)
             self.db_backend = "postgres"

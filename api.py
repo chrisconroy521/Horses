@@ -29,7 +29,10 @@ import dotenv
 dotenv.load_dotenv()
 
 # Cumulative horse database
+import sys as _sys
+print("[api] Connecting to database...", flush=True, file=_sys.stderr)
 _db = Persistence(Path("horses.db"))
+print(f"[api] Database ready (backend={_db.db_backend})", flush=True, file=_sys.stderr)
 
 # Engine version — git short hash at startup
 def _get_engine_version() -> str:
@@ -470,8 +473,21 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint"""
-    return {"status": "healthy", "service": "ragozin-parser"}
+    """Health check endpoint with DB status."""
+    db_status = "unknown"
+    db_backend = getattr(_db, "db_backend", "unknown") if _db else "not_initialized"
+    try:
+        if _db:
+            _db.conn.execute("SELECT 1")
+            db_status = "connected"
+    except Exception as exc:
+        db_status = f"error: {exc}"
+    return {
+        "status": "healthy" if db_status == "connected" else "degraded",
+        "service": "ragozin-parser",
+        "db_backend": db_backend,
+        "db_status": db_status,
+    }
 
 @app.post("/upload-pdf")
 async def upload_pdf(file: UploadFile = File(...), use_gpt: bool = False):
