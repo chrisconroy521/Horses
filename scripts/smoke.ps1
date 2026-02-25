@@ -1,4 +1,4 @@
-# smoke.ps1 — End-to-end smoke test for the Racing Sheets API
+# smoke.ps1 -- End-to-end smoke test for the Racing Sheets API
 # Usage: .\scripts\smoke.ps1 [-SessionId <id>]
 # Requires: PowerShell 5.1+
 param(
@@ -31,7 +31,7 @@ try {
         Write-Fail "GET /health -> status=$($health.status) (expected healthy)"
     }
 } catch {
-    Write-Fail "GET /health — no response (is the API running?)"
+    Write-Fail "GET /health -- no response (is the API running?)"
     Write-Host ""
     Write-Host "=== RESULT: $Pass passed, $Fail failed ==="
     exit 1
@@ -122,12 +122,11 @@ try {
         Write-Fail "Neither tickets nor blockers found"
     }
 } catch {
-    $statusCode = $null
-    if ($_.Exception.Response) { $statusCode = [int]$_.Exception.Response.StatusCode }
-    if ($statusCode -eq 404) {
+    $msg = $_.Exception.Message
+    if ($msg -match "404" -or $msg -match "Not Found") {
         Write-Host "  SKIP: No predictions saved for this session (run projections first)"
     } else {
-        Write-Fail "POST /bets/build — $($_.Exception.Message)"
+        Write-Fail "POST /bets/build -- $msg"
     }
 }
 
