@@ -2552,6 +2552,113 @@ class Persistence:
             "roi_by_rank": roi_rank,
         }
 
+    def get_clv_summary(
+        self, track: str = "", race_date: str = "", session_id: str = "",
+    ) -> Dict[str, Any]:
+        """Compute Closing Line Value stats.
+
+        Joins predictions with result_entries (closing odds) and
+        odds_snapshots (morning line) to measure ML → closing shift.
+        Positive CLV = line moved toward our pick.
+        """
+        where_parts = ["1=1"]
+        params: list = []
+        if track:
+            where_parts.append("rp.track = ?")
+            params.append(self._normalize_track(track))
+        if race_date:
+            where_parts.append("rp.race_date = ?")
+            params.append(self._normalize_date(race_date))
+        if session_id:
+            where_parts.append("rp.session_id = ?")
+            params.append(session_id)
+        where = " AND ".join(where_parts)
+
+        rows = self.conn.execute(f"""
+            SELECT rp.pick_rank, rp.confidence, rp.projection_type,
+                   er.odds AS closing_odds, er.finish_pos,
+                   os.odds_decimal AS ml_odds
+            FROM result_predictions rp
+            JOIN result_entries er
+                ON rp.track = er.track AND rp.race_date = er.race_date
+                AND rp.race_number = er.race_number
+                AND rp.normalized_name = er.normalized_name
+            LEFT JOIN odds_snapshots os
+                ON rp.track = os.track AND rp.race_date = os.race_date
+                AND rp.race_number = os.race_number
+                AND rp.normalized_name = os.normalized_name
+                AND os.source = 'morning_line'
+            WHERE {where}
+              AND er.odds IS NOT NULL AND er.odds > 0
+        """, params).fetchall()
+
+        clv_rows = []
+        for r in rows:
+            closing = r["closing_odds"]
+            ml = r["ml_odds"]
+            implied_final = 1.0 / (closing + 1.0)
+            implied_ml = 1.0 / (ml + 1.0) if ml and ml > 0 else None
+            clv = (implied_ml - implied_final) if implied_ml is not None else None
+            clv_rows.append({
+                "pick_rank": r["pick_rank"],
+                "confidence": r["confidence"],
+                "projection_type": r["projection_type"],
+                "clv": clv,
+                "won": r["finish_pos"] == 1,
+            })
+
+        with_clv = [r for r in clv_rows if r["clv"] is not None]
+        beat_count = sum(1 for r in with_clv if r["clv"] > 0)
+        total_clv = len(with_clv)
+        avg_clv = sum(r["clv"] for r in with_clv) / total_clv if total_clv else 0
+
+        # By confidence bucket
+        buckets: Dict[str, list] = {"0-59": [], "60-74": [], "75-84": [], "85+": []}
+        for r in with_clv:
+            c = r["confidence"] * 100
+            if c >= 85:
+                buckets["85+"].append(r)
+            elif c >= 75:
+                buckets["75-84"].append(r)
+            elif c >= 60:
+                buckets["60-74"].append(r)
+            else:
+                buckets["0-59"].append(r)
+
+        clv_by_conf = []
+        for label, bkt in buckets.items():
+            if bkt:
+                avg = sum(r["clv"] for r in bkt) / len(bkt)
+                beat = sum(1 for r in bkt if r["clv"] > 0)
+                clv_by_conf.append({
+                    "confidence": label, "N": len(bkt),
+                    "avg_clv": round(avg * 100, 2),
+                    "beat_pct": round(beat / len(bkt) * 100, 1),
+                })
+
+        # By cycle
+        cycle_groups: Dict[str, list] = {}
+        for r in with_clv:
+            cycle_groups.setdefault(r["projection_type"], []).append(r)
+        clv_by_cycle = []
+        for cyc, grp in sorted(cycle_groups.items()):
+            avg = sum(r["clv"] for r in grp) / len(grp)
+            beat = sum(1 for r in grp if r["clv"] > 0)
+            clv_by_cycle.append({
+                "cycle": cyc, "N": len(grp),
+                "avg_clv": round(avg * 100, 2),
+                "beat_pct": round(beat / len(grp) * 100, 1),
+            })
+
+        return {
+            "total_with_clv": total_clv,
+            "total_without_ml": len(clv_rows) - total_clv,
+            "avg_clv_pct": round(avg_clv * 100, 2),
+            "beat_closing_pct": round(beat_count / total_clv * 100, 1) if total_clv else 0,
+            "clv_by_confidence": clv_by_conf,
+            "clv_by_cycle": clv_by_cycle,
+        }
+
     def get_calibration_data(
         self, min_n: int = 30, track_filter: str = "",
     ) -> Dict[str, Any]:

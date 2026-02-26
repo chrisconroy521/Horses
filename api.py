@@ -970,6 +970,12 @@ async def prediction_roi_detailed(track: str = "", date: str = "", session_id: s
     return _db.get_prediction_roi_detailed(track=track, race_date=date, session_id=session_id)
 
 
+@app.get("/predictions/clv-summary")
+async def prediction_clv_summary(track: str = "", date: str = "", session_id: str = ""):
+    """Closing Line Value analysis — ML vs closing odds shift."""
+    return _db.get_clv_summary(track=track, race_date=date, session_id=session_id)
+
+
 @app.get("/calibration/roi")
 async def calibration_roi(track: str = "", min_n: int = 30):
     """ROI grouped by (track, surface, distance) with threshold recommendations."""
@@ -1697,6 +1703,20 @@ async def build_daily_exotics_endpoint(payload: dict):
         max_plays=max_plays, a_count=tri_a, b_count=tri_b, c_count=tri_c,
         base_wager=tri_base,
     )
+
+    # --- Exposure cap: trim lowest-confidence exotics beyond budget ---
+    max_exotic_pct = float(payload.get("max_exotic_pct", 2.0))
+    max_exotic = settings.bankroll * max_exotic_pct / 100.0
+    all_plays = dd_plays + ex_plays + tri_plays
+    active = [p for p in all_plays if not p.passed]
+    active.sort(key=lambda p: p.confidence, reverse=True)
+    running_cost = 0.0
+    for p in active:
+        if running_cost + p.cost <= max_exotic:
+            running_cost += p.cost
+        else:
+            p.passed = True
+            p.pass_reason = f"Exposure cap (${max_exotic:.0f})"
 
     from dataclasses import asdict as _asdict_ex
     result = {

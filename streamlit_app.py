@@ -767,8 +767,26 @@ def _render_race_snapshot(display_projections, odds_data, odds_by_post, race_num
     # Bounce count
     bounce_count = sum(1 for p in display_projections if p.bounce_risk)
 
+    # Bet Decision Status
+    has_single = False
+    if non_tossed:
+        top = non_tossed[0]
+        has_single = (hasattr(top, 'cycle_priority') and
+                      top.cycle_priority >= 5 and top.confidence >= 0.65 and
+                      not top.bounce_risk)
+    has_depth = len([p for p in non_tossed if p.confidence >= 0.55]) >= 3
+
+    if quality_pct >= 80 and chaos <= 0.30 and has_single:
+        decision, decision_label, decision_color = "GREEN", "WIN + Exotic", "green"
+    elif quality_pct >= 80 and chaos <= 0.55 and has_single:
+        decision, decision_label, decision_color = "YELLOW", "Win Only", "orange"
+    elif quality_pct >= 70 and has_depth and not has_single:
+        decision, decision_label, decision_color = "ORANGE", "Exotic Only", "orange"
+    else:
+        decision, decision_label, decision_color = "RED", "PASS", "red"
+
     st.markdown("**Race Snapshot**")
-    c1, c2, c3, c4, c5 = st.columns(5)
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
     with c1:
         st.metric("Quality", f"{quality_pct:.0f}%")
     with c2:
@@ -779,11 +797,14 @@ def _render_race_snapshot(display_projections, odds_data, odds_by_post, race_num
         st.metric("Bias", bias_str)
     with c5:
         st.metric("Bounce", f"{bounce_count}")
+    with c6:
+        st.metric("Decision", decision)
+        st.caption(f":{decision_color}[{decision_label}]")
 
 
 def _render_top_picks(display_projections, race_number, race_horses=None,
                       trainer_intents=None, workout_grades=None, key_prefix="eng"):
-    """Render top 3 pick cards with structured Signal Summary."""
+    """Render top 3 pick cards — condensed Signal + Strength + Reason."""
     top3 = display_projections[:3]
     trainer_intents = trainer_intents or {}
     workout_grades = workout_grades or {}
@@ -792,32 +813,56 @@ def _render_top_picks(display_projections, race_number, race_horses=None,
         intent = trainer_intents.get(p.name, {})
         wg = workout_grades.get(p.name, {})
         sig = _compute_signal_score(p, intent, wg)
+        score = sig["score"]
 
-        col1, col2, col3 = st.columns([1, 2, 3])
+        # Strength label
+        if score >= 75:
+            strength, s_color = "Strong", "green"
+        elif score >= 60:
+            strength, s_color = "Solid", "blue"
+        elif score >= 45:
+            strength, s_color = "Lean", "orange"
+        else:
+            strength, s_color = "Risky", "red"
+
+        # Primary reason (top 2)
+        reasons = []
+        if p.projection_type in ("PAIRED", "REBOUND", "IMPROVING"):
+            reasons.append(f"{p.projection_type} cycle")
+        if p.new_top_setup:
+            reasons.append(f"New Top: {p.new_top_setup_type}")
+        if intent.get("badge") == "TRAINER_EDGE":
+            reasons.append("Trainer edge")
+        if wg.get("grade") in ("A", "B"):
+            reasons.append(f"Workout {wg['grade']}")
+        if not reasons:
+            reasons.append("Figures only")
+        reason_str = " + ".join(reasons[:2])
+
+        col1, col2 = st.columns([1, 4])
         with col1:
             st.metric(label=f"#{rank}", value=p.name)
         with col2:
             st.markdown(
-                f"**Post {p.post}** | {p.style} | {p.projection_type}  \n"
+                f"**Post {p.post}** | {p.style} | {p.projection_type} | "
                 f"Fig {p.projected_low:.1f}\u2013{p.projected_high:.1f} | "
                 f"Conf {p.confidence:.0%}"
             )
-            score_color = "green" if sig["score"] >= 75 else "blue" if sig["score"] >= 60 else "orange" if sig["score"] >= 45 else "red"
-            st.markdown(f"Signal: :{score_color}[**{sig['score']}**] / 100")
-        with col3:
-            # --- Positives ---
+            st.markdown(
+                f"Signal: :{s_color}[**{score}**] | "
+                f":{s_color}[{strength}] | {reason_str}"
+            )
+
+        with st.expander(f"Details \u2014 {p.name}", expanded=False):
             positives = []
             if p.projection_type in ("PAIRED", "REBOUND", "IMPROVING"):
                 positives.append(f"{p.projection_type} cycle")
             if intent.get("badge") == "TRAINER_EDGE":
-                label = intent.get("label", "edge")
-                positives.append(f"Trainer edge: {label}")
+                positives.append(f"Trainer edge: {intent.get('label', 'edge')}")
             if wg.get("grade") in ("A", "B"):
                 positives.append(f"Workout {wg['grade']}: {wg.get('detail', '')}")
             if p.new_top_setup:
                 positives.append(f"New Top: {p.new_top_setup_type} ({p.new_top_confidence}%)")
-
-            # --- Negatives ---
             negatives = []
             if p.bounce_risk:
                 negatives.append("Bounce risk")
@@ -829,19 +874,12 @@ def _render_top_picks(display_projections, race_number, race_horses=None,
                 negatives.append("No works")
             if p.projection_type == "TAIL_OFF":
                 negatives.append("Declining form")
-
             if positives:
-                pos_lines = "  \n".join(f":green[+] {s}" for s in positives)
-                st.markdown(pos_lines)
+                st.markdown("  \n".join(f":green[+] {s}" for s in positives))
             if negatives:
-                neg_lines = "  \n".join(f":red[-] {s}" for s in negatives)
-                st.markdown(neg_lines)
-            if not positives and not negatives:
-                st.caption("No strong signals")
-
-            with st.expander("Raw Tags", expanded=False):
-                st.caption(", ".join(p.tags) if p.tags else "none")
-                st.caption(p.summary)
+                st.markdown("  \n".join(f":red[-] {s}" for s in negatives))
+            st.caption(f"Tags: {', '.join(p.tags) if p.tags else 'none'}")
+            st.caption(p.summary)
 
 
 def _render_ranked_table(display_projections, race_horses, show_odds,
@@ -4320,6 +4358,51 @@ def results_page():
                 label_key="tag", label_col="Tag",
             )
 
+        # ---------- CLV Analysis ----------
+        try:
+            clv_resp = requests.get(
+                f"{API_BASE_URL}/predictions/clv-summary",
+                params=roi_params, timeout=15,
+            )
+            clv = clv_resp.json() if clv_resp.status_code == 200 else {}
+        except Exception:
+            clv = {}
+
+        if clv.get("total_with_clv", 0) > 0:
+            st.divider()
+            render_section_header("Closing Line Value (CLV)")
+            mc1, mc2, mc3 = st.columns(3)
+            with mc1:
+                st.metric("Avg CLV", f"{clv['avg_clv_pct']:+.1f}%")
+            with mc2:
+                st.metric("Beat Closing %", f"{clv['beat_closing_pct']:.0f}%")
+            with mc3:
+                st.metric("Sample Size", clv["total_with_clv"])
+
+            clv_conf = clv.get("clv_by_confidence", [])
+            if clv_conf:
+                st.markdown("**CLV by Confidence**")
+                st.dataframe(
+                    pd.DataFrame(clv_conf).rename(columns={
+                        "confidence": "Confidence", "N": "N",
+                        "avg_clv": "Avg CLV%", "beat_pct": "Beat%",
+                    }),
+                    hide_index=True, use_container_width=True,
+                )
+
+            clv_cycle = clv.get("clv_by_cycle", [])
+            if clv_cycle:
+                st.markdown("**CLV by Cycle**")
+                st.dataframe(
+                    pd.DataFrame(clv_cycle).rename(columns={
+                        "cycle": "Cycle", "N": "N",
+                        "avg_clv": "Avg CLV%", "beat_pct": "Beat%",
+                    }),
+                    hide_index=True, use_container_width=True,
+                )
+
+            st.caption("CLV = ML implied prob \u2192 closing implied prob shift. Positive = market agreed with our pick.")
+
         st.divider()
 
         # ---------- Top Leaks ----------
@@ -4891,6 +4974,13 @@ def daily_wins_page():
         st.caption("**Top N Plays**")
         dw_top_n = st.number_input("Max exotic plays per type", min_value=3, max_value=10, value=5, key="dw_top_n")
 
+        st.caption("**Exposure Cap**")
+        dw_exotic_cap = st.number_input(
+            "Max exotic exposure (% of bankroll)",
+            min_value=0.5, max_value=5.0, value=2.0, step=0.5,
+            key="dw_exotic_cap",
+        )
+
     # --- Generate ---
     if st.button("Generate Daily Best Bets", type="primary", key="btn_daily_wins"):
         if not dw_date_str:
@@ -4930,6 +5020,7 @@ def daily_wins_page():
                                           "ex_base_wager": dw_ex_base,
                                           "tri_base_wager": dw_tri_base,
                                           "max_plays": dw_top_n,
+                                          "max_exotic_pct": dw_exotic_cap,
                                           "save": True}
                             ex_resp = api_post("/bets/daily-exotics", json=ex_payload, timeout=30)
                             if ex_resp.status_code == 200:
@@ -4938,6 +5029,16 @@ def daily_wins_page():
                                 ex_plan_id = ex_data.get("plan_id")
                                 if ex_plan_id:
                                     st.success(f"Exotic plan saved (plan_id={ex_plan_id})")
+                                # Show exposure cap warning if plays were trimmed
+                                all_ex = (ex_data.get("daily_doubles", []) +
+                                          ex_data.get("exactas", []) +
+                                          ex_data.get("trifectas", []))
+                                trimmed_ct = sum(1 for p in all_ex
+                                                 if p.get("passed") and
+                                                 "Exposure cap" in (p.get("pass_reason") or ""))
+                                if trimmed_ct:
+                                    cap_amt = bankroll * dw_exotic_cap / 100
+                                    st.warning(f"{trimmed_ct} exotic play(s) trimmed by exposure cap (${cap_amt:.0f} max)")
                             else:
                                 st.session_state["dw_exotics"] = None
                         except Exception:
