@@ -1309,6 +1309,23 @@ class Persistence:
                 )
                 new_matches += 1
 
+        # --- Pass 2.5: HIGH — track + date + race + fuzzy-stripped name ---
+        for row in rows2:
+            if row["horse_id"] in _reconciled_sheets_ids():
+                continue
+            sh_fuzzy = self._fuzzy_strip(row["normalized_name"])
+            bh_fuzzy = self._fuzzy_strip(row["bn"])
+            sh_resolved = alias_map.get(sh_fuzzy, sh_fuzzy)
+            bh_resolved = alias_map.get(bh_fuzzy, bh_fuzzy)
+            if sh_resolved == bh_resolved:
+                self.conn.execute(
+                    """INSERT OR IGNORE INTO reconciliation
+                       (horse_id, brisnet_id, match_method, confidence, created_at)
+                       VALUES (?, ?, 'fuzzy_strip_race', 'high', ?)""",
+                    (row["horse_id"], row["brisnet_id"], now),
+                )
+                new_matches += 1
+
         # --- Pass 3: MED — normalized_name + track + date ---
         rows3 = self.conn.execute(
             """
@@ -1333,6 +1350,23 @@ class Persistence:
                     """INSERT OR IGNORE INTO reconciliation
                        (horse_id, brisnet_id, match_method, confidence, created_at)
                        VALUES (?, ?, 'name_track_date', 'medium', ?)""",
+                    (row["horse_id"], row["brisnet_id"], now),
+                )
+                new_matches += 1
+
+        # --- Pass 3.5: MED — fuzzy-stripped name + track + date ---
+        for row in rows3:
+            if row["horse_id"] in _reconciled_sheets_ids():
+                continue
+            sh_fuzzy = self._fuzzy_strip(row["normalized_name"])
+            bh_fuzzy = self._fuzzy_strip(row["bn"])
+            sh_resolved = alias_map.get(sh_fuzzy, sh_fuzzy)
+            bh_resolved = alias_map.get(bh_fuzzy, bh_fuzzy)
+            if sh_resolved == bh_resolved:
+                self.conn.execute(
+                    """INSERT OR IGNORE INTO reconciliation
+                       (horse_id, brisnet_id, match_method, confidence, created_at)
+                       VALUES (?, ?, 'fuzzy_strip_name', 'medium', ?)""",
                     (row["horse_id"], row["brisnet_id"], now),
                 )
                 new_matches += 1

@@ -6,9 +6,16 @@ from typing import Dict, List, Any
 
 # --- Name normalization ---
 
+# Country suffixes commonly appended in Ragozin sheets (e.g. RESORT-FR, PALACE VIEW-IR)
+_COUNTRY_SUFFIX_RE = re.compile(
+    r'\s*-\s*(?:fr|ir|gb|ire|jpn|aus|brz|chi|arg|ger|ity|uru|per|tur|kor|'
+    r'saf|uae|hk|nz|can|mex|spa|swe|nor|den|cze|hun|pol|ind|sar|bhr|qat|sin|mac)\s*$',
+    re.IGNORECASE)
+
 def normalize_name(name: str) -> str:
-    """Lowercase, strip punctuation, collapse whitespace."""
-    name = name.lower()
+    """Lowercase, strip country suffixes, strip punctuation, collapse whitespace."""
+    name = name.lower().strip()
+    name = _COUNTRY_SUFFIX_RE.sub('', name)
     name = re.sub(r'[^\w\s]', '', name)
     name = re.sub(r'\s+', ' ', name).strip()
     return name
@@ -251,6 +258,7 @@ def merge_primary_secondary(
 
     matched = 0
     unmatched_names: List[str] = []
+    matched_sec_ids: set = set()
     merged_horses: List[Dict] = []
 
     for ph in primary_horses:
@@ -273,12 +281,22 @@ def merge_primary_secondary(
                 if not _is_empty(sec_val):
                     merged_h[fld] = sec_val
             merged_h['enrichment_source'] = 'both'
+            matched_sec_ids.add(id(sec_h))
             matched += 1
         else:
             merged_h['enrichment_source'] = 'primary_only'
             unmatched_names.append(ph.get('horse_name', '?'))
 
         merged_horses.append(merged_h)
+
+    # --- Collect BRISNET-only horses (in secondary but not matched to primary) ---
+    secondary_only_names: List[str] = []
+    for sh in secondary_horses:
+        if id(sh) not in matched_sec_ids:
+            brisnet_h = dict(sh)
+            brisnet_h['enrichment_source'] = 'secondary_only'
+            merged_horses.append(brisnet_h)
+            secondary_only_names.append(sh.get('horse_name', sh.get('name', '?')))
 
     total = len(primary_horses)
     coverage_pct = (matched / total * 100) if total else 0
@@ -298,6 +316,8 @@ def merge_primary_secondary(
         'total_secondary': len(secondary_horses),
         'coverage_pct': round(coverage_pct, 1),
         'coverage': f"{matched}/{total} horses matched",
+        'secondary_only': len(secondary_only_names),
+        'secondary_only_names': secondary_only_names,
     }
 
     return result

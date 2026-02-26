@@ -246,12 +246,16 @@ def _quality_badge(pct_missing: float) -> str:
         return f":red[BLOCK {quality:.0%}]"
 
 
+_COUNTRY_SUFFIX_RE_UI = re.compile(
+    r'\s*-\s*(?:FR|IR|GB|IRE|JPN|AUS|BRZ|CHI|ARG|GER|ITY|URU|PER|TUR|KOR|'
+    r'SAF|UAE|HK|NZ|CAN|MEX|SPA|SWE|NOR|DEN|CZE|HUN|POL|IND|SAR|BHR|QAT|SIN|MAC)\s*$')
+
 def _normalize_name_ui(name: str) -> str:
-    """Uppercase, strip punctuation, collapse whitespace (mirror persistence logic)."""
-    import re as _re
+    """Uppercase, strip country suffixes, strip punctuation, collapse whitespace."""
     n = (name or "").upper().strip()
-    n = _re.sub(r"[\u2018\u2019\u201C\u201D'\-.,()\"']", "", n)
-    n = _re.sub(r"\s+", " ", n)
+    n = _COUNTRY_SUFFIX_RE_UI.sub('', n)
+    n = re.sub(r"[\u2018\u2019\u201C\u201D'\-.,()\"']", "", n)
+    n = re.sub(r"\s+", " ", n)
     return n
 
 
@@ -980,6 +984,71 @@ def _render_ranked_table(display_projections, race_horses, show_odds,
                             pct_str = f" ({win_pct}%)" if isinstance(win_pct, (int, float)) and win_pct > 1 else f" ({win_pct:.0%})"
                         parts.append(f"Trainer: {intent['label']}{pct_str}")
                     st.markdown(" | ".join(parts))
+
+
+def _compute_roster_coverage(race_groups: dict) -> dict:
+    """Per-race roster coverage: how many horses have Ragozin sheets data."""
+    coverage = {}
+    for rn, horses in race_groups.items():
+        roster_count = len(horses)
+        missing = [h for h in horses if h.get('enrichment_source') == 'secondary_only']
+        sheets_mapped = roster_count - len(missing)
+        coverage[rn] = {
+            'roster_count': roster_count,
+            'sheets_mapped': sheets_mapped,
+            'missing_on_sheets': missing,
+            'missing_count': len(missing),
+            'coverage_pct': sheets_mapped / roster_count if roster_count > 0 else 1.0,
+        }
+    return coverage
+
+
+def _roster_badge(coverage_pct: float) -> str:
+    """Colored badge for roster coverage percentage."""
+    if coverage_pct >= 1.0:
+        return ""
+    elif coverage_pct >= 0.8:
+        return f":orange[{coverage_pct:.0%}]"
+    else:
+        return f":red[{coverage_pct:.0%}]"
+
+
+def _render_no_sheet_horses(race_all_horses, scratches, race_num,
+                            odds_data, odds_by_post):
+    """Show horses present in BRISNET but missing from the Ragozin sheet."""
+    no_sheet = [
+        h for h in race_all_horses
+        if h.get('enrichment_source') == 'secondary_only'
+        and h.get('horse_name', h.get('name', '')) not in scratches
+    ]
+    if not no_sheet:
+        return
+
+    st.markdown("---")
+    st.subheader(f"NO SHEET ({len(no_sheet)})")
+    st.caption("These horses appear in BRISNET data but have no Ragozin sheet. No projection available.")
+
+    rows = []
+    for h in no_sheet:
+        name = h.get('horse_name', h.get('name', 'Unknown'))
+        post = h.get('post', '')
+        o = _lookup_odds(race_num, name, post, odds_data, odds_by_post)
+        life_starts = h.get('life_starts', '')
+        life_record = h.get('life_record', '')
+        life = f"{life_starts} starts {life_record}".strip() if life_starts else ''
+        row = {
+            'Post': str(post),
+            'Horse': name,
+            'Trainer': h.get('trainer', ''),
+            'Jockey': h.get('jockey', ''),
+            'Odds (ML)': _fmt_odds_display(o) if o else str(h.get('odds', '')),
+            'Prime Power': str(h.get('prime_power', '')) if h.get('prime_power') is not None else '',
+            'Life': life,
+        }
+        rows.append(row)
+
+    if rows:
+        render_styled_table(pd.DataFrame(rows))
 
 
 def _render_analysis_expanders(sorted_by_bias, audit, race_horses, key_prefix="eng"):
@@ -2367,12 +2436,18 @@ def engine_page():
         rn = h.get('race_number', 0) or 0
         race_groups.setdefault(rn, []).append(h)
 
+    roster_coverage = _compute_roster_coverage(race_groups)
+
     race_summary_parts = []
     for rn in sorted(race_groups.keys()):
         count = len(race_groups[rn])
         label = f"R{rn}" if rn else "Ungrouped"
         q_pct = _race_quality.get(rn)
         badge = f" {_quality_badge(q_pct)}" if q_pct is not None else ""
+        rc = roster_coverage.get(rn, {})
+        rb = _roster_badge(rc.get('coverage_pct', 1.0))
+        if rb:
+            badge += f" Roster:{rb}"
         race_summary_parts.append(f"{label}: {count}{badge}")
     st.markdown(" | ".join(race_summary_parts))
 
@@ -2405,11 +2480,18 @@ def engine_page():
     st.subheader("Race Analysis")
 
     race_options = sorted(race_groups.keys())
-    race_labels = {
-        rn: f"Race {rn} ({len(race_groups[rn])} horses)" if rn
-        else f"All ({len(race_groups[rn])} horses)"
-        for rn in race_options
-    }
+    race_labels = {}
+    for rn in race_options:
+        count = len(race_groups[rn])
+        rc = roster_coverage.get(rn, {})
+        missing = rc.get('missing_count', 0)
+        if rn:
+            lbl = f"Race {rn} ({count} horses)"
+            if missing > 0:
+                lbl += f" [{missing} NO SHEET]"
+        else:
+            lbl = f"All ({count} horses)"
+        race_labels[rn] = lbl
     selected_race = st.selectbox(
         "Race:",
         options=race_options,
@@ -2421,7 +2503,9 @@ def engine_page():
     scratch_key = f"scratch_{sel_id}_{selected_race}"
     scratches = st.multiselect("Scratches:", options=race_names, key=scratch_key)
 
-    race_horses = [h for h in race_all_horses if h.get('horse_name', '') not in scratches]
+    race_horses = [h for h in race_all_horses
+                   if h.get('horse_name', '') not in scratches
+                   and h.get('enrichment_source') != 'secondary_only']
     if not race_horses:
         st.warning("All horses scratched.")
         return
@@ -2496,6 +2580,10 @@ def engine_page():
                              workout_grades=_workout_grades,
                              key_prefix=f"eng_{sel_id}")
 
+        # --- NO SHEET horses (BRISNET only, no Ragozin data) ---
+        _render_no_sheet_horses(race_all_horses, scratches, selected_race,
+                                _odds_data, _odds_by_post)
+
         # --- Analysis expanders ---
         _render_analysis_expanders(sorted_by_bias, audit, race_horses,
                                    key_prefix=f"eng_{sel_id}")
@@ -2512,8 +2600,34 @@ def engine_page():
         if override:
             best_bets_blocked = False
 
+    # Roster coverage check
+    total_missing = sum(rc.get('missing_count', 0) for rc in roster_coverage.values())
+    races_with_missing = {
+        rn: rc for rn, rc in roster_coverage.items()
+        if rc.get('missing_count', 0) > 0
+    }
+    if total_missing > 0 and not best_bets_blocked:
+        st.warning(
+            f"Roster coverage gap: {total_missing} horse(s) across "
+            f"{len(races_with_missing)} race(s) have NO SHEET data."
+        )
+        with st.expander("Missing horses detail"):
+            for rn in sorted(races_with_missing.keys()):
+                rc = races_with_missing[rn]
+                names = [h.get('horse_name', '?') for h in rc['missing_on_sheets']]
+                st.markdown(
+                    f"**R{rn}** ({rc['coverage_pct']:.0%} coverage): "
+                    + ", ".join(names)
+                )
+        roster_override = st.checkbox(
+            "Override roster coverage warning and allow Best Bets",
+            key="roster_override",
+        )
+        if not roster_override:
+            best_bets_blocked = True
+
     if best_bets_blocked:
-        st.info("Best Bets disabled due to figure quality issues. Check the override box above to proceed anyway.")
+        st.info("Best Bets disabled due to figure quality or roster coverage issues. Check override box(es) above to proceed.")
     elif st.button("Generate Best Bets"):
         all_bets = []
         progress = st.progress(0)
@@ -2523,7 +2637,9 @@ def engine_page():
             # Apply per-race scratches from session state
             rn_scratch_key = f"scratch_{sel_id}_{rn}"
             rn_scratches = st.session_state.get(rn_scratch_key, [])
-            rh = [h for h in race_groups[rn] if h.get('horse_name', '') not in rn_scratches]
+            rh = [h for h in race_groups[rn]
+                  if h.get('horse_name', '') not in rn_scratches
+                  and h.get('enrichment_source') != 'secondary_only']
             if not rh:
                 progress.progress((idx + 1) / len(race_keys))
                 continue
@@ -2554,6 +2670,33 @@ def engine_page():
     if best_bets:
         _render_best_bets_table(best_bets, _odds_data, _odds_by_post,
                                 key_prefix=f"eng_bb_{sel_id}")
+
+        # --- UNSCANNED HORSES across all races ---
+        if total_missing > 0:
+            st.markdown("---")
+            st.subheader(f"UNSCANNED HORSES ({total_missing})")
+            st.caption(
+                "These horses appear in BRISNET roster but have no Ragozin sheet. "
+                "They are excluded from projections and picks."
+            )
+            unscanned_rows = []
+            for rn in sorted(races_with_missing.keys()):
+                rc = races_with_missing[rn]
+                for h in rc['missing_on_sheets']:
+                    name = h.get('horse_name', h.get('name', '?'))
+                    post = h.get('post', '')
+                    o = _lookup_odds(rn, name, post, _odds_data, _odds_by_post)
+                    unscanned_rows.append({
+                        'Race': rn,
+                        'Post': str(post),
+                        'Horse': name,
+                        'Trainer': h.get('trainer', ''),
+                        'Jockey': h.get('jockey', ''),
+                        'Odds (ML)': _fmt_odds_display(o) if o else str(h.get('odds', '')),
+                        'Prime Power': str(h.get('prime_power', '')) if h.get('prime_power') is not None else '',
+                    })
+            if unscanned_rows:
+                render_styled_table(pd.DataFrame(unscanned_rows))
 
     # =====================================================================
     # (C) Bet Builder — inline on Engine page
