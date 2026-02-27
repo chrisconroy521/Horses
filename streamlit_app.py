@@ -4199,7 +4199,7 @@ def _show_ingest_result(res: dict, session_id: str = ""):
 
 
 def _render_predictions_dashboard(track: str = "", date: str = "", session_id: str = ""):
-    """Render the Predicted vs Winner side-by-side dashboard."""
+    """Render the diagnostic Predicted vs Winner dashboard."""
     params = {}
     if track:
         params["track"] = track
@@ -4223,7 +4223,12 @@ def _render_predictions_dashboard(track: str = "", date: str = "", session_id: s
 
     render_section_header("Predicted vs Winner")
 
-    # Summary metrics
+    # Show which session is being used
+    dash_sid = summary.get("session_id", "")
+    if dash_sid:
+        st.caption(f"Session: `{dash_sid[:12]}...`")
+
+    # Summary metrics — row 1: hit rates
     total = summary.get("total_races", 0)
     wins = summary.get("exact_wins", 0)
     top2 = summary.get("top2_hits", 0)
@@ -4235,19 +4240,49 @@ def _render_predictions_dashboard(track: str = "", date: str = "", session_id: s
         "Top-2 Rate": f"{summary.get('top2_rate', 0):.1f}%",
     })
 
+    # Summary metrics — row 2: ROI tiles
+    avg_winner = summary.get("avg_winner_odds")
+    avg_pick = summary.get("avg_pick_odds")
+    win_roi = summary.get("win_roi_pct", 0)
+    render_metrics_row({
+        "Avg Winner Odds": f"{avg_winner:.1f}-1" if avg_winner else "N/A",
+        "Avg Pick#1 Odds": f"{avg_pick:.1f}-1" if avg_pick else "N/A",
+        "$2 Win ROI": f"{win_roi:+.1f}%",
+        "Win Payoff": f"${summary.get('total_win_payoff', 0):.2f}",
+    })
+
+    # Data integrity badge
+    post_ct = summary.get("match_by_post", 0)
+    name_ct = summary.get("match_by_name", 0)
+    unmatched_ct = summary.get("match_unmatched", 0)
+    matched_total = post_ct + name_ct + unmatched_ct
+    if matched_total:
+        if unmatched_ct == 0:
+            badge_color = "green"
+        elif unmatched_ct <= 2:
+            badge_color = "orange"
+        else:
+            badge_color = "red"
+        st.markdown(
+            f"**Data Integrity:** :{badge_color}[{post_ct} by POST, {name_ct} by NAME, {unmatched_ct} unmatched] "
+            f"of {matched_total} predictions"
+        )
+
     # Toggles
-    tcol1, tcol2 = st.columns(2)
+    tcol1, tcol2, tcol3 = st.columns(3)
     with tcol1:
         show_backups = st.toggle("Show backups (Top 2/Top 3)", value=False, key="toggle_show_backups")
     with tcol2:
         show_debug = st.toggle("Show source details", value=False, key="toggle_show_debug")
+    with tcol3:
+        show_miss_info = st.toggle("Show miss analysis", value=False, key="toggle_show_miss")
 
     # Build table rows
     table_rows = []
     for r in races:
         rn = r["race_number"]
-        predicted = r.get("predicted_1") or "—"
-        winner = r.get("winner") or "—"
+        predicted = r.get("predicted_1") or "---"
+        winner = r.get("winner") or "---"
         hit1 = r.get("hit_1", False)
         top2_hit = r.get("top2_hit", False)
 
@@ -4270,17 +4305,25 @@ def _render_predictions_dashboard(track: str = "", date: str = "", session_id: s
             "Winner": winner,
             "Odds": odds_str,
             "Hit?": hit_str,
+            "Miss Type": r.get("miss_type") or "" if not hit1 else "",
         }
 
         if show_backups:
-            row["Backup"] = r.get("predicted_2") or "—"
+            row["Backup"] = r.get("predicted_2") or "---"
             row["Top-2?"] = "YES" if top2_hit else "NO"
+
+        if show_miss_info:
+            row["Why Missed"] = r.get("why_missed") or ""
+            row["Rule"] = r.get("rule_suggestion") or ""
 
         if show_debug:
             row["Match"] = r.get("match_method") or "NONE"
-            row["Result Name"] = r.get("result_horse_name") or "—"
+            row["Result Name"] = r.get("result_horse_name") or "---"
+            row["Rank"] = r.get("predicted_1_rank") or "---"
+            score = r.get("predicted_1_score")
+            row["Score"] = f"{score:.1f}" if score else "---"
             p1_fin = r.get("predicted_1_finish")
-            row["Pred Finish"] = f"{p1_fin}" if p1_fin else "—"
+            row["Pred Finish"] = f"{p1_fin}" if p1_fin else "---"
 
         table_rows.append(row)
 
@@ -4294,13 +4337,88 @@ def _render_predictions_dashboard(track: str = "", date: str = "", session_id: s
             return "color: #f59e0b; font-weight: bold"
         return "color: #ef4444"
 
+    _miss_type_colors = {
+        "LONGSHOT_WINNER": "color: #6366f1",
+        "BOUNCE": "color: #f97316",
+        "TOSSED_WON": "color: #ef4444; font-weight: bold",
+        "LOW_CONFIDENCE": "color: #a855f7",
+        "NEW_TOP_MISS": "color: #eab308",
+        "CHALK_MISS": "color: #ef4444",
+        "CLOSE_MISS": "color: #f59e0b",
+        "FIELD_MISS": "color: #9ca3af",
+    }
+
+    def _style_miss_type(val):
+        return _miss_type_colors.get(val, "")
+
     styled = df.style.applymap(_style_hit, subset=["Hit?"])
-    if show_backups:
+    if "Miss Type" in df.columns:
+        styled = styled.applymap(_style_miss_type, subset=["Miss Type"])
+    if show_backups and "Top-2?" in df.columns:
         styled = styled.applymap(
             lambda v: "color: #22c55e; font-weight: bold" if v == "YES" else "color: #ef4444",
             subset=["Top-2?"],
         )
     st.dataframe(styled, use_container_width=True, hide_index=True)
+
+    # Race drilldowns
+    st.markdown("#### Race Details")
+    for r in races:
+        rn = r["race_number"]
+        predicted = r.get("predicted_1") or "---"
+        winner = r.get("winner") or "---"
+        hit_label = "WIN" if r.get("hit_1") else ("2nd" if r.get("top2_hit") else "MISS")
+        miss_tag = f" [{r.get('miss_type')}]" if r.get("miss_type") else ""
+
+        with st.expander(f"R{rn}: {predicted} vs {winner} ({hit_label}{miss_tag})", expanded=False):
+            col_left, col_right = st.columns(2)
+
+            with col_left:
+                st.markdown("**Engine Top 5 Picks**")
+                top5_preds = r.get("top5_predictions", [])
+                if top5_preds:
+                    pred_rows_dd = []
+                    for p in top5_preds:
+                        conf = p.get("confidence")
+                        pred_rows_dd.append({
+                            "Rank": p.get("rank"),
+                            "Horse": p.get("horse"),
+                            "Score": f"{p['score']:.1f}" if p.get("score") is not None else "---",
+                            "Conf": f"{conf*100:.0f}%" if conf is not None else "---",
+                            "Cycle": p.get("cycle") or "---",
+                            "Finish": p.get("finish_pos") or "---",
+                            "Odds": f"{p['odds']:.1f}" if p.get("odds") is not None else "---",
+                        })
+                    st.dataframe(pd.DataFrame(pred_rows_dd), use_container_width=True, hide_index=True)
+
+            with col_right:
+                st.markdown("**Actual Top 5 Finishers**")
+                top5_fin = r.get("top5_finishers", [])
+                if top5_fin:
+                    fin_rows_dd = []
+                    for f in top5_fin:
+                        fin_rows_dd.append({
+                            "Pos": f.get("finish_pos"),
+                            "Horse": f.get("horse"),
+                            "Odds": f"{f['odds']:.1f}" if f.get("odds") is not None else "---",
+                            "Payoff": f"${f['win_payoff']:.2f}" if f.get("win_payoff") else "---",
+                        })
+                    st.dataframe(pd.DataFrame(fin_rows_dd), use_container_width=True, hide_index=True)
+
+            if r.get("why_missed"):
+                st.info(r["why_missed"])
+            if r.get("rule_suggestion"):
+                st.caption(r["rule_suggestion"])
+
+    # Miss type distribution chart
+    miss_counts = summary.get("miss_type_counts", {})
+    if miss_counts:
+        st.markdown("#### Miss Type Distribution")
+        miss_df = pd.DataFrame([
+            {"Type": k, "Count": v}
+            for k, v in sorted(miss_counts.items(), key=lambda x: -x[1])
+        ])
+        st.bar_chart(miss_df, x="Type", y="Count")
 
     # Refresh button
     if st.button("Refresh Dashboard", key="btn_refresh_dashboard"):

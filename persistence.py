@@ -497,12 +497,49 @@ class Persistence:
         rp_cols = self._get_table_columns("result_predictions")
         if rp_cols and "post" not in rp_cols:
             self.conn.execute("ALTER TABLE result_predictions ADD COLUMN post INTEGER")
+        # Re-rank predictions by bias_score DESC (fix historical ordering mismatch)
+        self._rerank_predictions_by_bias()
         # result_races — add status column for parse error tracking
         rr_cols = self._get_table_columns("result_races")
         if rr_cols and "status" not in rr_cols:
             self.conn.execute("ALTER TABLE result_races ADD COLUMN status TEXT DEFAULT 'OK'")
         self.conn.commit()
         self._renormalize_names()
+
+    def _rerank_predictions_by_bias(self) -> None:
+        """Re-rank predictions by bias_score DESC within each race group.
+
+        Fixes historical data where pick_rank was assigned by engine sort
+        order (cycle_priority) instead of bias_score (what the user sees).
+        Idempotent — skips groups already correctly ranked.
+        """
+        groups = self.conn.execute("""
+            SELECT DISTINCT session_id, track, race_date, race_number
+            FROM result_predictions
+        """).fetchall()
+        updated = 0
+        for g in groups:
+            sid, track, rdate, rn = g
+            rows = self.conn.execute("""
+                SELECT prediction_id, pick_rank, bias_score
+                FROM result_predictions
+                WHERE session_id = ? AND track = ? AND race_date = ? AND race_number = ?
+                ORDER BY bias_score DESC
+            """, (sid, track, rdate, rn)).fetchall()
+            needs_update = False
+            for new_rank, r in enumerate(rows, 1):
+                if r["pick_rank"] != new_rank:
+                    needs_update = True
+                    break
+            if needs_update:
+                for new_rank, r in enumerate(rows, 1):
+                    self.conn.execute(
+                        "UPDATE result_predictions SET pick_rank = ? WHERE prediction_id = ?",
+                        (new_rank, r["prediction_id"]),
+                    )
+                updated += 1
+        if updated:
+            self.conn.commit()
 
     def _renormalize_names(self) -> None:
         """Re-apply _normalize_name to all stored normalized_name columns.
@@ -2214,6 +2251,12 @@ class Persistence:
         track = self._normalize_track(track)
         race_date = self._normalize_date(race_date)
         now = datetime.utcnow().isoformat()
+        # Sort by bias_score DESC to match Engine page display order
+        projections = sorted(
+            projections,
+            key=lambda p: (p.get("bias_score", 0) or 0),
+            reverse=True,
+        )
         count = 0
         for rank, p in enumerate(projections, 1):
             norm = self._normalize_name(p["name"])
@@ -2345,10 +2388,72 @@ class Persistence:
 
         return [dict(r) for r in rows]
 
+    @staticmethod
+    def _classify_miss(pick1: dict, winner: dict) -> tuple:
+        """Classify why a pick missed. Returns (miss_type, why_missed, rule_suggestion)."""
+        winner_odds = winner.get("odds") if winner else None
+        p1_finish = pick1.get("finish_pos")
+        p1_conf = pick1.get("confidence") or 0
+        p1_bounce = pick1.get("bounce_risk")
+        p1_new_top = pick1.get("new_top_setup")
+        p1_odds = pick1.get("odds")
+        p1_cycle = pick1.get("projection_type", "")
+        winner_payoff = winner.get("win_payoff") if winner else None
+
+        if winner_odds and winner_odds >= 10.0:
+            payoff_str = f"${winner_payoff:.2f}" if winner_payoff else f"{winner_odds:.0f}-1"
+            return (
+                "LONGSHOT_WINNER",
+                f"Winner paid {payoff_str} (longshot) — outside Engine scope",
+                "No action needed — longshots are unpredictable",
+            )
+
+        if p1_bounce and p1_finish and p1_finish >= 4:
+            return (
+                "BOUNCE",
+                f"Pick had bounce_risk flag and finished {p1_finish}th — bounce materialized",
+                f"Skip when bounce_risk=True and cycle={p1_cycle}",
+            )
+
+        if p1_conf < 0.5:
+            return (
+                "LOW_CONFIDENCE",
+                f"Pick confidence was {p1_conf*100:.0f}% (below 50%) and missed",
+                "Skip when confidence < 50%",
+            )
+
+        if p1_new_top and p1_finish and p1_finish > 3:
+            return (
+                "NEW_TOP_MISS",
+                f"Pick was new_top_setup but finished {p1_finish}th",
+                "Downgrade new_top_setup picks in large fields",
+            )
+
+        if p1_odds is not None and p1_odds <= 2.0:
+            return (
+                "CHALK_MISS",
+                f"Pick was chalk ({p1_odds:.1f}-1) but lost",
+                "Reduce exposure on heavy chalk (<= 2-1)",
+            )
+
+        if p1_finish and p1_finish in (2, 3):
+            suffix = "nd" if p1_finish == 2 else "rd"
+            return (
+                "CLOSE_MISS",
+                f"Pick finished {p1_finish}{suffix} — close but no cigar",
+                "Consider place/show bets as backup",
+            )
+
+        return (
+            "FIELD_MISS",
+            "Standard miss — no single flag explains the result",
+            "",
+        )
+
     def get_dashboard_predictions_vs_results(
         self, track: str = "", race_date: str = "", session_id: str = "",
     ) -> Dict[str, Any]:
-        """Per-race predicted top-2 vs actual top-2 for dashboard display."""
+        """Per-race diagnostic dashboard: predictions vs results with miss analysis."""
         # If no session specified, find the latest one for this track/date
         if not session_id:
             sid_where = ["1=1"]
@@ -2382,7 +2487,10 @@ class Persistence:
         # Predictions joined with their result finish positions
         pred_rows = self.conn.execute(f"""
             SELECT rp.race_number, rp.horse_name, rp.pick_rank,
-                   er.finish_pos, er.odds,
+                   rp.projection_type, rp.bias_score, rp.confidence,
+                   rp.new_top_setup, rp.bounce_risk, rp.tossed,
+                   rp.saved_at, rp.session_id,
+                   er.finish_pos, er.odds, er.win_payoff,
                    er.horse_name AS result_horse_name,
                    CASE WHEN rp.post IS NOT NULL AND rp.post = er.post THEN 'POST'
                         WHEN rp.post IS NULL AND er.entry_result_id IS NOT NULL THEN 'NAME'
@@ -2416,29 +2524,32 @@ class Persistence:
         re_where = " AND ".join(re_where_parts)
 
         result_rows = self.conn.execute(f"""
-            SELECT re.race_number, re.horse_name, re.finish_pos, re.odds
+            SELECT re.race_number, re.horse_name, re.finish_pos, re.odds,
+                   re.win_payoff, re.post
             FROM result_entries re
             LEFT JOIN result_races rr
                 ON re.track = rr.track AND re.race_date = rr.race_date
                 AND re.race_number = rr.race_number
-            WHERE {re_where} AND re.finish_pos IN (1, 2)
+            WHERE {re_where} AND re.finish_pos BETWEEN 1 AND 5
               AND COALESCE(rr.status, 'OK') != 'PARSE_ERROR'
             ORDER BY re.race_number, re.finish_pos
         """, re_params).fetchall()
 
         # Index actual finishers by race
+        from collections import defaultdict
         winners: Dict[int, Dict] = {}
         runners_up: Dict[int, Dict] = {}
+        top5_by_race: Dict[int, List[Dict]] = defaultdict(list)
         for r in result_rows:
             rd = dict(r)
             rn = rd["race_number"]
+            top5_by_race[rn].append(rd)
             if rd["finish_pos"] == 1 and rn not in winners:
                 winners[rn] = rd
             elif rd["finish_pos"] == 2 and rn not in runners_up:
                 runners_up[rn] = rd
 
         # Group predictions by race
-        from collections import defaultdict
         preds_by_race: Dict[int, list] = defaultdict(list)
         for r in pred_rows:
             preds_by_race[dict(r)["race_number"]].append(dict(r))
@@ -2447,6 +2558,17 @@ class Persistence:
         exact_wins = 0
         top2_hits = 0
         exact_2nds = 0
+        # ROI / integrity accumulators
+        total_winner_odds = 0.0
+        winner_odds_count = 0
+        total_pick_odds = 0.0
+        pick_odds_count = 0
+        total_win_payoff = 0.0
+        total_bets = 0
+        match_by_post = 0
+        match_by_name = 0
+        match_unmatched = 0
+        miss_type_counts: Dict[str, int] = defaultdict(int)
 
         for rn in sorted(preds_by_race.keys()):
             preds = preds_by_race[rn]
@@ -2469,10 +2591,53 @@ class Persistence:
                 hit_2 = True
                 exact_2nds += 1
 
+            # ROI accumulators
+            if winner and winner.get("odds"):
+                total_winner_odds += winner["odds"]
+                winner_odds_count += 1
+            if pick1 and pick1.get("odds") is not None:
+                total_pick_odds += pick1["odds"]
+                pick_odds_count += 1
+            if pick1:
+                total_bets += 1
+                if hit_1 and pick1.get("win_payoff"):
+                    total_win_payoff += pick1["win_payoff"]
+                mm = pick1.get("match_method")
+                if mm == "POST":
+                    match_by_post += 1
+                elif mm == "NAME":
+                    match_by_name += 1
+                else:
+                    match_unmatched += 1
+
+            # Miss classification
+            miss_type = ""
+            why_missed = ""
+            rule_suggestion = ""
+            if pick1 and not hit_1:
+                # Check if a tossed horse won
+                tossed_winner = None
+                for p in preds:
+                    if p.get("tossed") and p.get("finish_pos") == 1:
+                        tossed_winner = p
+                        break
+                if tossed_winner:
+                    miss_type = "TOSSED_WON"
+                    why_missed = f"Tossed horse '{tossed_winner['horse_name']}' won — toss rule was wrong"
+                    rule_suggestion = "Review toss criteria for this cycle"
+                else:
+                    miss_type, why_missed, rule_suggestion = self._classify_miss(pick1, winner)
+                miss_type_counts[miss_type] += 1
+
             race_data = {
                 "race_number": rn,
                 "predicted_1": pick1["horse_name"] if pick1 else None,
                 "predicted_1_finish": pick1.get("finish_pos") if pick1 else None,
+                "predicted_1_rank": pick1.get("pick_rank") if pick1 else None,
+                "predicted_1_score": pick1.get("bias_score") if pick1 else None,
+                "predicted_1_confidence": pick1.get("confidence") if pick1 else None,
+                "predicted_1_projection_type": pick1.get("projection_type") if pick1 else None,
+                "predicted_1_odds": pick1.get("odds") if pick1 else None,
                 "predicted_2": pick2["horse_name"] if pick2 else None,
                 "predicted_2_finish": pick2.get("finish_pos") if pick2 else None,
                 "winner": winner["horse_name"] if winner else None,
@@ -2483,10 +2648,40 @@ class Persistence:
                 "top2_hit": top2_hit,
                 "match_method": pick1.get("match_method") if pick1 else None,
                 "result_horse_name": pick1.get("result_horse_name") if pick1 else None,
+                # Diagnostic fields
+                "miss_type": miss_type,
+                "why_missed": why_missed,
+                "rule_suggestion": rule_suggestion,
+                # Drilldown: engine top 5
+                "top5_predictions": [
+                    {
+                        "rank": p["pick_rank"],
+                        "horse": p["horse_name"],
+                        "score": p.get("bias_score"),
+                        "confidence": p.get("confidence"),
+                        "cycle": p.get("projection_type"),
+                        "finish_pos": p.get("finish_pos"),
+                        "odds": p.get("odds"),
+                    }
+                    for p in sorted(preds, key=lambda x: x.get("pick_rank", 99))[:5]
+                ],
+                # Drilldown: actual top 5
+                "top5_finishers": [
+                    {
+                        "finish_pos": f["finish_pos"],
+                        "horse": f["horse_name"],
+                        "odds": f.get("odds"),
+                        "win_payoff": f.get("win_payoff"),
+                    }
+                    for f in top5_by_race.get(rn, [])[:5]
+                ],
             }
             races.append(race_data)
 
         total = len(races)
+        total_cost = total_bets * 2.0
+        roi_pct = ((total_win_payoff - total_cost) / total_cost * 100) if total_cost > 0 else 0
+
         summary = {
             "total_races": total,
             "exact_wins": exact_wins,
@@ -2494,6 +2689,19 @@ class Persistence:
             "top2_hits": top2_hits,
             "win_rate": round(exact_wins / total * 100, 1) if total else 0,
             "top2_rate": round(top2_hits / total * 100, 1) if total else 0,
+            "session_id": session_id or "",
+            # ROI tiles
+            "avg_winner_odds": round(total_winner_odds / winner_odds_count, 1) if winner_odds_count else None,
+            "avg_pick_odds": round(total_pick_odds / pick_odds_count, 1) if pick_odds_count else None,
+            "win_roi_pct": round(roi_pct, 1),
+            "total_win_payoff": round(total_win_payoff, 2),
+            "total_bets": total_bets,
+            # Data integrity
+            "match_by_post": match_by_post,
+            "match_by_name": match_by_name,
+            "match_unmatched": match_unmatched,
+            # Miss distribution
+            "miss_type_counts": dict(miss_type_counts),
         }
 
         return {"races": races, "summary": summary}
