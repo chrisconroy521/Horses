@@ -337,6 +337,9 @@ def _persist_predictions(session_id, track, race_date, race_number, projections)
                     "cycle_priority": p.cycle_priority,
                     "sheets_rank": p.sheets_rank,
                     "tie_break_used": p.tie_break_used,
+                    "bet_eligible": p.bet_eligible,
+                    "win_score": p.win_score,
+                    "underneath_score": p.underneath_score,
                     "explain": p.explain,
                 }
                 for p in projections
@@ -778,7 +781,14 @@ def _render_race_snapshot(display_projections, odds_data, odds_by_post, race_num
                       not top.bounce_risk)
     has_depth = len([p for p in non_tossed if p.confidence >= 0.55]) >= 3
 
-    if quality_pct >= 80 and chaos <= 0.30 and has_single:
+    # Count bet-eligible horses
+    eligible_count = sum(1 for p in non_tossed if getattr(p, 'bet_eligible', True))
+
+    if chaos > 0.60:
+        decision, decision_label, decision_color = "RED", "PASS — high chaos", "red"
+    elif eligible_count == 0:
+        decision, decision_label, decision_color = "RED", "PASS — no eligible", "red"
+    elif quality_pct >= 80 and chaos <= 0.30 and has_single:
         decision, decision_label, decision_color = "GREEN", "WIN + Exotic", "green"
     elif quality_pct >= 80 and chaos <= 0.55 and has_single:
         decision, decision_label, decision_color = "YELLOW", "Win Only", "orange"
@@ -850,10 +860,25 @@ def _render_top_picks(display_projections, race_number, race_horses=None,
                 f"Fig {p.projected_low:.1f}\u2013{p.projected_high:.1f} | "
                 f"Conf {p.confidence:.0%}"
             )
-            st.markdown(
-                f"Signal: :{s_color}[**{score}**] | "
-                f":{s_color}[{strength}] | {reason_str}"
-            )
+            if not getattr(p, 'bet_eligible', True):
+                pass_reason = p.pass_reasons[0] if p.pass_reasons else "PASS"
+                st.markdown(f":red[PASS] — {pass_reason}")
+            else:
+                win_s = getattr(p, 'win_score', 0)
+                under_s = getattr(p, 'underneath_score', 0)
+                role_tag = ""
+                if win_s >= 70:
+                    role_tag = f" | Win :green[{win_s:.0f}]"
+                elif win_s >= 50:
+                    role_tag = f" | Win :orange[{win_s:.0f}]"
+                if under_s >= 60:
+                    role_tag += f" | Under :green[{under_s:.0f}]"
+                elif under_s >= 40:
+                    role_tag += f" | Under :orange[{under_s:.0f}]"
+                st.markdown(
+                    f"Signal: :{s_color}[**{score}**] | "
+                    f":{s_color}[{strength}] | {reason_str}{role_tag}"
+                )
 
         with st.expander(f"Details \u2014 {p.name}", expanded=False):
             positives = []
@@ -876,6 +901,8 @@ def _render_top_picks(display_projections, race_number, race_horses=None,
                 negatives.append("No works")
             if p.projection_type == "TAIL_OFF":
                 negatives.append("Declining form")
+            if not getattr(p, 'bet_eligible', True):
+                negatives.extend(f"PASS: {r}" for r in (p.pass_reasons or []))
             if positives:
                 st.markdown("  \n".join(f":green[+] {s}" for s in positives))
             if negatives:
@@ -924,6 +951,9 @@ def _render_ranked_table(display_projections, race_horses, show_odds,
             'Proj Low': f"{p.projected_low:.1f}",
             'Proj High': f"{p.projected_high:.1f}",
             'Confidence': f"{p.confidence:.0%}",
+            'Win': f"{getattr(p, 'win_score', 0):.0f}",
+            'Under': f"{getattr(p, 'underneath_score', 0):.0f}",
+            'Bet': "BET" if getattr(p, 'bet_eligible', True) else "PASS",
             'Tags': ', '.join(p.tags) if p.tags else '-',
             'Tie-Break': f"{p.bias_score:.1f}",
             'Summary': p.summary,

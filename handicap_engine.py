@@ -50,6 +50,10 @@ CYCLE_PRIORITY = {
 _PAIRED_TOP_PRIORITY = 6    # PAIRED at/near best — highest priority
 TIE_WINDOW = 1.5            # proj_mid gap within which bias_score breaks ties
 
+# --- Competitiveness / PASS gate constants ---
+COMP_THRESHOLD = 3.0        # proj_low must be within this of field median to be competitive
+PASS_CONFIDENCE_FLOOR = 0.35  # below this, horse is auto-PASS
+
 
 @dataclass
 class FigureEntry:
@@ -117,6 +121,11 @@ class HorseProjection:
     cycle_priority: int = 2
     sheets_rank: int = 0            # 1-based position in sheets-first order
     tie_break_used: bool = False
+    bet_eligible: bool = True       # False = PASS (no bet on this horse)
+    pass_reasons: List[str] = field(default_factory=list)
+    win_score: float = 0.0          # 0-100 suitability as win/WP pick
+    underneath_score: float = 0.0   # 0-100 suitability as exacta/tri underneath
+    competitive: bool = True        # passes competitiveness gate
     explain: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -147,6 +156,13 @@ class HandicappingEngine:
         results: List[HorseProjection] = []
         bias_weights = bias.normalized_weights()
 
+        # Detect figure direction from first active horse
+        is_brisnet = False
+        for h in horses:
+            if not h.scratched and h.name not in (scratches or []):
+                is_brisnet = h.figure_source == "brisnet"
+                break
+
         for horse in horses:
             if horse.scratched or horse.name in scratches:
                 continue
@@ -158,24 +174,36 @@ class HandicappingEngine:
             results.append(projection)
 
         # ==============================================================
-        # Sheets-first ranking: cycle_priority → proj_mid → confidence
-        # Bias/style only breaks ties within TIE_WINDOW.
+        # Pre-sort gates: competitiveness + PASS logic
+        # ==============================================================
+        self._competitiveness_gate(results, is_brisnet)
+        self._apply_pass_logic(results)
+
+        # ==============================================================
+        # Sheets-first ranking: cycle_priority → raw_score
+        # Confidence is tiebreaker only (via bias_score in TIE_WINDOW).
         # ==============================================================
         results = self._sheets_first_sort(results)
+
+        # ==============================================================
+        # Post-sort: Win Score / Underneath Score
+        # ==============================================================
+        self._compute_role_scores(results, is_brisnet)
+
         return results
 
     @staticmethod
     def _sheets_first_sort(results: List["HorseProjection"]) -> List["HorseProjection"]:
-        """Sort by cycle_priority DESC, raw_score DESC (normalized), confidence DESC.
+        """Sort by cycle_priority DESC, raw_score DESC (normalized).
 
-        Then apply tie-break pass: within TIE_WINDOW of proj_mid AND same
-        cycle_priority, reorder by bias_score DESC.
+        Confidence is NOT a primary sort key — it only influences the
+        bias_score tie-break within TIE_WINDOW.
         """
         if not results:
             return results
 
         # Primary sort: sheets-first (raw_score already normalizes direction)
-        results.sort(key=lambda hp: (-hp.cycle_priority, -hp.raw_score, -hp.confidence))
+        results.sort(key=lambda hp: (-hp.cycle_priority, -hp.raw_score))
 
         # Assign initial sheets_rank
         for i, hp in enumerate(results):
@@ -215,6 +243,11 @@ class HandicappingEngine:
                 "bias_used": hp.tie_break_used,
                 "sheets_rank": hp.sheets_rank,
                 "tags": list(hp.tags),
+                "bet_eligible": hp.bet_eligible,
+                "pass_reasons": list(hp.pass_reasons),
+                "competitive": hp.competitive,
+                "win_score": round(hp.win_score, 1),
+                "underneath_score": round(hp.underneath_score, 1),
             }
 
         return results
@@ -1108,6 +1141,108 @@ class HandicappingEngine:
 
         tossed = len(reasons) >= 2
         return (tossed, reasons)
+
+    # ------------------------------------------------------------------
+    # Competitiveness gate
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _competitiveness_gate(results: List["HorseProjection"], is_brisnet: bool):
+        """Mark horses as non-competitive if their proj_low is much worse than
+        the field median proj_mid.
+
+        For Ragozin (lower=better): proj_low > field_median + COMP_THRESHOLD
+        For BRISNET (higher=better): proj_low < field_median - COMP_THRESHOLD
+        """
+        non_tossed = [hp for hp in results if not hp.tossed]
+        if len(non_tossed) < 2:
+            return
+
+        mids = sorted([hp.proj_mid for hp in non_tossed])
+        n = len(mids)
+        field_median = mids[n // 2] if n % 2 else (mids[n // 2 - 1] + mids[n // 2]) / 2
+
+        for hp in results:
+            if is_brisnet:
+                # Higher = better: proj_low below field median - threshold → non-competitive
+                if hp.projected_low < field_median - COMP_THRESHOLD:
+                    hp.competitive = False
+            else:
+                # Ragozin lower = better: proj_low above field median + threshold → non-competitive
+                if hp.projected_low > field_median + COMP_THRESHOLD:
+                    hp.competitive = False
+
+    # ------------------------------------------------------------------
+    # PASS / bet eligibility
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _apply_pass_logic(results: List["HorseProjection"]):
+        """Gate each horse for bet eligibility.  PASS if ANY condition is met:
+        1. Tossed (2+ toss factors)
+        2. Not competitive (failed gate)
+        3. Bounce risk with no redeeming cycle (priority < 4)
+        4. Confidence below floor
+        """
+        for hp in results:
+            reasons = []
+            if hp.tossed:
+                short = hp.toss_reasons[0] if hp.toss_reasons else "TOSS"
+                reasons.append(f"TOSS: {short}")
+            if not hp.competitive:
+                reasons.append("NOT_COMPETITIVE")
+            if hp.bounce_risk and hp.cycle_priority < 4:
+                reasons.append("BOUNCE_NO_REDEMPTION")
+            if hp.confidence < PASS_CONFIDENCE_FLOOR:
+                reasons.append(f"LOW_CONFIDENCE: {hp.confidence:.0%}")
+            if reasons:
+                hp.bet_eligible = False
+                hp.pass_reasons = reasons
+
+    # ------------------------------------------------------------------
+    # Win Score / Underneath Score
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _compute_role_scores(results: List["HorseProjection"], is_brisnet: bool):
+        """Compute win_score (0-100) and underneath_score (0-100) for each horse."""
+        if not results:
+            return
+
+        non_tossed_mids = [hp.proj_mid for hp in results if not hp.tossed]
+        if not non_tossed_mids:
+            return
+
+        # Best proj_mid (direction-aware)
+        best_mid = max(non_tossed_mids) if is_brisnet else min(non_tossed_mids)
+
+        cycle_mult = {6: 1.2, 5: 1.1, 4: 1.0, 3: 0.9, 2: 0.8, 1: 0.6, 0: 0.5}
+
+        for hp in results:
+            # Win score: rewards separation from best + cycle quality
+            if is_brisnet:
+                separation = max(0, best_mid - hp.proj_mid)
+            else:
+                separation = max(0, hp.proj_mid - best_mid)
+
+            win_base = max(0, 100 - separation * 10)
+            mult = cycle_mult.get(hp.cycle_priority, 0.8)
+            hp.win_score = round(min(100, win_base * mult), 1)
+            if not hp.bet_eligible:
+                hp.win_score = 0
+
+            # Underneath score: ranked 2-4 with decent cycles = good underneath
+            rank = hp.sheets_rank
+            if rank == 1:
+                hp.underneath_score = 30.0
+            elif rank <= 4 and hp.cycle_priority >= 3:
+                hp.underneath_score = float(80 - (rank * 10))
+            elif rank <= 6:
+                hp.underneath_score = float(50 - (rank * 5))
+            else:
+                hp.underneath_score = float(max(0, 30 - rank * 3))
+            if hp.tossed:
+                hp.underneath_score = float(max(0, hp.underneath_score - 30))
 
     # ------------------------------------------------------------------
 
