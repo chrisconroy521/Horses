@@ -1203,31 +1203,73 @@ async def list_sessions_filtered(
     include_archived: bool = False,
     include_recovered: bool = False,
 ):
-    """List sessions filtered for Engine dropdown — real uploads only by default."""
-    rows = _db.list_sessions_filtered(
-        include_archived=include_archived,
-        include_recovered=include_recovered,
-    )
-    enriched = []
-    for r in rows:
-        sid = r["session_id"]
-        mem = sessions.get(sid, {})
-        enriched.append({
+    """List sessions filtered for Engine dropdown — real uploads only by default.
+
+    Filters from in-memory sessions + parsed_races dicts (the same source as /races).
+    By default hides recovered/empty sessions and de-duplicates by filename+track+date.
+    """
+    # Combine all available entries (same as /races)
+    all_entries = list(parsed_races.values()) + list(sessions.values())
+
+    # Enrich each entry with a normalized shape
+    candidates = []
+    for entry in all_entries:
+        is_session = "session_id" in entry
+        sid = entry.get("session_id") or entry.get("id", "")
+        filename = entry.get("primary_pdf_filename") or entry.get("original_filename", "")
+        track = entry.get("track") or entry.get("track_name", "")
+        date = entry.get("date") or entry.get("analysis_date", entry.get("race_date", ""))
+        horses = entry.get("primary_horses_count") or entry.get("horses_count", 0)
+        created = entry.get("created_at") or entry.get("parsed_at", "")
+        is_recovered = filename == "recovered" or not is_session
+
+        # Filter: skip empty sessions
+        if not horses or horses <= 0:
+            continue
+
+        # Filter: skip recovered unless toggled
+        if is_recovered and not include_recovered:
+            continue
+
+        candidates.append({
             "session_id": sid,
-            "track": r.get("track_name", ""),
-            "date": r.get("race_date", ""),
-            "pdf_name": r.get("pdf_name", ""),
-            "horses_count": r.get("horses_count", 0),
-            "total_races": r.get("total_races", 0),
-            "created_at": r.get("created_at", ""),
-            "uploaded_at": r.get("uploaded_at", ""),
-            "source_type": r.get("source_type", ""),
-            "archived": bool(r.get("archived", 0)),
-            "has_primary": mem.get("has_primary", True),
-            "has_secondary": mem.get("has_secondary", False),
-            "primary_pdf_filename": r.get("pdf_name", ""),
+            "track": track,
+            "date": date,
+            "pdf_name": filename,
+            "horses_count": horses,
+            "total_races": entry.get("primary_races_count") or entry.get("total_races", 0),
+            "created_at": created,
+            "has_primary": entry.get("has_primary", True),
+            "has_secondary": entry.get("has_secondary", False),
+            "primary_pdf_filename": entry.get("primary_pdf_filename") or filename,
+            "is_recovered": is_recovered,
+            "archived": False,
         })
-    return {"sessions": enriched}
+
+    # Sort: prefer sessions with secondary data, then newest first
+    candidates.sort(
+        key=lambda x: (x.get("has_secondary", False), x.get("created_at", "")),
+        reverse=True,
+    )
+
+    # De-duplicate by (filename, track, date) — keep newest, mark rest archived
+    seen: dict = {}
+    result = []
+    for c in candidates:
+        if c["is_recovered"]:
+            dedup_key = f"recovered:{c['session_id']}"
+        else:
+            dedup_key = f"{c['pdf_name']}|{c['track']}|{c['date']}"
+
+        if dedup_key in seen:
+            c["archived"] = True
+            if include_archived:
+                result.append(c)
+            continue
+        seen[dedup_key] = True
+        result.append(c)
+
+    return {"sessions": result}
 
 
 @app.get("/sessions/{session_id}/summary")
