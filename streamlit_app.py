@@ -321,6 +321,7 @@ def _persist_predictions(session_id, track, race_date, race_number, projections)
                 {
                     "name": p.name,
                     "post": p.post,
+                    "program": str(p.post) if p.post else "",
                     "projection_type": p.projection_type,
                     "bias_score": p.bias_score,
                     "raw_score": p.raw_score,
@@ -4228,6 +4229,8 @@ def _render_predictions_dashboard(track: str = "", date: str = "", session_id: s
     total = summary.get("total_races", 0)
     wins = summary.get("exact_wins", 0)
     top2 = summary.get("top2_hits", 0)
+    excluded = summary.get("excluded_races", 0)
+    total_bets = summary.get("total_bets", 0)
     render_metrics_row({
         "Races": total,
         "Wins": wins,
@@ -4240,38 +4243,98 @@ def _render_predictions_dashboard(track: str = "", date: str = "", session_id: s
     avg_winner = summary.get("avg_winner_odds")
     avg_pick = summary.get("avg_pick_odds")
     win_roi = summary.get("win_roi_pct", 0)
+    total_payoff = summary.get("total_win_payoff", 0)
+    if total_bets == 0:
+        roi_str = "-- (no results)"
+        payoff_str = "-- (no results)"
+    elif total_payoff == 0 and wins == 0:
+        roi_str = f"{win_roi:+.1f}%"
+        payoff_str = "-- (payoffs missing)"
+    else:
+        roi_str = f"{win_roi:+.1f}%"
+        payoff_str = f"${total_payoff:.2f}"
     render_metrics_row({
         "Avg Winner Odds": f"{avg_winner:.1f}-1" if avg_winner else "N/A",
         "Avg Pick#1 Odds": f"{avg_pick:.1f}-1" if avg_pick else "N/A",
-        "$2 Win ROI": f"{win_roi:+.1f}%",
-        "Win Payoff": f"${summary.get('total_win_payoff', 0):.2f}",
+        "$2 Win ROI": roi_str,
+        "Win Payoff": payoff_str,
     })
 
     # Data integrity badge
+    pgm_ct = summary.get("match_by_program", 0)
     post_ct = summary.get("match_by_post", 0)
     name_ct = summary.get("match_by_name", 0)
     unmatched_ct = summary.get("match_unmatched", 0)
-    matched_total = post_ct + name_ct + unmatched_ct
+    matched_total = pgm_ct + post_ct + name_ct + unmatched_ct
     if matched_total:
-        if unmatched_ct == 0:
+        if unmatched_ct == 0 and name_ct == 0:
             badge_color = "green"
-        elif unmatched_ct <= 2:
+        elif unmatched_ct == 0:
             badge_color = "orange"
         else:
             badge_color = "red"
+        parts = []
+        if pgm_ct:
+            parts.append(f"{pgm_ct} PROGRAM")
+        if post_ct:
+            parts.append(f"{post_ct} POST")
+        if name_ct:
+            parts.append(f"{name_ct} NAME")
+        if unmatched_ct:
+            parts.append(f"{unmatched_ct} unmatched")
         st.markdown(
-            f"**Data Integrity:** :{badge_color}[{post_ct} by POST, {name_ct} by NAME, {unmatched_ct} unmatched] "
+            f"**Data Integrity:** :{badge_color}[{', '.join(parts)}] "
             f"of {matched_total} predictions"
         )
+
+    # Exclusion banner
+    if excluded > 0:
+        st.warning(f"{excluded} race(s) excluded from Win Rate/ROI due to data integrity issues (JOIN_ERROR/PARSE_ERROR/JOIN_WEAK_NAME)")
 
     # Toggles
     tcol1, tcol2, tcol3 = st.columns(3)
     with tcol1:
-        show_backups = st.toggle("Show backups (Top 2/Top 3)", value=False, key="toggle_show_backups")
+        show_backups = st.toggle("Show backups", value=False, key="toggle_show_backups")
     with tcol2:
-        show_debug = st.toggle("Show source details", value=False, key="toggle_show_debug")
-    with tcol3:
         show_miss_info = st.toggle("Show miss analysis", value=False, key="toggle_show_miss")
+    with tcol3:
+        show_debug = st.toggle("Show source details", value=False, key="toggle_show_debug")
+
+    # --- Bet Filter Simulator ---
+    with st.expander("Bet Filter Simulator", expanded=False):
+        fc1, fc2, fc3 = st.columns(3)
+        with fc1:
+            filter_top2 = st.checkbox("Only bet when Top-2=YES", value=False, key="bf_top2")
+        with fc2:
+            filter_min_conf = st.slider("Min confidence %", 0, 100, 0, key="bf_conf")
+        with fc3:
+            filter_integrity = st.checkbox("Only Integrity OK races", value=True, key="bf_integrity")
+
+        # Apply filters client-side
+        filtered_races = []
+        for r in races:
+            if filter_integrity and not r.get("kpi_eligible", True):
+                continue
+            if filter_top2 and not r.get("top2_hit", False):
+                continue
+            conf = r.get("predicted_1_confidence") or 0
+            if filter_min_conf > 0 and conf * 100 < filter_min_conf:
+                continue
+            filtered_races.append(r)
+
+        f_bets = len(filtered_races)
+        f_wins = sum(1 for r in filtered_races if r.get("hit_1"))
+        f_payoff = sum(r.get("predicted_1_win_payoff") or 0 for r in filtered_races if r.get("hit_1"))
+        f_cost = f_bets * 2.0
+        f_roi = ((f_payoff - f_cost) / f_cost * 100) if f_cost > 0 else 0
+
+        render_metrics_row({
+            "Filtered Bets": f_bets,
+            "Filtered Wins": f_wins,
+            "Filtered Win%": f"{f_wins / f_bets * 100:.1f}%" if f_bets else "---",
+            "Filtered ROI": f"{f_roi:+.1f}%" if f_bets else "---",
+            "Filtered Payoff": f"${f_payoff:.2f}" if f_bets else "---",
+        })
 
     # Build table rows
     table_rows = []
@@ -4295,6 +4358,7 @@ def _render_predictions_dashboard(track: str = "", date: str = "", session_id: s
             p1_fin = r.get("predicted_1_finish")
             hit_str = f"{p1_fin}th" if p1_fin else "MISS"
 
+        # Default columns: Race, Predicted, Winner, Winner Odds, Hit?, Miss Type, Integrity
         row = {
             "Race": rn,
             "Predicted": predicted,
@@ -4302,6 +4366,7 @@ def _render_predictions_dashboard(track: str = "", date: str = "", session_id: s
             "Odds": odds_str,
             "Hit?": hit_str,
             "Miss Type": r.get("miss_type") or "" if not hit1 else "",
+            "Integrity": r.get("integrity", ""),
         }
 
         if show_backups:
@@ -4313,9 +4378,10 @@ def _render_predictions_dashboard(track: str = "", date: str = "", session_id: s
             row["Rule"] = r.get("rule_suggestion") or ""
 
         if show_debug:
+            row["Pred Pgm"] = r.get("pred_program") or "---"
+            row["Pred Post"] = r.get("predicted_1_rank") or "---"
+            row["Res Pgm"] = r.get("result_program") or "---"
             row["Match"] = r.get("match_method") or "NONE"
-            row["Result Name"] = r.get("result_horse_name") or "---"
-            row["Rank"] = r.get("predicted_1_rank") or "---"
             score = r.get("predicted_1_score")
             row["Score"] = f"{score:.1f}" if score else "---"
             p1_fin = r.get("predicted_1_finish")
@@ -4334,22 +4400,34 @@ def _render_predictions_dashboard(track: str = "", date: str = "", session_id: s
         return "color: #ef4444"
 
     _miss_type_colors = {
-        "LONGSHOT_WINNER": "color: #6366f1",
-        "BOUNCE": "color: #f97316",
+        "VOLATILE_RACE": "color: #6366f1",
         "TOSSED_WON": "color: #ef4444; font-weight: bold",
-        "LOW_CONFIDENCE": "color: #a855f7",
-        "NEW_TOP_MISS": "color: #eab308",
-        "CHALK_MISS": "color: #ef4444",
-        "CLOSE_MISS": "color: #f59e0b",
-        "FIELD_MISS": "color: #9ca3af",
+        "DATA_ISSUE": "color: #9ca3af; font-style: italic",
+        "UNDERNEATH_ONLY": "color: #f59e0b",
+        "VALUE_BAD": "color: #ef4444",
+        "TOO_SLOW": "color: #f97316",
+    }
+
+    _integrity_colors = {
+        "OK_PROGRAM": "color: #22c55e",
+        "OK_POST": "color: #22c55e",
+        "DEAD_HEAT": "color: #a855f7",
+        "JOIN_WEAK_NAME": "color: #f59e0b",
+        "JOIN_ERROR": "color: #ef4444",
+        "PARSE_ERROR": "color: #ef4444; font-weight: bold",
     }
 
     def _style_miss_type(val):
         return _miss_type_colors.get(val, "")
 
+    def _style_integrity(val):
+        return _integrity_colors.get(val, "")
+
     styled = df.style.applymap(_style_hit, subset=["Hit?"])
     if "Miss Type" in df.columns:
         styled = styled.applymap(_style_miss_type, subset=["Miss Type"])
+    if "Integrity" in df.columns:
+        styled = styled.applymap(_style_integrity, subset=["Integrity"])
     if show_backups and "Top-2?" in df.columns:
         styled = styled.applymap(
             lambda v: "color: #22c55e; font-weight: bold" if v == "YES" else "color: #ef4444",
@@ -4365,8 +4443,16 @@ def _render_predictions_dashboard(track: str = "", date: str = "", session_id: s
         winner = r.get("winner") or "---"
         hit_label = "WIN" if r.get("hit_1") else ("2nd" if r.get("top2_hit") else "MISS")
         miss_tag = f" [{r.get('miss_type')}]" if r.get("miss_type") else ""
+        integrity_tag = r.get("integrity", "")
 
-        with st.expander(f"R{rn}: {predicted} vs {winner} ({hit_label}{miss_tag})", expanded=False):
+        with st.expander(f"R{rn}: {predicted} vs {winner} ({hit_label}{miss_tag}) [{integrity_tag}]", expanded=False):
+            # Winner rank info
+            wpr = r.get("winner_pred_rank")
+            if wpr:
+                st.markdown(f"**Winner was our #{wpr} pick**")
+            elif r.get("winner"):
+                st.markdown("**Winner not in predictions**")
+
             col_left, col_right = st.columns(2)
 
             with col_left:
@@ -4384,6 +4470,7 @@ def _render_predictions_dashboard(track: str = "", date: str = "", session_id: s
                             "Cycle": p.get("cycle") or "---",
                             "Finish": p.get("finish_pos") or "---",
                             "Odds": f"{p['odds']:.1f}" if p.get("odds") is not None else "---",
+                            "Match": p.get("match_method") or "---",
                         })
                     st.dataframe(pd.DataFrame(pred_rows_dd), use_container_width=True, hide_index=True)
 

@@ -59,9 +59,11 @@ def _ingest_rows(
 
             rn = int(row.get("race_number", 0))
 
+            # Always capture raw program string for storage
+            raw_pgm = str(row.get("program", "")).strip()
+
             # Program vs post mapping
             if program_map == "program":
-                raw_pgm = str(row.get("program", "")).strip()
                 # Extract leading digits for DB post column
                 import re as _re
                 m = _re.match(r"(\d+)", raw_pgm)
@@ -105,12 +107,17 @@ def _ingest_rows(
                     winner_post=post, winner_name=name,
                 )
 
+            # Detect dead heat from row data
+            dh_raw = row.get("dead_heat", False)
+            is_dead_heat = dh_raw is True or str(dh_raw).lower() in ("true", "1", "yes")
+
             db.insert_entry_result(
                 track=r_track, race_date=r_date, race_number=rn, post=post,
                 horse_name=name, finish_pos=finish,
                 beaten_lengths=beaten, odds=odds,
                 win_payoff=win_p, place_payoff=place_p, show_payoff=show_p,
                 session_id=session_id,
+                program=raw_pgm, dead_heat=is_dead_heat,
             )
             entries_inserted += 1
         except Exception as e:
@@ -127,6 +134,9 @@ def _ingest_rows(
         if winner_count < 1:
             db.mark_race_parse_error(r_track, r_date, rn)
             print(f"  [warn] Race {rn}: no winner (finish_pos=1) — marked PARSE_ERROR")
+        elif winner_count > 1:
+            db.set_race_integrity(r_track, r_date, rn, "DEAD_HEAT")
+            print(f"  [info] Race {rn}: {winner_count} winners — flagged DEAD_HEAT")
 
     # Link to existing horses/projections
     link_result = db.link_results_to_entries(

@@ -499,10 +499,21 @@ class Persistence:
             self.conn.execute("ALTER TABLE result_predictions ADD COLUMN post INTEGER")
         # Re-rank predictions by bias_score DESC (fix historical ordering mismatch)
         self._rerank_predictions_by_bias()
+        # result_predictions — add program column for program-based matching
+        if rp_cols and "program" not in rp_cols:
+            self.conn.execute("ALTER TABLE result_predictions ADD COLUMN program TEXT")
+        # result_entries — add program and dead_heat columns
+        if re_cols and "program" not in re_cols:
+            self.conn.execute("ALTER TABLE result_entries ADD COLUMN program TEXT")
+        if re_cols and "dead_heat" not in re_cols:
+            self.conn.execute("ALTER TABLE result_entries ADD COLUMN dead_heat INTEGER DEFAULT 0")
         # result_races — add status column for parse error tracking
         rr_cols = self._get_table_columns("result_races")
         if rr_cols and "status" not in rr_cols:
             self.conn.execute("ALTER TABLE result_races ADD COLUMN status TEXT DEFAULT 'OK'")
+        # result_races — add integrity column for 6-level classification
+        if rr_cols and "integrity" not in rr_cols:
+            self.conn.execute("ALTER TABLE result_races ADD COLUMN integrity TEXT DEFAULT 'OK'")
         self.conn.commit()
         self._renormalize_names()
 
@@ -583,15 +594,22 @@ class Persistence:
     @staticmethod
     def _pred_entry_join(pred: str = "rp", entry: str = "er",
                          join_type: str = "LEFT JOIN") -> str:
-        """JOIN result_predictions to result_entries: post first, name fallback."""
+        """JOIN result_predictions to result_entries: program first, post second, name fallback."""
         return f"""
             {join_type} result_entries {entry}
                 ON {pred}.track = {entry}.track
                 AND {pred}.race_date = {entry}.race_date
                 AND {pred}.race_number = {entry}.race_number
                 AND (
-                    ({pred}.post IS NOT NULL AND {pred}.post = {entry}.post)
-                    OR ({pred}.post IS NULL AND {pred}.normalized_name = {entry}.normalized_name)
+                    ({pred}.program IS NOT NULL AND {pred}.program != ''
+                     AND {entry}.program IS NOT NULL AND {entry}.program != ''
+                     AND {pred}.program = {entry}.program)
+                    OR ({pred}.post IS NOT NULL AND {pred}.post = {entry}.post
+                        AND ({pred}.program IS NULL OR {pred}.program = ''
+                             OR {entry}.program IS NULL OR {entry}.program = ''))
+                    OR ({pred}.post IS NULL
+                        AND ({pred}.program IS NULL OR {pred}.program = '')
+                        AND {pred}.normalized_name = {entry}.normalized_name)
                 )
         """
 
@@ -1837,12 +1855,84 @@ class Persistence:
         )
         self.conn.commit()
 
+    def set_race_integrity(
+        self, track: str, race_date: str, race_number: int, integrity: str,
+    ) -> None:
+        """Set the integrity classification for a race."""
+        track = self._normalize_track(track)
+        race_date = self._normalize_date(race_date)
+        self.conn.execute(
+            "UPDATE result_races SET integrity = ? WHERE track = ? AND race_date = ? AND race_number = ?",
+            (integrity, track, race_date, race_number),
+        )
+        self.conn.commit()
+
+    def compute_race_integrity(
+        self, track: str, race_date: str, race_number: int,
+    ) -> str:
+        """Compute integrity state for a race. Priority order:
+        PARSE_ERROR > DEAD_HEAT > JOIN_ERROR > JOIN_WEAK_NAME > OK_PROGRAM > OK_POST
+        """
+        track = self._normalize_track(track)
+        race_date = self._normalize_date(race_date)
+
+        # Check parse error status
+        status_row = self.conn.execute(
+            "SELECT status FROM result_races WHERE track=? AND race_date=? AND race_number=?",
+            (track, race_date, race_number),
+        ).fetchone()
+        if status_row and status_row["status"] == "PARSE_ERROR":
+            self.set_race_integrity(track, race_date, race_number, "PARSE_ERROR")
+            return "PARSE_ERROR"
+
+        # Check for dead heat (multiple winners)
+        winner_count = self.conn.execute(
+            "SELECT COUNT(*) FROM result_entries WHERE track=? AND race_date=? AND race_number=? AND finish_pos=1",
+            (track, race_date, race_number),
+        ).fetchone()[0]
+        if winner_count > 1:
+            self.set_race_integrity(track, race_date, race_number, "DEAD_HEAT")
+            return "DEAD_HEAT"
+
+        # Check match methods for top-5 predictions
+        match_rows = self.conn.execute(f"""
+            SELECT
+                CASE WHEN rp.program IS NOT NULL AND rp.program != ''
+                          AND er.program IS NOT NULL AND er.program != ''
+                          AND rp.program = er.program THEN 'PROGRAM'
+                     WHEN rp.post IS NOT NULL AND rp.post = er.post THEN 'POST'
+                     WHEN er.entry_result_id IS NOT NULL THEN 'NAME'
+                     ELSE NULL END AS match_method
+            FROM result_predictions rp
+            {self._pred_entry_join("rp", "er", "LEFT JOIN")}
+            WHERE rp.track=? AND rp.race_date=? AND rp.race_number=?
+              AND rp.pick_rank <= 5
+            ORDER BY rp.pick_rank
+        """, (track, race_date, race_number)).fetchall()
+
+        methods = [r["match_method"] for r in match_rows]
+
+        if not methods:
+            integrity = "OK_POST"
+        elif None in methods:
+            integrity = "JOIN_ERROR"
+        elif "NAME" in methods:
+            integrity = "JOIN_WEAK_NAME"
+        elif all(m == "PROGRAM" for m in methods):
+            integrity = "OK_PROGRAM"
+        else:
+            integrity = "OK_POST"
+
+        self.set_race_integrity(track, race_date, race_number, integrity)
+        return integrity
+
     def insert_entry_result(
         self, track: str, race_date: str, race_number: int, post: int,
         horse_name: str = "", finish_pos: int = 0,
         beaten_lengths: float = None, odds: float = None,
         win_payoff: float = None, place_payoff: float = None,
         show_payoff: float = None, session_id: str = "",
+        program: str = "", dead_heat: bool = False,
     ) -> Optional[int]:
         """Insert or update an entry result row. Returns entry_result_id."""
         track = self._normalize_track(track)
@@ -1852,8 +1942,9 @@ class Persistence:
             """
             INSERT INTO result_entries(track, race_date, race_number, post,
                 horse_name, normalized_name, finish_pos, beaten_lengths,
-                odds, win_payoff, place_payoff, show_payoff, session_id)
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                odds, win_payoff, place_payoff, show_payoff, session_id,
+                program, dead_heat)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(track, race_date, race_number, post) DO UPDATE SET
                 horse_name=excluded.horse_name,
                 normalized_name=excluded.normalized_name,
@@ -1863,11 +1954,14 @@ class Persistence:
                 win_payoff=excluded.win_payoff,
                 place_payoff=excluded.place_payoff,
                 show_payoff=excluded.show_payoff,
-                session_id=COALESCE(excluded.session_id, result_entries.session_id)
+                session_id=COALESCE(excluded.session_id, result_entries.session_id),
+                program=excluded.program,
+                dead_heat=excluded.dead_heat
             """,
             (track, race_date, race_number, post, horse_name, norm,
              finish_pos, beaten_lengths, odds,
-             win_payoff, place_payoff, show_payoff, session_id or None),
+             win_payoff, place_payoff, show_payoff, session_id or None,
+             program or None, 1 if dead_heat else 0),
         )
         self.conn.commit()
         return cur.lastrowid
@@ -2035,6 +2129,15 @@ class Persistence:
                   AND {re_where}""", re_params
         ).fetchone()[0]
         link_rate = round(any_linked / total_entries * 100, 1) if total_entries else 0.0
+
+        # Compute integrity for affected races
+        if track and race_date:
+            race_nums = self.conn.execute(
+                "SELECT DISTINCT race_number FROM result_races WHERE track=? AND race_date=?",
+                (track, race_date),
+            ).fetchall()
+            for rn_row in race_nums:
+                self.compute_race_integrity(track, race_date, rn_row["race_number"])
 
         return {
             "linked": total_linked,
@@ -2266,6 +2369,7 @@ class Persistence:
                 post_int = int(raw_post) if raw_post else None
             except (ValueError, TypeError):
                 post_int = None
+            program_str = str(p.get("program", "")).strip() or None
             self.conn.execute(
                 """
                 INSERT INTO result_predictions(
@@ -2273,8 +2377,8 @@ class Persistence:
                     horse_name, normalized_name, pick_rank, projection_type,
                     bias_score, raw_score, confidence,
                     projected_low, projected_high, tags,
-                    new_top_setup, bounce_risk, tossed, post, saved_at
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    new_top_setup, bounce_risk, tossed, post, program, saved_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(session_id, track, race_date, race_number, normalized_name)
                 DO UPDATE SET
                     pick_rank=excluded.pick_rank,
@@ -2289,6 +2393,7 @@ class Persistence:
                     bounce_risk=excluded.bounce_risk,
                     tossed=excluded.tossed,
                     post=excluded.post,
+                    program=excluded.program,
                     saved_at=excluded.saved_at
                 """,
                 (
@@ -2302,6 +2407,7 @@ class Persistence:
                     int(bool(p.get("bounce_risk"))),
                     int(bool(p.get("tossed"))),
                     post_int,
+                    program_str,
                     now,
                 ),
             )
@@ -2318,19 +2424,27 @@ class Persistence:
     ) -> int:
         """Copy pick_rank/projection_type from predictions into result_entries.
 
-        Matches by post first (reliable), falls back to normalized_name.
+        Matches by program first, post second, name fallback.
         """
-        cur = self.conn.execute("""
+        _match_cond = """
+            (rp.program IS NOT NULL AND rp.program != ''
+             AND result_entries.program IS NOT NULL AND result_entries.program != ''
+             AND rp.program = result_entries.program)
+            OR (rp.post IS NOT NULL AND rp.post = result_entries.post
+                AND (rp.program IS NULL OR rp.program = ''
+                     OR result_entries.program IS NULL OR result_entries.program = ''))
+            OR (rp.post IS NULL
+                AND (rp.program IS NULL OR rp.program = '')
+                AND rp.normalized_name = result_entries.normalized_name)
+        """
+        cur = self.conn.execute(f"""
             UPDATE result_entries SET
                 pick_rank = (
                     SELECT rp.pick_rank FROM result_predictions rp
                     WHERE rp.track = result_entries.track
                       AND rp.race_date = result_entries.race_date
                       AND rp.race_number = result_entries.race_number
-                      AND (
-                          (rp.post IS NOT NULL AND rp.post = result_entries.post)
-                          OR (rp.post IS NULL AND rp.normalized_name = result_entries.normalized_name)
-                      )
+                      AND ({_match_cond})
                     LIMIT 1
                 ),
                 projection_type = (
@@ -2338,18 +2452,24 @@ class Persistence:
                     WHERE rp.track = result_entries.track
                       AND rp.race_date = result_entries.race_date
                       AND rp.race_number = result_entries.race_number
-                      AND (
-                          (rp.post IS NOT NULL AND rp.post = result_entries.post)
-                          OR (rp.post IS NULL AND rp.normalized_name = result_entries.normalized_name)
-                      )
+                      AND ({_match_cond})
                     LIMIT 1
                 )
             WHERE track = ? AND race_date = ?
-              AND (
-                  post IN (SELECT rp2.post FROM result_predictions rp2 WHERE rp2.track = ? AND rp2.race_date = ? AND rp2.post IS NOT NULL)
-                  OR normalized_name IN (SELECT rp2.normalized_name FROM result_predictions rp2 WHERE rp2.track = ? AND rp2.race_date = ? AND rp2.post IS NULL)
+              AND EXISTS (
+                  SELECT 1 FROM result_predictions rp2
+                  WHERE rp2.track = result_entries.track
+                    AND rp2.race_date = result_entries.race_date
+                    AND rp2.race_number = result_entries.race_number
+                    AND (
+                        (rp2.program IS NOT NULL AND rp2.program != ''
+                         AND result_entries.program IS NOT NULL AND result_entries.program != ''
+                         AND rp2.program = result_entries.program)
+                        OR (rp2.post IS NOT NULL AND rp2.post = result_entries.post)
+                        OR rp2.normalized_name = result_entries.normalized_name
+                    )
               )
-        """, (track, race_date, track, race_date, track, race_date))
+        """, (track, race_date))
         self.conn.commit()
         return cur.rowcount
 
@@ -2377,8 +2497,12 @@ class Persistence:
                    rp.new_top_setup, rp.bounce_risk, rp.tossed,
                    er.finish_pos, er.odds, er.win_payoff,
                    er.place_payoff, er.show_payoff, er.post,
-                   CASE WHEN rp.post IS NOT NULL AND rp.post = er.post THEN 'POST'
-                        WHEN rp.post IS NULL AND er.entry_result_id IS NOT NULL THEN 'NAME'
+                   rp.program AS pred_program, er.program AS result_program,
+                   CASE WHEN rp.program IS NOT NULL AND rp.program != ''
+                             AND er.program IS NOT NULL AND er.program != ''
+                             AND rp.program = er.program THEN 'PROGRAM'
+                        WHEN rp.post IS NOT NULL AND rp.post = er.post THEN 'POST'
+                        WHEN er.entry_result_id IS NOT NULL THEN 'NAME'
                         ELSE NULL END AS match_method
             FROM result_predictions rp
             {self._pred_entry_join("rp", "er", "LEFT JOIN")}
@@ -2389,64 +2513,68 @@ class Persistence:
         return [dict(r) for r in rows]
 
     @staticmethod
-    def _classify_miss(pick1: dict, winner: dict) -> tuple:
-        """Classify why a pick missed. Returns (miss_type, why_missed, rule_suggestion)."""
+    def _classify_miss(pick1: dict, winner: dict,
+                       race_integrity: str = "OK_POST",
+                       winner_in_top5: bool = False) -> tuple:
+        """Classify why a pick missed. Returns (miss_type, why_missed, rule_suggestion).
+
+        Priority order:
+        1. DATA_ISSUE — integrity not OK
+        2. VOLATILE_RACE — winner >= 8-1 AND not in top-5
+        3. UNDERNEATH_ONLY — pick finished 2nd or 3rd
+        4. VALUE_BAD — pick odds <= 2.5 and didn't win
+        5. TOO_SLOW — pick finished 4th+ or catch-all
+        """
         winner_odds = winner.get("odds") if winner else None
         p1_finish = pick1.get("finish_pos")
-        p1_conf = pick1.get("confidence") or 0
-        p1_bounce = pick1.get("bounce_risk")
-        p1_new_top = pick1.get("new_top_setup")
         p1_odds = pick1.get("odds")
-        p1_cycle = pick1.get("projection_type", "")
-        winner_payoff = winner.get("win_payoff") if winner else None
 
-        if winner_odds and winner_odds >= 10.0:
-            payoff_str = f"${winner_payoff:.2f}" if winner_payoff else f"{winner_odds:.0f}-1"
+        # 1. DATA_ISSUE
+        if race_integrity not in ("OK_PROGRAM", "OK_POST", "DEAD_HEAT"):
             return (
-                "LONGSHOT_WINNER",
-                f"Winner paid {payoff_str} (longshot) — outside Engine scope",
-                "No action needed — longshots are unpredictable",
+                "DATA_ISSUE",
+                f"Race integrity: {race_integrity} — results may not be reliable",
+                "Fix data matching before evaluating this race",
             )
 
-        if p1_bounce and p1_finish and p1_finish >= 4:
+        # 2. VOLATILE_RACE
+        if winner_odds and winner_odds >= 8.0 and not winner_in_top5:
+            payoff = winner.get("win_payoff")
+            payoff_str = f"${payoff:.2f}" if payoff else f"{winner_odds:.0f}-1"
             return (
-                "BOUNCE",
-                f"Pick had bounce_risk flag and finished {p1_finish}th — bounce materialized",
-                f"Skip when bounce_risk=True and cycle={p1_cycle}",
+                "VOLATILE_RACE",
+                f"Winner paid {payoff_str} and was not in our top 5 — unpredictable race",
+                "No action — volatile races are outside model scope",
             )
 
-        if p1_conf < 0.5:
-            return (
-                "LOW_CONFIDENCE",
-                f"Pick confidence was {p1_conf*100:.0f}% (below 50%) and missed",
-                "Skip when confidence < 50%",
-            )
-
-        if p1_new_top and p1_finish and p1_finish > 3:
-            return (
-                "NEW_TOP_MISS",
-                f"Pick was new_top_setup but finished {p1_finish}th",
-                "Downgrade new_top_setup picks in large fields",
-            )
-
-        if p1_odds is not None and p1_odds <= 2.0:
-            return (
-                "CHALK_MISS",
-                f"Pick was chalk ({p1_odds:.1f}-1) but lost",
-                "Reduce exposure on heavy chalk (<= 2-1)",
-            )
-
+        # 3. UNDERNEATH_ONLY
         if p1_finish and p1_finish in (2, 3):
             suffix = "nd" if p1_finish == 2 else "rd"
             return (
-                "CLOSE_MISS",
+                "UNDERNEATH_ONLY",
                 f"Pick finished {p1_finish}{suffix} — close but no cigar",
                 "Consider place/show bets as backup",
             )
 
+        # 4. VALUE_BAD
+        if p1_odds is not None and p1_odds <= 2.5:
+            return (
+                "VALUE_BAD",
+                f"Pick was chalk ({p1_odds:.1f}-1) but lost — poor value bet",
+                "Reduce exposure on heavy favorites (<= 5/2)",
+            )
+
+        # 5. TOO_SLOW
+        if p1_finish and p1_finish >= 4:
+            return (
+                "TOO_SLOW",
+                f"Pick finished {p1_finish}th — not competitive",
+                "Review figure accuracy and race conditions",
+            )
+
         return (
-            "FIELD_MISS",
-            "Standard miss — no single flag explains the result",
+            "TOO_SLOW",
+            "Standard miss — pick was not competitive",
             "",
         )
 
@@ -2492,8 +2620,12 @@ class Persistence:
                    rp.saved_at, rp.session_id,
                    er.finish_pos, er.odds, er.win_payoff,
                    er.horse_name AS result_horse_name,
-                   CASE WHEN rp.post IS NOT NULL AND rp.post = er.post THEN 'POST'
-                        WHEN rp.post IS NULL AND er.entry_result_id IS NOT NULL THEN 'NAME'
+                   rp.program AS pred_program, er.program AS result_program,
+                   CASE WHEN rp.program IS NOT NULL AND rp.program != ''
+                             AND er.program IS NOT NULL AND er.program != ''
+                             AND rp.program = er.program THEN 'PROGRAM'
+                        WHEN rp.post IS NOT NULL AND rp.post = er.post THEN 'POST'
+                        WHEN er.entry_result_id IS NOT NULL THEN 'NAME'
                         ELSE NULL END AS match_method
             FROM result_predictions rp
             {self._pred_entry_join("rp", "er", "LEFT JOIN")}
@@ -2535,17 +2667,29 @@ class Persistence:
             ORDER BY re.race_number, re.finish_pos
         """, re_params).fetchall()
 
+        # Load integrity map for all races
+        integrity_map: Dict[int, str] = {}
+        if track and race_date:
+            integrity_rows = self.conn.execute(
+                "SELECT race_number, COALESCE(integrity, 'OK') as integrity FROM result_races WHERE track=? AND race_date=?",
+                (self._normalize_track(track), self._normalize_date(race_date)),
+            ).fetchall()
+            integrity_map = {r["race_number"]: r["integrity"] for r in integrity_rows}
+
         # Index actual finishers by race
         from collections import defaultdict
         winners: Dict[int, Dict] = {}
+        winners_list: Dict[int, List[Dict]] = defaultdict(list)
         runners_up: Dict[int, Dict] = {}
         top5_by_race: Dict[int, List[Dict]] = defaultdict(list)
         for r in result_rows:
             rd = dict(r)
             rn = rd["race_number"]
             top5_by_race[rn].append(rd)
-            if rd["finish_pos"] == 1 and rn not in winners:
-                winners[rn] = rd
+            if rd["finish_pos"] == 1:
+                winners_list[rn].append(rd)
+                if rn not in winners:
+                    winners[rn] = rd
             elif rd["finish_pos"] == 2 and rn not in runners_up:
                 runners_up[rn] = rd
 
@@ -2565,10 +2709,13 @@ class Persistence:
         pick_odds_count = 0
         total_win_payoff = 0.0
         total_bets = 0
+        match_by_program = 0
         match_by_post = 0
         match_by_name = 0
         match_unmatched = 0
         miss_type_counts: Dict[str, int] = defaultdict(int)
+        excluded_races = 0
+        _KPI_OK = ("OK_PROGRAM", "OK_POST", "DEAD_HEAT")
 
         for rn in sorted(preds_by_race.keys()):
             preds = preds_by_race[rn]
@@ -2576,39 +2723,80 @@ class Persistence:
             pick2 = next((p for p in preds if p["pick_rank"] == 2), None)
             winner = winners.get(rn)
             runner_up = runners_up.get(rn)
+            race_integrity = integrity_map.get(rn, "OK_POST")
+            kpi_eligible = race_integrity in _KPI_OK
 
             hit_1 = False
             hit_2 = False
             top2_hit = False
 
+            # Dead heat: check if pick1 matches ANY winner
             if pick1 and pick1.get("finish_pos") == 1:
                 hit_1 = True
+            elif pick1 and len(winners_list.get(rn, [])) > 1:
+                pick1_norm = self._normalize_name(pick1.get("horse_name", ""))
+                for w in winners_list[rn]:
+                    if self._normalize_name(w.get("horse_name", "")) == pick1_norm:
+                        hit_1 = True
+                        break
+
+            if hit_1:
                 exact_wins += 1
             if pick1 and pick1.get("finish_pos") in (1, 2):
+                top2_hit = True
+                top2_hits += 1
+            elif hit_1:
                 top2_hit = True
                 top2_hits += 1
             if pick2 and pick2.get("finish_pos") == 2:
                 hit_2 = True
                 exact_2nds += 1
 
-            # ROI accumulators
+            # ROI accumulators — only count KPI-eligible races
+            if not kpi_eligible:
+                excluded_races += 1
             if winner and winner.get("odds"):
                 total_winner_odds += winner["odds"]
                 winner_odds_count += 1
             if pick1 and pick1.get("odds") is not None:
                 total_pick_odds += pick1["odds"]
                 pick_odds_count += 1
-            if pick1:
+            if pick1 and kpi_eligible:
                 total_bets += 1
                 if hit_1 and pick1.get("win_payoff"):
                     total_win_payoff += pick1["win_payoff"]
                 mm = pick1.get("match_method")
-                if mm == "POST":
+                if mm == "PROGRAM":
+                    match_by_program += 1
+                elif mm == "POST":
                     match_by_post += 1
                 elif mm == "NAME":
                     match_by_name += 1
                 else:
                     match_unmatched += 1
+
+            # Winner display for dead heats
+            race_winners = winners_list.get(rn, [])
+            if len(race_winners) > 1:
+                winner_display = "Dead heat: " + " / ".join(
+                    w["horse_name"] for w in race_winners
+                )
+            elif winner:
+                winner_display = winner["horse_name"]
+            else:
+                winner_display = None
+
+            # Winner rank in predictions
+            winner_pred_rank = None
+            if winner:
+                winner_norm = self._normalize_name(winner.get("horse_name", ""))
+                for p in preds:
+                    if self._normalize_name(p.get("horse_name", "")) == winner_norm:
+                        winner_pred_rank = p["pick_rank"]
+                        break
+
+            # Check if winner is in top-5 predictions
+            winner_in_top5 = winner_pred_rank is not None and winner_pred_rank <= 5
 
             # Miss classification
             miss_type = ""
@@ -2626,8 +2814,16 @@ class Persistence:
                     why_missed = f"Tossed horse '{tossed_winner['horse_name']}' won — toss rule was wrong"
                     rule_suggestion = "Review toss criteria for this cycle"
                 else:
-                    miss_type, why_missed, rule_suggestion = self._classify_miss(pick1, winner)
+                    miss_type, why_missed, rule_suggestion = self._classify_miss(
+                        pick1, winner, race_integrity=race_integrity,
+                        winner_in_top5=winner_in_top5,
+                    )
                 miss_type_counts[miss_type] += 1
+
+            # Pick1 win payoff for bet filter
+            predicted_1_win_payoff = None
+            if hit_1 and pick1 and pick1.get("win_payoff"):
+                predicted_1_win_payoff = pick1["win_payoff"]
 
             race_data = {
                 "race_number": rn,
@@ -2638,20 +2834,26 @@ class Persistence:
                 "predicted_1_confidence": pick1.get("confidence") if pick1 else None,
                 "predicted_1_projection_type": pick1.get("projection_type") if pick1 else None,
                 "predicted_1_odds": pick1.get("odds") if pick1 else None,
+                "predicted_1_win_payoff": predicted_1_win_payoff,
                 "predicted_2": pick2["horse_name"] if pick2 else None,
                 "predicted_2_finish": pick2.get("finish_pos") if pick2 else None,
-                "winner": winner["horse_name"] if winner else None,
+                "winner": winner_display,
                 "winner_odds": winner.get("odds") if winner else None,
                 "runner_up": runner_up["horse_name"] if runner_up else None,
                 "hit_1": hit_1,
                 "hit_2": hit_2,
                 "top2_hit": top2_hit,
                 "match_method": pick1.get("match_method") if pick1 else None,
+                "pred_program": pick1.get("pred_program") if pick1 else None,
+                "result_program": pick1.get("result_program") if pick1 else None,
                 "result_horse_name": pick1.get("result_horse_name") if pick1 else None,
-                # Diagnostic fields
+                # Integrity & diagnostics
+                "integrity": race_integrity,
+                "kpi_eligible": kpi_eligible,
                 "miss_type": miss_type,
                 "why_missed": why_missed,
                 "rule_suggestion": rule_suggestion,
+                "winner_pred_rank": winner_pred_rank,
                 # Drilldown: engine top 5
                 "top5_predictions": [
                     {
@@ -2662,6 +2864,7 @@ class Persistence:
                         "cycle": p.get("projection_type"),
                         "finish_pos": p.get("finish_pos"),
                         "odds": p.get("odds"),
+                        "match_method": p.get("match_method"),
                     }
                     for p in sorted(preds, key=lambda x: x.get("pick_rank", 99))[:5]
                 ],
@@ -2697,9 +2900,11 @@ class Persistence:
             "total_win_payoff": round(total_win_payoff, 2),
             "total_bets": total_bets,
             # Data integrity
+            "match_by_program": match_by_program,
             "match_by_post": match_by_post,
             "match_by_name": match_by_name,
             "match_unmatched": match_unmatched,
+            "excluded_races": excluded_races,
             # Miss distribution
             "miss_type_counts": dict(miss_type_counts),
         }
