@@ -1004,6 +1004,16 @@ async def predictions_vs_results(
     )
 
 
+@app.get("/predictions/dashboard")
+async def predictions_dashboard(
+    track: str = "", date: str = "", session_id: str = "",
+):
+    """Side-by-side predicted vs actual winners for dashboard display."""
+    return _db.get_dashboard_predictions_vs_results(
+        track=track, race_date=date, session_id=session_id,
+    )
+
+
 @app.post("/results/upload")
 async def upload_results(
     file: UploadFile = File(...), track: str = "", date: str = "",

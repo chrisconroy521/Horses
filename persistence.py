@@ -2296,6 +2296,153 @@ class Persistence:
 
         return [dict(r) for r in rows]
 
+    def get_dashboard_predictions_vs_results(
+        self, track: str = "", race_date: str = "", session_id: str = "",
+    ) -> Dict[str, Any]:
+        """Per-race predicted top-2 vs actual top-2 for dashboard display."""
+        # If no session specified, find the latest one for this track/date
+        if not session_id:
+            sid_where = ["1=1"]
+            sid_params: list = []
+            if track:
+                sid_where.append("track = ?")
+                sid_params.append(self._normalize_track(track))
+            if race_date:
+                sid_where.append("race_date = ?")
+                sid_params.append(self._normalize_date(race_date))
+            row = self.conn.execute(
+                f"SELECT session_id FROM result_predictions WHERE {' AND '.join(sid_where)} ORDER BY saved_at DESC LIMIT 1",
+                sid_params,
+            ).fetchone()
+            if row:
+                session_id = row[0]
+
+        where_parts = ["1=1"]
+        params: list = []
+        if track:
+            where_parts.append("rp.track = ?")
+            params.append(self._normalize_track(track))
+        if race_date:
+            where_parts.append("rp.race_date = ?")
+            params.append(self._normalize_date(race_date))
+        if session_id:
+            where_parts.append("rp.session_id = ?")
+            params.append(session_id)
+        where = " AND ".join(where_parts)
+
+        # Predictions joined with their result finish positions
+        pred_rows = self.conn.execute(f"""
+            SELECT rp.race_number, rp.horse_name, rp.pick_rank,
+                   er.finish_pos, er.odds
+            FROM result_predictions rp
+            LEFT JOIN result_entries er
+                ON rp.track = er.track
+                AND rp.race_date = er.race_date
+                AND rp.race_number = er.race_number
+                AND rp.normalized_name = er.normalized_name
+            WHERE {where}
+            ORDER BY rp.race_number, rp.pick_rank
+        """, params).fetchall()
+
+        if not pred_rows:
+            return {"races": [], "summary": {}}
+
+        # Get actual winners/runners-up from result_entries
+        # Build where for result_entries using same track/date/session filters
+        re_where_parts = ["1=1"]
+        re_params: list = []
+        if track:
+            re_where_parts.append("re.track = ?")
+            re_params.append(self._normalize_track(track))
+        if race_date:
+            re_where_parts.append("re.race_date = ?")
+            re_params.append(self._normalize_date(race_date))
+        if session_id:
+            # Join to result_predictions to scope by session
+            re_where_parts.append("""re.race_number IN (
+                SELECT DISTINCT rp2.race_number FROM result_predictions rp2
+                WHERE rp2.session_id = ? AND rp2.track = re.track AND rp2.race_date = re.race_date
+            )""")
+            re_params.append(session_id)
+        re_where = " AND ".join(re_where_parts)
+
+        result_rows = self.conn.execute(f"""
+            SELECT re.race_number, re.horse_name, re.finish_pos, re.odds
+            FROM result_entries re
+            WHERE {re_where} AND re.finish_pos IN (1, 2)
+            ORDER BY re.race_number, re.finish_pos
+        """, re_params).fetchall()
+
+        # Index actual finishers by race
+        winners: Dict[int, Dict] = {}
+        runners_up: Dict[int, Dict] = {}
+        for r in result_rows:
+            rd = dict(r)
+            rn = rd["race_number"]
+            if rd["finish_pos"] == 1 and rn not in winners:
+                winners[rn] = rd
+            elif rd["finish_pos"] == 2 and rn not in runners_up:
+                runners_up[rn] = rd
+
+        # Group predictions by race
+        from collections import defaultdict
+        preds_by_race: Dict[int, list] = defaultdict(list)
+        for r in pred_rows:
+            preds_by_race[dict(r)["race_number"]].append(dict(r))
+
+        races = []
+        exact_wins = 0
+        top2_hits = 0
+        exact_2nds = 0
+
+        for rn in sorted(preds_by_race.keys()):
+            preds = preds_by_race[rn]
+            pick1 = next((p for p in preds if p["pick_rank"] == 1), None)
+            pick2 = next((p for p in preds if p["pick_rank"] == 2), None)
+            winner = winners.get(rn)
+            runner_up = runners_up.get(rn)
+
+            hit_1 = False
+            hit_2 = False
+            top2_hit = False
+
+            if pick1 and pick1.get("finish_pos") == 1:
+                hit_1 = True
+                exact_wins += 1
+            if pick1 and pick1.get("finish_pos") in (1, 2):
+                top2_hit = True
+                top2_hits += 1
+            if pick2 and pick2.get("finish_pos") == 2:
+                hit_2 = True
+                exact_2nds += 1
+
+            race_data = {
+                "race_number": rn,
+                "predicted_1": pick1["horse_name"] if pick1 else None,
+                "predicted_1_finish": pick1.get("finish_pos") if pick1 else None,
+                "predicted_2": pick2["horse_name"] if pick2 else None,
+                "predicted_2_finish": pick2.get("finish_pos") if pick2 else None,
+                "winner": winner["horse_name"] if winner else None,
+                "winner_odds": winner.get("odds") if winner else None,
+                "runner_up": runner_up["horse_name"] if runner_up else None,
+                "hit_1": hit_1,
+                "hit_2": hit_2,
+                "top2_hit": top2_hit,
+            }
+            races.append(race_data)
+
+        total = len(races)
+        summary = {
+            "total_races": total,
+            "exact_wins": exact_wins,
+            "exact_2nds": exact_2nds,
+            "top2_hits": top2_hits,
+            "win_rate": round(exact_wins / total * 100, 1) if total else 0,
+            "top2_rate": round(top2_hits / total * 100, 1) if total else 0,
+        }
+
+        return {"races": races, "summary": summary}
+
     def get_all_predictions_for_date(
         self, race_date: str,
     ) -> Dict[str, List[Dict[str, Any]]]:
