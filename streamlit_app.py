@@ -4228,74 +4228,68 @@ def _render_predictions_dashboard(track: str = "", date: str = "", session_id: s
     top2 = summary.get("top2_hits", 0)
     render_metrics_row({
         "Races": total,
-        "Exact Wins": wins,
+        "Wins": wins,
         "Top-2 Hits": top2,
         "Win Rate": f"{summary.get('win_rate', 0):.1f}%",
         "Top-2 Rate": f"{summary.get('top2_rate', 0):.1f}%",
     })
 
+    # Toggle for backup picks
+    show_backups = st.toggle("Show backups (Top 2/Top 3)", value=False, key="toggle_show_backups")
+
     # Build table rows
     table_rows = []
     for r in races:
         rn = r["race_number"]
-        p1 = r.get("predicted_1") or "—"
-        p1_fin = r.get("predicted_1_finish")
+        predicted = r.get("predicted_1") or "—"
         winner = r.get("winner") or "—"
         hit1 = r.get("hit_1", False)
         top2_hit = r.get("top2_hit", False)
-
-        p2 = r.get("predicted_2") or "—"
-        p2_fin = r.get("predicted_2_finish")
-        runner = r.get("runner_up") or "—"
-        hit2 = r.get("hit_2", False)
-
-        # Format finish positions
-        if p1_fin is not None:
-            p1_fin_str = f"{p1_fin}" + ("st" if p1_fin == 1 else "nd" if p1_fin == 2 else "rd" if p1_fin == 3 else "th")
-        else:
-            p1_fin_str = "—"
-
-        if p2_fin is not None:
-            p2_fin_str = f"{p2_fin}" + ("st" if p2_fin == 1 else "nd" if p2_fin == 2 else "rd" if p2_fin == 3 else "th")
-        else:
-            p2_fin_str = "—"
-
-        # Hit indicators with color
-        if hit1:
-            hit1_str = "WIN ✅"
-        elif top2_hit:
-            hit1_str = "2nd 🟡"
-        elif p1_fin is not None:
-            hit1_str = "MISS ❌"
-        else:
-            hit1_str = "—"
-
-        if hit2:
-            hit2_str = "HIT ✅"
-        elif p2_fin is not None:
-            hit2_str = "MISS ❌"
-        else:
-            hit2_str = "—"
 
         # Winner odds
         w_odds = r.get("winner_odds")
         odds_str = f"${w_odds:.1f}" if w_odds else ""
 
-        table_rows.append({
+        # Hit indicator
+        if hit1:
+            hit_str = "WIN"
+        elif top2_hit:
+            hit_str = "2nd"
+        else:
+            p1_fin = r.get("predicted_1_finish")
+            hit_str = f"{p1_fin}th" if p1_fin else "MISS"
+
+        row = {
             "Race": rn,
-            "Pick #1": p1,
-            "Finish": p1_fin_str,
+            "Predicted": predicted,
             "Winner": winner,
             "Odds": odds_str,
-            "Hit?": hit1_str,
-            "Pick #2": p2,
-            "Finish ": p2_fin_str,
-            "2nd Place": runner,
-            "Hit? ": hit2_str,
-        })
+            "Hit?": hit_str,
+        }
+
+        if show_backups:
+            row["Backup"] = r.get("predicted_2") or "—"
+            row["Top-2?"] = "YES" if top2_hit else "NO"
+
+        table_rows.append(row)
 
     df = pd.DataFrame(table_rows)
-    st.dataframe(df, use_container_width=True, hide_index=True)
+
+    # Style hit column
+    def _style_hit(val):
+        if val == "WIN":
+            return "color: #22c55e; font-weight: bold"
+        elif val == "2nd":
+            return "color: #f59e0b; font-weight: bold"
+        return "color: #ef4444"
+
+    styled = df.style.applymap(_style_hit, subset=["Hit?"])
+    if show_backups:
+        styled = styled.applymap(
+            lambda v: "color: #22c55e; font-weight: bold" if v == "YES" else "color: #ef4444",
+            subset=["Top-2?"],
+        )
+    st.dataframe(styled, use_container_width=True, hide_index=True)
 
     # Refresh button
     if st.button("Refresh Dashboard", key="btn_refresh_dashboard"):
