@@ -102,12 +102,8 @@ def main():
     # Sidebar
     st.sidebar.header("Navigation")
     pages = [
-        "Engine", "Results", "Daily Best Bets", "Bet Commander",
-        "Dual Mode Betting", "Dashboard", "Upload PDF", "Bet Builder",
-        "Results Inbox", "Calibration",
-        "Horse Past Performance", "Horses Overview",
-        "Individual Horse Analysis", "Race Analysis", "Statistics",
-        "Database", "Manage Sheets", "API Status",
+        "Engine", "Results", "Daily Bets", "Dashboard",
+        "Upload PDF", "Manage Sheets", "Database", "API Status",
     ]
 
     # Apply programmatic navigation (e.g. "Open in Engine" button)
@@ -141,7 +137,7 @@ def main():
         bet_builder_page()
     elif page == "Results Inbox":
         results_inbox_page()
-    elif page == "Daily Best Bets":
+    elif page == "Daily Bets":
         daily_wins_page()
     elif page == "Dual Mode Betting":
         dual_mode_page()
