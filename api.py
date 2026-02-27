@@ -943,7 +943,7 @@ async def save_predictions(payload: dict):
     """Save engine predictions for one race.
 
     Body: {session_id, track, race_date, race_number, projections: [...]}
-    Each projection: {name, projection_type, bias_score, raw_score,
+    Each projection: {name, post, projection_type, bias_score, raw_score,
                       confidence, projected_low, projected_high, tags,
                       new_top_setup, bounce_risk, tossed}
     """

@@ -493,6 +493,14 @@ class Persistence:
             self.conn.execute("ALTER TABLE bet_plans ADD COLUMN engine_version TEXT DEFAULT ''")
         if bp_cols and "plan_type" not in bp_cols:
             self.conn.execute("ALTER TABLE bet_plans ADD COLUMN plan_type TEXT NOT NULL DEFAULT 'session'")
+        # result_predictions — add post column for post-based matching
+        rp_cols = self._get_table_columns("result_predictions")
+        if rp_cols and "post" not in rp_cols:
+            self.conn.execute("ALTER TABLE result_predictions ADD COLUMN post INTEGER")
+        # result_races — add status column for parse error tracking
+        rr_cols = self._get_table_columns("result_races")
+        if rr_cols and "status" not in rr_cols:
+            self.conn.execute("ALTER TABLE result_races ADD COLUMN status TEXT DEFAULT 'OK'")
         self.conn.commit()
         self._renormalize_names()
 
@@ -534,6 +542,21 @@ class Persistence:
         n = re.sub(r"[\u2018\u2019\u201C\u201D'\-.,()\"']", "", n)
         n = re.sub(r"\s+", " ", n)
         return n
+
+    @staticmethod
+    def _pred_entry_join(pred: str = "rp", entry: str = "er",
+                         join_type: str = "LEFT JOIN") -> str:
+        """JOIN result_predictions to result_entries: post first, name fallback."""
+        return f"""
+            {join_type} result_entries {entry}
+                ON {pred}.track = {entry}.track
+                AND {pred}.race_date = {entry}.race_date
+                AND {pred}.race_number = {entry}.race_number
+                AND (
+                    ({pred}.post IS NOT NULL AND {pred}.post = {entry}.post)
+                    OR ({pred}.post IS NULL AND {pred}.normalized_name = {entry}.normalized_name)
+                )
+        """
 
     @staticmethod
     def _normalize_track(track: str) -> str:
@@ -1765,6 +1788,18 @@ class Persistence:
         self.conn.commit()
         return cur.lastrowid
 
+    def mark_race_parse_error(
+        self, track: str, race_date: str, race_number: int,
+    ) -> None:
+        """Flag a race as having a parse error (e.g. no winner)."""
+        track = self._normalize_track(track)
+        race_date = self._normalize_date(race_date)
+        self.conn.execute(
+            "UPDATE result_races SET status = 'PARSE_ERROR' WHERE track = ? AND race_date = ? AND race_number = ?",
+            (track, race_date, race_number),
+        )
+        self.conn.commit()
+
     def insert_entry_result(
         self, track: str, race_date: str, race_number: int, post: int,
         horse_name: str = "", finish_pos: int = 0,
@@ -2183,6 +2218,11 @@ class Persistence:
         for rank, p in enumerate(projections, 1):
             norm = self._normalize_name(p["name"])
             tags_json = json.dumps(p.get("tags", []))
+            raw_post = p.get("post")
+            try:
+                post_int = int(raw_post) if raw_post else None
+            except (ValueError, TypeError):
+                post_int = None
             self.conn.execute(
                 """
                 INSERT INTO result_predictions(
@@ -2190,8 +2230,8 @@ class Persistence:
                     horse_name, normalized_name, pick_rank, projection_type,
                     bias_score, raw_score, confidence,
                     projected_low, projected_high, tags,
-                    new_top_setup, bounce_risk, tossed, saved_at
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    new_top_setup, bounce_risk, tossed, post, saved_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(session_id, track, race_date, race_number, normalized_name)
                 DO UPDATE SET
                     pick_rank=excluded.pick_rank,
@@ -2205,6 +2245,7 @@ class Persistence:
                     new_top_setup=excluded.new_top_setup,
                     bounce_risk=excluded.bounce_risk,
                     tossed=excluded.tossed,
+                    post=excluded.post,
                     saved_at=excluded.saved_at
                 """,
                 (
@@ -2217,6 +2258,7 @@ class Persistence:
                     int(bool(p.get("new_top_setup"))),
                     int(bool(p.get("bounce_risk"))),
                     int(bool(p.get("tossed"))),
+                    post_int,
                     now,
                 ),
             )
@@ -2231,32 +2273,40 @@ class Persistence:
     def _propagate_predictions_to_results(
         self, track: str, race_date: str,
     ) -> int:
-        """Copy pick_rank/projection_type from predictions into result_entries
-        by joining on normalized_name + race_number."""
+        """Copy pick_rank/projection_type from predictions into result_entries.
+
+        Matches by post first (reliable), falls back to normalized_name.
+        """
         cur = self.conn.execute("""
             UPDATE result_entries SET
                 pick_rank = (
                     SELECT rp.pick_rank FROM result_predictions rp
-                    WHERE rp.normalized_name = result_entries.normalized_name
-                      AND rp.track = result_entries.track
+                    WHERE rp.track = result_entries.track
                       AND rp.race_date = result_entries.race_date
                       AND rp.race_number = result_entries.race_number
+                      AND (
+                          (rp.post IS NOT NULL AND rp.post = result_entries.post)
+                          OR (rp.post IS NULL AND rp.normalized_name = result_entries.normalized_name)
+                      )
                     LIMIT 1
                 ),
                 projection_type = (
                     SELECT rp.projection_type FROM result_predictions rp
-                    WHERE rp.normalized_name = result_entries.normalized_name
-                      AND rp.track = result_entries.track
+                    WHERE rp.track = result_entries.track
                       AND rp.race_date = result_entries.race_date
                       AND rp.race_number = result_entries.race_number
+                      AND (
+                          (rp.post IS NOT NULL AND rp.post = result_entries.post)
+                          OR (rp.post IS NULL AND rp.normalized_name = result_entries.normalized_name)
+                      )
                     LIMIT 1
                 )
             WHERE track = ? AND race_date = ?
-              AND normalized_name IN (
-                  SELECT rp2.normalized_name FROM result_predictions rp2
-                  WHERE rp2.track = ? AND rp2.race_date = ?
+              AND (
+                  post IN (SELECT rp2.post FROM result_predictions rp2 WHERE rp2.track = ? AND rp2.race_date = ? AND rp2.post IS NOT NULL)
+                  OR normalized_name IN (SELECT rp2.normalized_name FROM result_predictions rp2 WHERE rp2.track = ? AND rp2.race_date = ? AND rp2.post IS NULL)
               )
-        """, (track, race_date, track, race_date))
+        """, (track, race_date, track, race_date, track, race_date))
         self.conn.commit()
         return cur.rowcount
 
@@ -2283,13 +2333,12 @@ class Persistence:
                    rp.projected_low, rp.projected_high, rp.tags,
                    rp.new_top_setup, rp.bounce_risk, rp.tossed,
                    er.finish_pos, er.odds, er.win_payoff,
-                   er.place_payoff, er.show_payoff, er.post
+                   er.place_payoff, er.show_payoff, er.post,
+                   CASE WHEN rp.post IS NOT NULL AND rp.post = er.post THEN 'POST'
+                        WHEN rp.post IS NULL AND er.entry_result_id IS NOT NULL THEN 'NAME'
+                        ELSE NULL END AS match_method
             FROM result_predictions rp
-            LEFT JOIN result_entries er
-                ON rp.track = er.track
-                AND rp.race_date = er.race_date
-                AND rp.race_number = er.race_number
-                AND rp.normalized_name = er.normalized_name
+            {self._pred_entry_join("rp", "er", "LEFT JOIN")}
             WHERE {where}
             ORDER BY rp.race_number, rp.pick_rank
         """, params).fetchall()
@@ -2333,13 +2382,13 @@ class Persistence:
         # Predictions joined with their result finish positions
         pred_rows = self.conn.execute(f"""
             SELECT rp.race_number, rp.horse_name, rp.pick_rank,
-                   er.finish_pos, er.odds
+                   er.finish_pos, er.odds,
+                   er.horse_name AS result_horse_name,
+                   CASE WHEN rp.post IS NOT NULL AND rp.post = er.post THEN 'POST'
+                        WHEN rp.post IS NULL AND er.entry_result_id IS NOT NULL THEN 'NAME'
+                        ELSE NULL END AS match_method
             FROM result_predictions rp
-            LEFT JOIN result_entries er
-                ON rp.track = er.track
-                AND rp.race_date = er.race_date
-                AND rp.race_number = er.race_number
-                AND rp.normalized_name = er.normalized_name
+            {self._pred_entry_join("rp", "er", "LEFT JOIN")}
             WHERE {where}
             ORDER BY rp.race_number, rp.pick_rank
         """, params).fetchall()
@@ -2369,7 +2418,11 @@ class Persistence:
         result_rows = self.conn.execute(f"""
             SELECT re.race_number, re.horse_name, re.finish_pos, re.odds
             FROM result_entries re
+            LEFT JOIN result_races rr
+                ON re.track = rr.track AND re.race_date = rr.race_date
+                AND re.race_number = rr.race_number
             WHERE {re_where} AND re.finish_pos IN (1, 2)
+              AND COALESCE(rr.status, 'OK') != 'PARSE_ERROR'
             ORDER BY re.race_number, re.finish_pos
         """, re_params).fetchall()
 
@@ -2428,6 +2481,8 @@ class Persistence:
                 "hit_1": hit_1,
                 "hit_2": hit_2,
                 "top2_hit": top2_hit,
+                "match_method": pick1.get("match_method") if pick1 else None,
+                "result_horse_name": pick1.get("result_horse_name") if pick1 else None,
             }
             races.append(race_data)
 
@@ -2459,10 +2514,7 @@ class Persistence:
                    rp.new_top_setup, rp.bounce_risk, rp.tossed,
                    er.finish_pos, er.odds AS result_odds, er.win_payoff, er.post
             FROM result_predictions rp
-            LEFT JOIN result_entries er
-                ON rp.track = er.track AND rp.race_date = er.race_date
-                AND rp.race_number = er.race_number
-                AND rp.normalized_name = er.normalized_name
+            {self._pred_entry_join("rp", "er", "LEFT JOIN")}
             WHERE rp.race_date = ?
             ORDER BY rp.track, rp.race_number, rp.pick_rank
         """, (race_date,)).fetchall()
@@ -2499,10 +2551,7 @@ class Persistence:
                        SUM(CASE WHEN er.finish_pos = 1 AND er.win_payoff IS NOT NULL
                                 THEN er.win_payoff ELSE 0 END) as payoff
                 FROM result_predictions rp
-                JOIN result_entries er
-                    ON rp.track = er.track AND rp.race_date = er.race_date
-                    AND rp.race_number = er.race_number
-                    AND rp.normalized_name = er.normalized_name
+                {self._pred_entry_join("rp", "er", "JOIN")}
                 WHERE {where}
                 GROUP BY grp ORDER BY grp
             """, params).fetchall()
@@ -2539,10 +2588,7 @@ class Persistence:
         ).fetchone()[0]
         matched = self.conn.execute(f"""
             SELECT COUNT(*) FROM result_predictions rp
-            JOIN result_entries er
-                ON rp.track = er.track AND rp.race_date = er.race_date
-                AND rp.race_number = er.race_number
-                AND rp.normalized_name = er.normalized_name
+            {self._pred_entry_join("rp", "er", "JOIN")}
             WHERE {where}
         """, params).fetchone()[0]
 
@@ -2581,10 +2627,7 @@ class Persistence:
 
         base_join = f"""
             FROM result_predictions rp
-            JOIN result_entries er
-                ON rp.track = er.track AND rp.race_date = er.race_date
-                AND rp.race_number = er.race_number
-                AND rp.normalized_name = er.normalized_name
+            {self._pred_entry_join("rp", "er", "JOIN")}
             LEFT JOIN result_races rr
                 ON er.track = rr.track AND er.race_date = rr.race_date
                 AND er.race_number = rr.race_number
@@ -2760,10 +2803,7 @@ class Persistence:
                    er.odds AS closing_odds, er.finish_pos,
                    os.odds_decimal AS ml_odds
             FROM result_predictions rp
-            JOIN result_entries er
-                ON rp.track = er.track AND rp.race_date = er.race_date
-                AND rp.race_number = er.race_number
-                AND rp.normalized_name = er.normalized_name
+            {self._pred_entry_join("rp", "er", "JOIN")}
             LEFT JOIN odds_snapshots os
                 ON rp.track = os.track AND rp.race_date = os.race_date
                 AND rp.race_number = os.race_number
@@ -2866,10 +2906,7 @@ class Persistence:
 
         base_join = f"""
             FROM result_predictions rp
-            JOIN result_entries er
-                ON rp.track = er.track AND rp.race_date = er.race_date
-                AND rp.race_number = er.race_number
-                AND rp.normalized_name = er.normalized_name
+            {self._pred_entry_join("rp", "er", "JOIN")}
             LEFT JOIN result_races rr
                 ON er.track = rr.track AND er.race_date = rr.race_date
                 AND er.race_number = rr.race_number
@@ -2983,10 +3020,7 @@ class Persistence:
 
         base_join = f"""
             FROM result_predictions rp
-            JOIN result_entries er
-                ON rp.track = er.track AND rp.race_date = er.race_date
-                AND rp.race_number = er.race_number
-                AND rp.normalized_name = er.normalized_name
+            {self._pred_entry_join("rp", "er", "JOIN")}
             WHERE {where}
         """
 
@@ -3161,10 +3195,7 @@ class Persistence:
                    er.win_payoff, er.place_payoff, er.show_payoff,
                    rr.surface, rr.distance
             FROM result_predictions rp
-            LEFT JOIN result_entries er
-                ON rp.track = er.track AND rp.race_date = er.race_date
-                AND rp.race_number = er.race_number
-                AND rp.normalized_name = er.normalized_name
+            {self._pred_entry_join("rp", "er", "LEFT JOIN")}
             LEFT JOIN result_races rr
                 ON er.track = rr.track AND er.race_date = rr.race_date
                 AND er.race_number = rr.race_number

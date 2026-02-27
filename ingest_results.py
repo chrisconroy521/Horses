@@ -117,6 +117,17 @@ def _ingest_rows(
             print(f"  [err] row: {e}")
             errors += 1
 
+    # Validate: each race should have at least one finish_pos=1
+    for race_key in races_seen:
+        r_track, r_date, rn = race_key
+        winner_count = db.conn.execute(
+            "SELECT COUNT(*) FROM result_entries WHERE track = ? AND race_date = ? AND race_number = ? AND finish_pos = 1",
+            (r_track, r_date, rn),
+        ).fetchone()[0]
+        if winner_count < 1:
+            db.mark_race_parse_error(r_track, r_date, rn)
+            print(f"  [warn] Race {rn}: no winner (finish_pos=1) — marked PARSE_ERROR")
+
     # Link to existing horses/projections
     link_result = db.link_results_to_entries(
         track=track, race_date=race_date, session_id=session_id,

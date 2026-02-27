@@ -324,6 +324,7 @@ def _persist_predictions(session_id, track, race_date, race_number, projections)
             "projections": [
                 {
                     "name": p.name,
+                    "post": p.post,
                     "projection_type": p.projection_type,
                     "bias_score": p.bias_score,
                     "raw_score": p.raw_score,
@@ -4234,8 +4235,12 @@ def _render_predictions_dashboard(track: str = "", date: str = "", session_id: s
         "Top-2 Rate": f"{summary.get('top2_rate', 0):.1f}%",
     })
 
-    # Toggle for backup picks
-    show_backups = st.toggle("Show backups (Top 2/Top 3)", value=False, key="toggle_show_backups")
+    # Toggles
+    tcol1, tcol2 = st.columns(2)
+    with tcol1:
+        show_backups = st.toggle("Show backups (Top 2/Top 3)", value=False, key="toggle_show_backups")
+    with tcol2:
+        show_debug = st.toggle("Show source details", value=False, key="toggle_show_debug")
 
     # Build table rows
     table_rows = []
@@ -4270,6 +4275,12 @@ def _render_predictions_dashboard(track: str = "", date: str = "", session_id: s
         if show_backups:
             row["Backup"] = r.get("predicted_2") or "—"
             row["Top-2?"] = "YES" if top2_hit else "NO"
+
+        if show_debug:
+            row["Match"] = r.get("match_method") or "NONE"
+            row["Result Name"] = r.get("result_horse_name") or "—"
+            p1_fin = r.get("predicted_1_finish")
+            row["Pred Finish"] = f"{p1_fin}" if p1_fin else "—"
 
         table_rows.append(row)
 
