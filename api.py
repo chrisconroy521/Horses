@@ -1198,6 +1198,38 @@ async def list_sessions():
     return {"sessions": items, "total_count": len(items)}
 
 
+@app.get("/sessions/filtered")
+async def list_sessions_filtered(
+    include_archived: bool = False,
+    include_recovered: bool = False,
+):
+    """List sessions filtered for Engine dropdown — real uploads only by default."""
+    rows = _db.list_sessions_filtered(
+        include_archived=include_archived,
+        include_recovered=include_recovered,
+    )
+    enriched = []
+    for r in rows:
+        sid = r["session_id"]
+        mem = sessions.get(sid, {})
+        enriched.append({
+            "session_id": sid,
+            "track": r.get("track_name", ""),
+            "date": r.get("race_date", ""),
+            "pdf_name": r.get("pdf_name", ""),
+            "horses_count": r.get("horses_count", 0),
+            "total_races": r.get("total_races", 0),
+            "created_at": r.get("created_at", ""),
+            "uploaded_at": r.get("uploaded_at", ""),
+            "source_type": r.get("source_type", ""),
+            "archived": bool(r.get("archived", 0)),
+            "has_primary": mem.get("has_primary", True),
+            "has_secondary": mem.get("has_secondary", False),
+            "primary_pdf_filename": r.get("pdf_name", ""),
+        })
+    return {"sessions": enriched}
+
+
 @app.get("/sessions/{session_id}/summary")
 async def session_summary(session_id: str):
     """Per-source counts for a session."""

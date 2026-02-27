@@ -514,6 +514,10 @@ class Persistence:
         # result_races — add integrity column for 6-level classification
         if rr_cols and "integrity" not in rr_cols:
             self.conn.execute("ALTER TABLE result_races ADD COLUMN integrity TEXT DEFAULT 'OK'")
+        # sessions — add archived column for de-duplication
+        sess_cols = self._get_table_columns("sessions")
+        if sess_cols and "archived" not in sess_cols:
+            self.conn.execute("ALTER TABLE sessions ADD COLUMN archived INTEGER DEFAULT 0")
         self.conn.commit()
         self._renormalize_names()
 
@@ -883,6 +887,74 @@ class Persistence:
         )
         rows = cur.fetchall()
         return [self._prepare_session_row(row) for row in rows if row]
+
+    def list_sessions_filtered(
+        self, include_archived: bool = False,
+        include_recovered: bool = False, min_horses: int = 1,
+    ) -> List[Dict[str, Any]]:
+        """List sessions filtered for Engine dropdown.
+
+        Joins to uploads table to distinguish real uploads from recovered sessions.
+        De-duplicates by file hash or (pdf_name, track, date), auto-archiving older dupes.
+        """
+        where = ["s.horses_count >= ?"]
+        params: list = [min_horses]
+
+        if not include_archived:
+            where.append("COALESCE(s.archived, 0) = 0")
+        if not include_recovered:
+            where.append("u.upload_id IS NOT NULL")
+
+        where_str = " AND ".join(where)
+
+        rows = self.conn.execute(f"""
+            SELECT s.session_id, s.track_name, s.race_date, s.pdf_name,
+                   s.created_at, s.parser_used, s.horses_count, s.total_races,
+                   s.parser_meta, COALESCE(s.archived, 0) as archived,
+                   u.source_type, u.pdf_hash, u.uploaded_at
+            FROM sessions s
+            LEFT JOIN uploads u ON u.session_id = s.session_id
+            WHERE {where_str}
+            ORDER BY COALESCE(u.uploaded_at, s.created_at) DESC
+        """, params).fetchall()
+
+        # De-duplicate: keep newest per (pdf_hash) or (pdf_name, track, date)
+        seen: dict = {}
+        result: List[Dict[str, Any]] = []
+        archive_ids: list = []
+        for row in rows:
+            r = dict(row)
+            pdf_hash = (r.get("pdf_hash") or "").strip()
+            pdf_name = r.get("pdf_name", "")
+            track = r.get("track_name", "")
+            date = r.get("race_date", "")
+
+            if pdf_hash:
+                dedup_key = f"hash:{pdf_hash}"
+            elif pdf_name:
+                dedup_key = f"file:{pdf_name}|{track}|{date}"
+            else:
+                dedup_key = f"sid:{r['session_id']}"
+
+            if dedup_key in seen:
+                archive_ids.append(r["session_id"])
+                if include_archived:
+                    r["archived"] = 1
+                    result.append(r)
+                continue
+            seen[dedup_key] = True
+            result.append(r)
+
+        # Auto-archive older dupes in DB
+        for sid in archive_ids:
+            self.conn.execute(
+                "UPDATE sessions SET archived = 1 WHERE session_id = ? AND COALESCE(archived, 0) = 0",
+                (sid,),
+            )
+        if archive_ids:
+            self.conn.commit()
+
+        return result
 
     def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
         cur = self.conn.execute(

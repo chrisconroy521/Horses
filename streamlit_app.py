@@ -2199,32 +2199,24 @@ def engine_page():
 
     engine = HandicappingEngine()
 
-    # --- Load last parsed session button ---
-    if st.button("Load last parsed session"):
-        try:
-            resp = api_get(f"/races", timeout=15)
-            if resp.status_code == 200:
-                races = resp.json().get("races", [])
-                if races:
-                    latest = races[-1]
-                    rid = latest.get('session_id') or latest.get('id')
-                    st.session_state['active_session_id'] = rid
-                else:
-                    st.warning("No parsed sessions found. Upload a PDF first.")
-            else:
-                st.error(f"API error: {resp.text}")
-        except requests.exceptions.ConnectionError:
-            st.error("Cannot connect to API. Is the backend running on http://localhost:8000?")
-        except Exception as e:
-            st.error(f"Error: {e}")
+    # --- Session filter toggles ---
+    tcol1, tcol2 = st.columns(2)
+    with tcol1:
+        show_archived = st.toggle("Show archived", value=False, key="eng_show_archived")
+    with tcol2:
+        show_recovered = st.toggle("Show recovered/debug", value=False, key="eng_show_recovered")
 
-    # --- Session selector ---
+    # --- Fetch filtered sessions ---
     try:
-        resp = api_get(f"/races", timeout=15)
+        filter_params = {
+            "include_archived": show_archived,
+            "include_recovered": show_recovered,
+        }
+        resp = api_get("/sessions/filtered", params=filter_params, timeout=15)
         if resp.status_code != 200:
             st.error("Could not fetch sessions from API.")
             return
-        races = resp.json().get("races", [])
+        races = resp.json().get("sessions", [])
     except requests.exceptions.ConnectionError:
         st.error("Cannot connect to API. Is the backend running on http://localhost:8000?")
         return
@@ -2233,27 +2225,32 @@ def engine_page():
         return
 
     if not races:
-        st.info("No parsed sessions yet. Upload a PDF to get started.")
+        st.info("No uploaded sheets found. Upload a PDF to get started.")
         return
 
+    # Default to most recent (index 0, sorted newest first)
     default_idx = 0
     if 'active_session_id' in st.session_state:
         target_id = st.session_state['active_session_id']
         for i, r in enumerate(races):
-            rid = r.get('session_id') or r.get('id')
-            if rid == target_id:
+            if r.get('session_id') == target_id:
                 default_idx = i
                 break
 
     def _session_label(x):
-        name = x.get('primary_pdf_filename') or x.get('original_filename', 'unknown')
-        track = x.get('track') or x.get('track_name', '')
-        date = x.get('date') or x.get('analysis_date', x.get('race_date', ''))
-        tag = "Primary+Secondary" if x.get('has_secondary') else "Primary Only"
-        return f"{name} | {track} | {date} | {tag}"
+        name = x.get('pdf_name') or x.get('primary_pdf_filename', 'unknown')
+        track = x.get('track', '')
+        date = x.get('date', '')
+        count = x.get('horses_count', 0)
+        tag = ""
+        if x.get('archived'):
+            tag = " [archived]"
+        elif x.get('has_secondary'):
+            tag = " [+secondary]"
+        return f"{name} | {track} | {date} | horses: {count}{tag}"
 
     selected = st.selectbox(
-        "Session:",
+        "Current Sheets",
         options=races,
         format_func=_session_label,
         index=default_idx,
@@ -2261,6 +2258,13 @@ def engine_page():
 
     if not selected:
         return
+
+    # Info label
+    _sel_name = selected.get('pdf_name', '')
+    _sel_track = selected.get('track', '')
+    _sel_date = selected.get('date', '')
+    _sel_count = selected.get('horses_count', 0)
+    st.caption(f"Loaded: {_sel_name} | {_sel_track} | {_sel_date} | horses: {_sel_count}")
 
     # Determine the ID and whether to use session endpoint
     sel_id = selected.get('session_id') or selected.get('id')
