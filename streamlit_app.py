@@ -102,9 +102,9 @@ def main():
     # Sidebar
     st.sidebar.header("Navigation")
     pages = [
-        "Daily Best Bets", "Bet Commander", "Dual Mode Betting", "Dashboard",
-        "Upload PDF", "Engine", "Bet Builder",
-        "Results", "Results Inbox", "Calibration",
+        "Engine", "Results", "Daily Best Bets", "Bet Commander",
+        "Dual Mode Betting", "Dashboard", "Upload PDF", "Bet Builder",
+        "Results Inbox", "Calibration",
         "Horse Past Performance", "Horses Overview",
         "Individual Horse Analysis", "Race Analysis", "Statistics",
         "Database", "Manage Sheets", "API Status",
